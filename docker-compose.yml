@@ -3,6 +3,11 @@ x-api-worker-env: &api-worker-env
   LITE_MODE: ${LITE_MODE:-false}
   RUNNING_IN_DOCKER: "true"
   YUXI_ENV: development
+  # 避免容器内默认 C 区域下中文路径/日志触发 ascii 编码错误（影响 LLM 调用链）
+  LANG: C.UTF-8
+  LC_ALL: C.UTF-8
+  PYTHONIOENCODING: utf-8
+  PYTHONUTF8: "1"
   # DBs and other services
   POSTGRES_URL: ${POSTGRES_URL:-postgresql+asyncpg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-yuxi_know}}
   REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}

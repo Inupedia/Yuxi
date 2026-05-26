@@ -32,12 +32,20 @@ QWEN_IMAGE_CONFIG_GUIDE = """
 
 
 def _create_tavily_search():
-    """Create and register TavilySearch tool with metadata."""
+    """Create TavilySearch; supports optional TAVILY_API_BASE (e.g. third-party compatible endpoint)."""
     global _tavily_search_instance
     if _tavily_search_instance is None:
         from langchain_tavily import TavilySearch
 
-        _tavily_search_instance = TavilySearch()
+        key = (os.environ.get("TAVILY_API_KEY") or "").strip()
+        base = (os.environ.get("TAVILY_API_BASE") or "").strip()
+        # 自定义 base 时必须显式传入 key，否则部分运行环境不会把密钥传给 wrapper
+        if base:
+            if not key:
+                raise ValueError("TAVILY_API_BASE is set but TAVILY_API_KEY is empty")
+            _tavily_search_instance = TavilySearch(tavily_api_key=key, api_base_url=base.rstrip("/"))
+        else:
+            _tavily_search_instance = TavilySearch()
 
     return _tavily_search_instance
 
