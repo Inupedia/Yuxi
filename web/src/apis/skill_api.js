@@ -24,6 +24,10 @@ export const installRemoteSkillsBatch = async (payload) => {
   return apiAdminPost(`${BASE_URL}/remote/install-batch`, payload)
 }
 
+export const searchRemoteSkills = async (query) => {
+  return apiAdminPost(`${BASE_URL}/remote/search`, { query })
+}
+
 export const getSkillDependencyOptions = async () => {
   return apiAdminGet(`${BASE_URL}/dependency-options`)
 }
@@ -76,12 +80,17 @@ export const deleteSkill = async (slug) => {
   return apiAdminDelete(`${BASE_URL}/${encodeURIComponent(slug)}`)
 }
 
+export const deleteSkillsBatch = async (slugs) => {
+  return apiAdminPost(`${BASE_URL}/delete-batch`, { slugs })
+}
+
 export const skillApi = {
   listSkills,
   importSkillZip,
   listRemoteSkills,
   installRemoteSkill,
   installRemoteSkillsBatch,
+  searchRemoteSkills,
   getSkillDependencyOptions,
   listBuiltinSkills,
   installBuiltinSkill,
@@ -93,7 +102,8 @@ export const skillApi = {
   updateSkillDependencies,
   deleteSkillFile,
   exportSkill,
-  deleteSkill
+  deleteSkill,
+  deleteSkillsBatch
 }
 
 export default skillApi

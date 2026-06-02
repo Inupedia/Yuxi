@@ -308,3 +308,61 @@ async def test_install_remote_skills_batch_handles_invalid_names(monkeypatch: py
     assert "--skill" in str(calls[0][0])
     assert "valid-skill" in str(calls[0][0])
     assert "Bad" not in str(calls[0][0])
+
+
+def test_parse_search_skills() -> None:
+    output = """
+    Install with npx skills add <owner/repo@skill>
+
+    vercel-labs/agent-skills@web-design-guidelines 339.3K installs
+    └ https://skills.sh/vercel-labs/agent-skills/web-design-guidelines
+
+    xixu-me/skills@secure-linux-web-hosting 158.6K installs
+    └ https://skills.sh/xixu-me/skills/secure-linux-web-hosting
+
+    anthropics/skills@webapp-testing
+    └ https://skills.sh/anthropics/skills/webapp-testing
+    """
+
+    results = svc._parse_search_skills(output)
+    assert results == [
+        {
+            "source": "vercel-labs/agent-skills",
+            "name": "web-design-guidelines",
+            "installs": "339.3K installs",
+        },
+        {
+            "source": "xixu-me/skills",
+            "name": "secure-linux-web-hosting",
+            "installs": "158.6K installs",
+        },
+        {
+            "source": "anthropics/skills",
+            "name": "webapp-testing",
+            "installs": "",
+        },
+    ]
+
+
+@pytest.mark.asyncio
+async def test_search_remote_skills(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, object] = {}
+
+    async def fake_run_skills_cli(args: list[str], *, env: dict[str, str], cwd: str) -> str:
+        captured["args"] = args
+        return """
+        vercel-labs/agent-skills@web-design-guidelines 339.3K installs
+        """
+
+    monkeypatch.setattr(svc, "_run_skills_cli", fake_run_skills_cli)
+
+    items = await svc.search_remote_skills("web")
+    assert items == [
+        {
+            "source": "vercel-labs/agent-skills",
+            "name": "web-design-guidelines",
+            "installs": "339.3K installs",
+        }
+    ]
+    assert captured["args"] == ["npx", "-y", "skills", "find", "web"]
+

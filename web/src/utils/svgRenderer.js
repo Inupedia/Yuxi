@@ -32,10 +32,10 @@ export function renderSvgBlocks(markdown) {
       while (i < lines.length) {
         const closeMatch = lines[i].match(/^( {0,3})(`{3,}|~{3,})\s*$/)
         if (
-          closeMatch
-          && closeMatch[1].length <= indent.length
-          && closeMatch[2][0] === fenceChar[0]
-          && closeMatch[2].length >= fenceChar.length
+          closeMatch &&
+          closeMatch[1].length <= indent.length &&
+          closeMatch[2][0] === fenceChar[0] &&
+          closeMatch[2].length >= fenceChar.length
         ) {
           closed = true
           // 压缩 SVG 为单行，防止 markdown-it HTML 块解析截断

@@ -25,9 +25,9 @@ class RemoteSkillsBatchPreparation:
     temp_home: str | None
     results: list[dict]
 
-    def cleanup(self) -> None:
+    async def cleanup(self) -> None:
         if self.temp_home:
-            shutil.rmtree(self.temp_home, ignore_errors=True)
+            await asyncio.to_thread(shutil.rmtree, self.temp_home, ignore_errors=True)
 
 
 def _normalize_source(source: str) -> str:
@@ -152,7 +152,7 @@ async def list_remote_skills(source: str) -> list[dict[str, str]]:
             cwd=workdir,
         )
     finally:
-        shutil.rmtree(temp_home, ignore_errors=True)
+        await asyncio.to_thread(shutil.rmtree, temp_home, ignore_errors=True)
 
     skills = _parse_available_skills(output)
     if not skills:
@@ -219,7 +219,7 @@ async def install_remote_skill(
             created_by=created_by,
         )
     finally:
-        shutil.rmtree(temp_home, ignore_errors=True)
+        await asyncio.to_thread(shutil.rmtree, temp_home, ignore_errors=True)
 
 
 async def install_remote_skills_batch(
@@ -262,7 +262,7 @@ async def install_remote_skills_batch(
 
         return results
     finally:
-        preparation.cleanup()
+        await preparation.cleanup()
 
 
 async def prepare_remote_skills_batch(
@@ -327,7 +327,7 @@ async def prepare_remote_skills_batch(
 
         return RemoteSkillsBatchPreparation(temp_home=temp_home, results=results)
     except Exception:
-        shutil.rmtree(temp_home, ignore_errors=True)
+        await asyncio.to_thread(shutil.rmtree, temp_home, ignore_errors=True)
         raise
 
 
@@ -339,3 +339,49 @@ def _find_skill_dir(skills_dir: Path, name: str) -> Path | None:
         if candidate.name == name and candidate.is_dir():
             return candidate
     return None
+
+
+def _parse_search_skills(output: str) -> list[dict[str, str]]:
+    """解析 npx skills find 命令的输出。"""
+    lines = _clean_cli_output(output)
+    results: list[dict[str, str]] = []
+    # 匹配形如 "owner/repo@skill-name [installs]"
+    # 例如：vercel-labs/agent-skills@web-design-guidelines 339.3K installs
+    pattern = re.compile(r"^([a-zA-Z0-9_\-\.]+/[a-zA-Z0-9_\-\.]+)\@([a-zA-Z0-9_\-\.]+)(?:\s+(.*))?$")
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        match = pattern.match(line)
+        if match:
+            source, name, extra = match.groups()
+            installs = extra.strip() if extra else ""
+            results.append(
+                {
+                    "source": source,
+                    "name": name,
+                    "installs": installs,
+                }
+            )
+    return results
+
+
+async def search_remote_skills(query: str) -> list[dict[str, str]]:
+    """使用 npx skills find <query> 搜索远程 skills。"""
+    query_val = str(query or "").strip()
+    if not query_val:
+        return []
+    if any(ch in query_val for ch in ("\n", "\r", "\x00")):
+        raise ValueError("搜索关键字包含非法字符")
+
+    temp_home, env, workdir = _create_isolated_workdir()
+    try:
+        output = await _run_skills_cli(
+            ["npx", "-y", "skills", "find", query_val],
+            env=env,
+            cwd=workdir,
+        )
+    finally:
+        await asyncio.to_thread(shutil.rmtree, temp_home, ignore_errors=True)
+
+    return _parse_search_skills(output)

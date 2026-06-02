@@ -20,6 +20,7 @@ from yuxi.services.skill_service import (
     create_skill_node,
     delete_skill,
     delete_skill_node,
+    delete_skills_batch,
     export_skill_zip,
     get_skill_dependency_options,
     get_skill_tree,
@@ -69,6 +70,14 @@ class RemoteSkillInstallRequest(RemoteSkillSourceRequest):
 
 class RemoteSkillBatchInstallRequest(RemoteSkillSourceRequest):
     skills: list[str] = Field(..., description="需要安装的 skill 名称列表（批量，共享一次克隆）")
+
+
+class RemoteSkillSearchRequest(BaseModel):
+    query: str = Field(..., description="搜索关键字")
+
+
+class SkillBatchDeleteRequest(BaseModel):
+    slugs: list[str] = Field(..., max_length=50, description="需要批量删除的 skill slug 列表，最多支持 50 个")
 
 
 def _raise_from_value_error(e: ValueError) -> None:
@@ -303,6 +312,24 @@ async def install_remote_skills_batch_route(
         raise HTTPException(status_code=500, detail="批量安装远程 skills 失败")
 
 
+@skills.post("/remote/search")
+async def search_remote_skills_route(
+    payload: RemoteSkillSearchRequest,
+    _current_user: User = Depends(get_admin_user),
+):
+    """搜索远程公开的 skills（管理员）。"""
+    try:
+        data = await search_remote_skills(payload.query)
+        return {"success": True, "data": data}
+    except ValueError as e:
+        _raise_from_value_error(e)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to search remote skills with query '{payload.query}': {e}")
+        raise HTTPException(status_code=500, detail="搜索远程 skills 失败")
+
+
 @skills.get("/{slug}/tree")
 async def get_skill_tree_route(
     slug: str,
@@ -484,3 +511,28 @@ async def delete_skill_route(
     except Exception as e:
         logger.error(f"Failed to delete skill '{slug}': {e}")
         raise HTTPException(status_code=500, detail="删除技能失败")
+
+
+@skills.post("/delete-batch")
+async def delete_skills_batch_route(
+    payload: SkillBatchDeleteRequest,
+    _current_user: User = Depends(get_admin_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """批量删除技能（目录 + 数据库记录，管理员）。"""
+    try:
+        results = await delete_skills_batch(db, slugs=payload.slugs)
+        success_count = sum(1 for r in results if r["success"])
+        failed_count = sum(1 for r in results if not r["success"])
+        return {
+            "success": True,
+            "data": results,
+            "summary": {"total": len(results), "success": success_count, "failed": failed_count},
+        }
+    except ValueError as e:
+        _raise_from_value_error(e)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to delete skills batch: {e}")
+        raise HTTPException(status_code=500, detail="批量删除技能失败")

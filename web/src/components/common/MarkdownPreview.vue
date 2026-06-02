@@ -100,7 +100,10 @@ const copySvgAsPng = async (svgEl, btn) => {
     }
 
     // 3) 回退
-    if (!width || !height) { width = 800; height = 600 }
+    if (!width || !height) {
+      width = 800
+      height = 600
+    }
 
     const img = await new Promise((resolve, reject) => {
       const image = new Image()
@@ -117,11 +120,9 @@ const copySvgAsPng = async (svgEl, btn) => {
     // 背景色由 SVG 自身决定
     ctx.drawImage(img, 0, 0, width, height)
 
-    const pngBlob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'))
+    const pngBlob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/png'))
     if (pngBlob) {
-      await navigator.clipboard.write([
-        new ClipboardItem({ 'image/png': pngBlob })
-      ])
+      await navigator.clipboard.write([new ClipboardItem({ 'image/png': pngBlob })])
       showCopiedFeedback(btn)
     }
   } catch (err) {

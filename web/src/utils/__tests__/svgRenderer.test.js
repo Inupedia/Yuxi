@@ -35,7 +35,10 @@ const run = () => {
     const lines = result.split('\n')
     assert.equal(lines.length, 1, 'Should be compressed to single line')
     assert.ok(result.includes('svg-inline-render'), 'Should contain wrapper')
-    assert.ok(result.includes('<stop offset="0%"/><stop offset="100%"/>'), 'Blank lines should be removed between tags')
+    assert.ok(
+      result.includes('<stop offset="0%"/><stop offset="100%"/>'),
+      'Blank lines should be removed between tags'
+    )
     assert.ok(result.includes('svg-copy-btn'), 'Buttons should be inside single-line output')
     console.log('T3 Blank lines compressed: PASS')
   }

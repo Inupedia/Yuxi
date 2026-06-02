@@ -1614,10 +1614,10 @@ const hasVisibleAssistantBody = (message) => {
   const { content, reasoningContent } = extractAssistantMessageBody(message)
   return Boolean(
     content ||
-      reasoningContent ||
-      message.error_type ||
-      message.extra_metadata?.error_type ||
-      message.isStoppedByUser
+    reasoningContent ||
+    message.error_type ||
+    message.extra_metadata?.error_type ||
+    message.isStoppedByUser
   )
 }
 
