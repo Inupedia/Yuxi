@@ -8,13 +8,6 @@ export const useChatUIStore = defineStore(
     // 加载状态
     const isLoadingMessages = ref(false)
 
-    // ==================== AgentView UI 状态 ====================
-    // 智能体选择弹窗
-    const agentModalOpen = ref(false)
-
-    // 配置侧边栏
-    const isConfigSidebarOpen = ref(false)
-
     // 应用侧边栏折叠态
     const sidebarCollapsed = ref(false)
 
@@ -45,8 +38,6 @@ export const useChatUIStore = defineStore(
      */
     function reset() {
       isLoadingMessages.value = false
-      agentModalOpen.value = false
-      isConfigSidebarOpen.value = false
       moreMenuOpen.value = false
       moreMenuPosition.value = { x: 0, y: 0 }
     }
@@ -54,8 +45,6 @@ export const useChatUIStore = defineStore(
     return {
       // 状态
       isLoadingMessages,
-      agentModalOpen,
-      isConfigSidebarOpen,
       sidebarCollapsed,
       moreMenuOpen,
       moreMenuPosition,

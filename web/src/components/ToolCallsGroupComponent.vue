@@ -9,7 +9,7 @@
       @click="toggleToolCallsExpanded"
     >
       <span class="summary-leading">
-        <Wrench size="14" />
+        <Atom size="14" />
       </span>
       <span class="summary-content">
         <span class="summary-title">{{ toolCallsSummaryTitle }}</span>
@@ -39,10 +39,22 @@
 </template>
 
 <script setup>
-import { computed, ref, watch } from 'vue'
-import { ChevronDown, ChevronRight, Wrench } from 'lucide-vue-next'
+import { computed, ref, watch, inject } from 'vue'
+import { ChevronDown, ChevronRight, Atom } from 'lucide-vue-next'
 import { ToolCallRenderer } from '@/components/ToolCallingResult'
-import { getToolCallId, HIDDEN_TOOL_CALL_IDS } from '@/components/ToolCallingResult/toolRegistry'
+import { getToolCallId, normalizeToolCalls } from '@/components/ToolCallingResult/toolRegistry'
+
+const activeSubagentToolCallIds = inject('activeSubagentToolCallIds', null)
+
+// task 工具结果不随流式返回，不能用 tool_call_result 判断运行中：只有「活跃」的 task 才算运行中。
+const toolRunState = (toolCall) => {
+  if (toolCall.status === 'error') return 'error'
+  if (toolCall.tool_call_result || toolCall.status === 'success') return 'completed'
+  if (getToolCallId(toolCall) === 'task') {
+    return activeSubagentToolCallIds?.value?.has(String(toolCall.id)) ? 'running' : 'completed'
+  }
+  return 'running'
+}
 
 const props = defineProps({
   toolCalls: {
@@ -55,20 +67,7 @@ const props = defineProps({
   }
 })
 
-const normalizedToolCalls = computed(() => {
-  return (props.toolCalls || []).filter((toolCall) => {
-    const toolId = getToolCallId(toolCall)
-
-    return (
-      toolCall &&
-      !HIDDEN_TOOL_CALL_IDS.includes(toolId) &&
-      (toolCall.id || toolCall.name || toolCall.function?.name) &&
-      (toolCall.args !== undefined ||
-        toolCall.function?.arguments !== undefined ||
-        toolCall.tool_call_result !== undefined)
-    )
-  })
-})
+const normalizedToolCalls = computed(() => normalizeToolCalls(props.toolCalls))
 
 const shouldCollapseToolCalls = computed(() => normalizedToolCalls.value.length > 0)
 const areToolCallsExpanded = ref(false)
@@ -97,6 +96,9 @@ watch(
 )
 
 const getToolCallLabel = (toolCall) => {
+  const displayLabel = String(toolCall?.display_label || '').trim()
+  if (displayLabel) return displayLabel
+
   const rawName = getToolCallId(toolCall)
   const name = typeof rawName === 'string' ? rawName.replaceAll('_', ' ') : 'tool'
   return name.charAt(0).toUpperCase() + name.slice(1)
@@ -104,7 +106,7 @@ const getToolCallLabel = (toolCall) => {
 
 const toolCallsSummaryTitle = computed(() => {
   if (normalizedToolCalls.value.length === 1) {
-    return `使用了工具: ${getToolCallLabel(normalizedToolCalls.value[0])}`
+    return `调用: ${getToolCallLabel(normalizedToolCalls.value[0])}`
   }
   return `已调用 ${normalizedToolCalls.value.length} 个工具`
 })
@@ -120,16 +122,10 @@ const toolCallsNamesMeta = computed(() => {
 })
 
 const statusSummary = computed(() => {
-  const successCount = normalizedToolCalls.value.filter(
-    (toolCall) => toolCall.status === 'success' || toolCall.tool_call_result
-  ).length
-  const runningCount = normalizedToolCalls.value.filter(
-    (toolCall) =>
-      toolCall.status !== 'success' && toolCall.status !== 'error' && !toolCall.tool_call_result
-  ).length
-  const errorCount = normalizedToolCalls.value.filter(
-    (toolCall) => toolCall.status === 'error'
-  ).length
+  const states = normalizedToolCalls.value.map(toolRunState)
+  const successCount = states.filter((state) => state === 'completed').length
+  const runningCount = states.filter((state) => state === 'running').length
+  const errorCount = states.filter((state) => state === 'error').length
 
   const parts = []
   if (successCount > 0 && successCount === normalizedToolCalls.value.length) {
@@ -150,7 +146,6 @@ const toggleToolCallsExpanded = () => {
 <style lang="less" scoped>
 .tool-calls-container {
   width: 100%;
-  margin: 0;
   padding: 0;
 
   .tool-calls-summary {
@@ -160,32 +155,29 @@ const toggleToolCallsExpanded = () => {
     display: inline-flex;
     align-items: center;
     gap: 8px;
-    padding: 4px 8px;
-    border: 1px solid transparent;
-    border-radius: 6px;
-    background: transparent;
-    color: var(--gray-500);
+    color: var(--gray-700);
     text-align: left;
     cursor: pointer;
     outline: none;
+    border: none;
+    padding: 0;
     transition: all 0.2s ease;
     user-select: none;
+    background: transparent;
 
     &:hover {
-      background: var(--gray-100);
-      color: var(--gray-700);
+      color: var(--gray-800);
     }
 
     &.is-expanded {
-      color: var(--gray-700);
-      background: var(--gray-50);
+      color: var(--gray-800);
       margin-bottom: 4px;
     }
 
     .summary-leading {
       display: inline-flex;
       align-items: center;
-      color: var(--gray-400);
+      color: var(--gray-700);
       flex-shrink: 0;
     }
 
@@ -199,17 +191,17 @@ const toggleToolCallsExpanded = () => {
     }
 
     .summary-title {
-      font-weight: 500;
+      font-weight: 400;
       white-space: nowrap;
     }
 
     .summary-separator {
-      color: var(--gray-300);
+      color: var(--gray-500);
       flex-shrink: 0;
     }
 
     .summary-meta {
-      color: var(--gray-400);
+      color: var(--gray-600);
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
@@ -219,8 +211,8 @@ const toggleToolCallsExpanded = () => {
       margin-left: 4px;
       font-size: 11px;
       padding: 0px 4px;
-      background: var(--gray-25);
-      color: var(--gray-500);
+      // background: var(--gray-25);
+      color: var(--gray-600);
       border-radius: 4px;
       white-space: nowrap;
       font-weight: normal;
@@ -229,15 +221,14 @@ const toggleToolCallsExpanded = () => {
     .summary-trailing {
       display: inline-flex;
       align-items: center;
-      color: var(--gray-300);
+      color: var(--gray-500);
       flex-shrink: 0;
     }
   }
 
   .tool-calls-panel {
-    padding: 4px 0 4px 12px;
-    border-left: 1px solid var(--gray-100);
-    margin-left: 16px;
+    border-top: 1px solid var(--gray-100);
+    padding-top: 4px;
     margin-top: 4px;
     margin-bottom: 8px;
   }

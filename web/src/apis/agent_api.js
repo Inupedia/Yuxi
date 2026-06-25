@@ -1,12 +1,4 @@
-import {
-  apiGet,
-  apiPost,
-  apiDelete,
-  apiPut,
-  apiAdminPost,
-  apiAdminDelete,
-  apiRequest
-} from './base'
+import { apiGet, apiPost, apiDelete, apiPut, apiRequest } from './base'
 import { useUserStore } from '@/stores/user'
 
 /**
@@ -20,30 +12,6 @@ import { useUserStore } from '@/stores/user'
 // =============================================================================
 
 export const agentApi = {
-  /**
-   * 发送聊天消息到指定智能体（流式响应）
-   * @param {Object} data - 聊天数据
-   * @returns {Promise} - 聊天响应流
-   */
-  sendAgentMessage: (data, options = {}) => {
-    const { signal, headers: extraHeaders, ...restOptions } = options || {}
-    const baseHeaders = {
-      'Content-Type': 'application/json',
-      ...useUserStore().getAuthHeaders()
-    }
-
-    return fetch('/api/chat/agent', {
-      method: 'POST',
-      body: JSON.stringify(data),
-      signal,
-      headers: {
-        ...baseHeaders,
-        ...(extraHeaders || {})
-      },
-      ...restOptions
-    })
-  },
-
   /**
    * 简单聊天调用（非流式）
    * @param {string} query - 查询内容
@@ -66,23 +34,24 @@ export const agentApi = {
   },
 
   /**
-   * 获取默认智能体
-   * @returns {Promise} - 默认智能体信息
-   */
-  getDefaultAgent: () => apiGet('/api/chat/default_agent'),
-
-  /**
    * 获取智能体列表
    * @returns {Promise} - 智能体列表
    */
-  getAgents: () => apiGet('/api/chat/agent'),
+  getAgents: ({ includeSubagents = false } = {}) => {
+    const params = new URLSearchParams()
+    if (includeSubagents) params.set('include_subagents', 'true')
+    const query = params.toString()
+    return apiGet(query ? `/api/agent?${query}` : '/api/agent')
+  },
+
+  getAgentBackends: () => apiGet('/api/agent/backends'),
 
   /**
    * 获取单个智能体详情
    * @param {string} agentId - 智能体ID
    * @returns {Promise} - 智能体详情
    */
-  getAgentDetail: (agentId) => apiGet(`/api/chat/agent/${agentId}`),
+  getAgentDetail: (agentId) => apiGet(`/api/agent/${agentId}`),
 
   /**
    * 获取智能体历史消息
@@ -98,7 +67,8 @@ export const agentApi = {
    * @param {string} threadId - 会话ID
    * @returns {Promise} - AgentState
    */
-  getAgentState: (threadId) => apiGet(`/api/chat/thread/${threadId}/state`),
+  getAgentState: (threadId, { includeMessages = false } = {}) =>
+    apiGet(`/api/chat/thread/${threadId}/state${includeMessages ? '?include_messages=true' : ''}`),
 
   /**
    * Submit feedback for a message
@@ -117,73 +87,11 @@ export const agentApi = {
    */
   getMessageFeedback: (messageId) => apiGet(`/api/chat/message/${messageId}/feedback`),
 
-  /**
-   * 获取模型提供商的模型列表
-   * @param {string} provider - 模型提供商
-   * @returns {Promise} - 模型列表
-   */
-  getProviderModels: (provider) => apiGet(`/api/chat/models?model_provider=${provider}`),
+  createAgent: (payload) => apiPost('/api/agent', payload),
 
-  /**
-   * 更新模型提供商的模型列表
-   * @param {string} provider - 模型提供商
-   * @param {Array} models - 选中的模型列表
-   * @returns {Promise} - 更新结果
-   */
-  updateProviderModels: (provider, models) =>
-    apiPost(`/api/chat/models/update?model_provider=${provider}`, models),
+  updateAgent: (agentId, payload) => apiPut(`/api/agent/${agentId}`, payload),
 
-  getAgentConfigs: (agentId) => apiGet(`/api/chat/agent/${agentId}/configs`),
-
-  getAgentConfigProfile: (agentId, configId) =>
-    apiGet(`/api/chat/agent/${agentId}/configs/${configId}`),
-
-  createAgentConfigProfile: (agentId, payload) =>
-    apiAdminPost(`/api/chat/agent/${agentId}/configs`, payload),
-
-  updateAgentConfigProfile: (agentId, configId, payload) =>
-    apiPut(`/api/chat/agent/${agentId}/configs/${configId}`, payload),
-
-  setAgentConfigDefault: (agentId, configId) =>
-    apiAdminPost(`/api/chat/agent/${agentId}/configs/${configId}/set_default`, {}),
-
-  deleteAgentConfigProfile: (agentId, configId) =>
-    apiAdminDelete(`/api/chat/agent/${agentId}/configs/${configId}`),
-
-  /**
-   * 设置默认智能体
-   * @param {string} agentId - 智能体ID
-   * @returns {Promise} - 设置结果
-   */
-  setDefaultAgent: async (agentId) => {
-    return apiAdminPost('/api/chat/set_default_agent', { agent_id: agentId })
-  },
-
-  /**
-   * 恢复被人工审批中断的对话（流式响应）
-   * @param {string} agentId - 智能体ID
-   * @param {Object} data - 恢复数据 { thread_id, answer: { question_id: answer }, approved }
-   * @param {Object} options - 可选参数（signal, headers等）
-   * @returns {Promise} - 恢复响应流
-   */
-  resumeAgentChat: (threadId, data, options = {}) => {
-    const { signal, headers: extraHeaders, ...restOptions } = options || {}
-    const baseHeaders = {
-      'Content-Type': 'application/json',
-      ...useUserStore().getAuthHeaders()
-    }
-
-    return fetch(`/api/chat/thread/${threadId}/resume`, {
-      method: 'POST',
-      body: JSON.stringify(data),
-      signal,
-      headers: {
-        ...baseHeaders,
-        ...(extraHeaders || {})
-      },
-      ...restOptions
-    })
-  },
+  deleteAgent: (agentId) => apiDelete(`/api/agent/${agentId}`),
 
   /**
    * 创建异步运行任务（Run）
@@ -191,12 +99,16 @@ export const agentApi = {
    * @returns {Promise<Object>}
    */
   createAgentRun: (data) =>
-    apiPost('/api/chat/runs', {
+    apiPost('/api/agent/runs', {
       query: data.query,
-      agent_config_id: data.agent_config_id,
+      agent_id: data.agent_id,
       thread_id: data.thread_id,
       meta: data.meta || {},
-      image_content: data.image_content || null
+      image_content: data.image_content || null,
+      model_spec: data.model_spec || null,
+      resume: data.resume ?? null,
+      parent_run_id: data.parent_run_id || null,
+      resume_request_id: data.resume_request_id || null
     }),
 
   /**
@@ -204,41 +116,44 @@ export const agentApi = {
    * @param {string} runId - run ID
    * @returns {Promise<Object>}
    */
-  getAgentRun: (runId) => apiGet(`/api/chat/runs/${runId}`),
+  getAgentRun: (runId) => apiGet(`/api/agent/runs/${runId}`),
 
   /**
    * 取消 Run
    * @param {string} runId - run ID
    * @returns {Promise<Object>}
    */
-  cancelAgentRun: (runId) => apiPost(`/api/chat/runs/${runId}/cancel`, {}),
+  cancelAgentRun: (runId) => apiPost(`/api/agent/runs/${runId}/cancel`, {}),
 
   /**
    * 获取线程活跃 Run
    * @param {string} threadId - 线程ID
    * @returns {Promise<Object>}
    */
-  getThreadActiveRun: (threadId) => apiGet(`/api/chat/thread/${threadId}/active_run`),
+  getThreadActiveRun: (threadId) => apiGet(`/api/agent/thread/${threadId}/active_run`),
 
   /**
    * 打开 Run 事件 SSE 连接（调用方负责关闭）
    * @param {string} runId - run ID
-   * @param {string|number} afterSeq - 起始 seq/cursor
-   * @param {Object} options - { signal }
+   * @param {string} afterSeq - 起始 seq/cursor
+   * @param {Object} options - { signal, verbose }
    * @returns {Promise<Response>}
    */
-  streamAgentRunEvents: (runId, afterSeq = '0', options = {}) => {
-    const { signal } = options
-    return fetch(
-      `/api/chat/runs/${runId}/events?after_seq=${encodeURIComponent(String(afterSeq))}`,
-      {
-        method: 'GET',
-        headers: {
-          ...useUserStore().getAuthHeaders()
-        },
-        signal
-      }
-    )
+  streamAgentRunEvents: (runId, afterSeq = '0-0', options = {}) => {
+    const { signal, verbose = false } = options
+    const headers = {
+      ...useUserStore().getAuthHeaders()
+    }
+    const cursor = String(afterSeq || '0-0')
+    if (cursor && cursor !== '0-0') {
+      headers['Last-Event-ID'] = cursor
+    }
+    const params = new URLSearchParams({ verbose: String(verbose) })
+    return fetch(`/api/agent/runs/${runId}/events?${params.toString()}`, {
+      method: 'GET',
+      headers,
+      signal
+    })
   }
 }
 
@@ -391,6 +306,36 @@ export const threadApi = {
    */
   saveThreadArtifactToWorkspace: (threadId, path) =>
     apiPost(`/api/chat/thread/${threadId}/artifacts/save`, { path }),
+
+  /**
+   * 上传临时附件
+   * @param {File} file
+   * @returns {Promise}
+   */
+  uploadTmpAttachment: (file) => {
+    const formData = new FormData()
+    formData.append('file', file)
+    return apiRequest('/api/chat/attachments/tmp', {
+      method: 'POST',
+      body: formData
+    })
+  },
+
+  /**
+   * 解析临时附件
+   * @param {Object} payload
+   * @returns {Promise}
+   */
+  parseTmpAttachment: (payload) => apiPost('/api/chat/attachments/tmp/parse', payload),
+
+  /**
+   * 确认添加临时附件到线程
+   * @param {string} threadId
+   * @param {Array} attachments
+   * @returns {Promise}
+   */
+  confirmTmpThreadAttachments: (threadId, attachments) =>
+    apiPost(`/api/chat/thread/${threadId}/attachments/confirm`, { attachments }),
 
   /**
    * 上传附件

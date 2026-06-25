@@ -43,9 +43,6 @@ def get_langfuse_client() -> Langfuse | None:
     if not is_langfuse_enabled():
         return None
 
-    if Langfuse is None:
-        return None
-
     kwargs: dict[str, Any] = {
         "public_key": os.getenv("LANGFUSE_PUBLIC_KEY"),
         "secret_key": os.getenv("LANGFUSE_SECRET_KEY"),
@@ -68,11 +65,12 @@ def build_trace_metadata(
     agent_id: str,
     request_id: str,
     operation: str,
-    agent_config_id: int | None = None,
+    backend_id: str | None = None,
     message_type: str | None = None,
     username: str | None = None,
     login_user_id: str | None = None,
     department_id: int | str | None = None,
+    extra_metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     metadata: dict[str, Any] = {
         "langfuse_user_id": user_id,
@@ -85,8 +83,8 @@ def build_trace_metadata(
         "feature": "chat",
     }
 
-    if agent_config_id is not None:
-        metadata["agent_config_id"] = str(agent_config_id)
+    if backend_id:
+        metadata["backend_id"] = backend_id
     if message_type:
         metadata["message_type"] = message_type
     if username:
@@ -95,14 +93,25 @@ def build_trace_metadata(
         metadata["login_user_id"] = login_user_id
     if department_id is not None:
         metadata["department_id"] = str(department_id)
+    if extra_metadata:
+        metadata.update(extra_metadata)
 
     return metadata
 
 
-def build_trace_tags(*, agent_id: str, operation: str, message_type: str | None = None) -> list[str]:
+def build_trace_tags(
+    *,
+    agent_id: str,
+    operation: str,
+    message_type: str | None = None,
+    extra_tags: list[str] | None = None,
+) -> list[str]:
     tags = ["yuxi", "chat", operation, f"agent:{agent_id}"]
     if message_type:
         tags.append(f"message_type:{message_type}")
+    for tag in extra_tags or []:
+        if tag and tag not in tags:
+            tags.append(tag)
     return tags
 
 
@@ -113,11 +122,13 @@ def build_run_context(
     agent_id: str,
     request_id: str,
     operation: str,
-    agent_config_id: int | None = None,
+    backend_id: str | None = None,
     message_type: str | None = None,
     username: str | None = None,
     login_user_id: str | None = None,
     department_id: int | str | None = None,
+    extra_metadata: dict[str, Any] | None = None,
+    extra_tags: list[str] | None = None,
 ) -> LangfuseRunContext:
     metadata = build_trace_metadata(
         user_id=user_id,
@@ -125,13 +136,19 @@ def build_run_context(
         agent_id=agent_id,
         request_id=request_id,
         operation=operation,
-        agent_config_id=agent_config_id,
+        backend_id=backend_id,
         message_type=message_type,
         username=username,
         login_user_id=login_user_id,
         department_id=department_id,
+        extra_metadata=extra_metadata,
     )
-    tags = build_trace_tags(agent_id=agent_id, operation=operation, message_type=message_type)
+    tags = build_trace_tags(
+        agent_id=agent_id,
+        operation=operation,
+        message_type=message_type,
+        extra_tags=extra_tags,
+    )
 
     client = get_langfuse_client()
     if client is None or CallbackHandler is None:

@@ -37,7 +37,6 @@ export const useTaskerStore = defineStore('tasker', () => {
   const tasks = ref([])
   const loading = ref(false)
   const lastError = ref(null)
-  const isPolling = ref(false)
   const isDrawerOpen = ref(false)
   const summary = ref(createDefaultSummary())
   let pollingTimer = null
@@ -173,13 +172,8 @@ export const useTaskerStore = defineStore('tasker', () => {
     isDrawerOpen.value = false
   }
 
-  function toggleDrawer() {
-    isDrawerOpen.value = !isDrawerOpen.value
-  }
-
   function startPolling(interval = 5000) {
     if (pollingTimer) return
-    isPolling.value = true
     pollingTimer = setInterval(() => {
       loadTasks()
     }, interval)
@@ -190,7 +184,6 @@ export const useTaskerStore = defineStore('tasker', () => {
       clearInterval(pollingTimer)
       pollingTimer = null
     }
-    isPolling.value = false
   }
 
   function reset() {
@@ -205,15 +198,12 @@ export const useTaskerStore = defineStore('tasker', () => {
     isDrawerOpen,
     tasks,
     sortedTasks,
-    summary,
-    statusCounts,
     totalCount,
     successCount,
     failedCount,
     loading,
     lastError,
     activeCount,
-    isPolling,
     loadTasks,
     refreshTask,
     cancelTask,
@@ -223,7 +213,6 @@ export const useTaskerStore = defineStore('tasker', () => {
     stopPolling,
     reset,
     openDrawer,
-    closeDrawer,
-    toggleDrawer
+    closeDrawer
   }
 })

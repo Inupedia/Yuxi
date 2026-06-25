@@ -131,7 +131,9 @@ const copySvgAsPng = async (svgEl, btn) => {
     try {
       await navigator.clipboard.writeText(svgContent)
       console.log('PNG 复制失败，已回退复制 SVG 源码')
-    } catch {}
+    } catch (fallbackErr) {
+      console.error('复制 SVG 源码失败:', fallbackErr)
+    }
   } finally {
     URL.revokeObjectURL(url)
   }
@@ -155,7 +157,7 @@ const showCopiedFeedback = (btn) => {
   font-family:
     -apple-system, BlinkMacSystemFont, 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei',
     'Hiragino Sans GB', 'Source Han Sans CN', sans-serif;
-  font-size: 0.95rem;
+  font-size: 0.9rem;
   line-height: 1.75;
   word-break: break-word;
   padding: 0;
@@ -167,17 +169,17 @@ const showCopiedFeedback = (btn) => {
 
   h1,
   h2 {
-    font-size: 1.1rem;
+    font-size: 1rem;
   }
 
   h3,
   h4 {
-    font-size: 1.05rem;
+    font-size: 0.95rem;
   }
 
   h5,
   h6 {
-    font-size: 1rem;
+    font-size: 0.9rem;
   }
 
   strong {
@@ -238,11 +240,11 @@ const showCopiedFeedback = (btn) => {
 
   cite {
     position: relative;
-    margin-left: 4px;
+    margin: 0 4px;
     padding: 0 0.25rem;
     border-radius: 4px;
-    outline: 2px solid var(--gray-200);
-    background-color: var(--gray-200);
+    outline: 2px solid var(--gray-100);
+    background-color: var(--gray-100);
     color: var(--gray-800);
     font-size: 12px;
     font-style: normal;

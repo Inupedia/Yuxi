@@ -1,6 +1,6 @@
 import ipaddress
 import socket
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
 import httpx
 
@@ -93,19 +93,7 @@ async def fetch_url_content(url: str, max_size: int = MAX_DOWNLOAD_SIZE) -> tupl
                         if not location:
                             raise ValueError("Redirect response missing Location header")
 
-                        # Handle relative redirects
-                        if location.startswith("/"):
-                            parsed_current = urlparse(current_url)
-                            current_url = f"{parsed_current.scheme}://{parsed_current.netloc}{location}"
-                        elif not location.startswith("http"):
-                            # Handle relative path without /? or other weird cases, or assume absolute
-                            parsed_current = urlparse(current_url)
-                            # simple join
-                            from urllib.parse import urljoin
-
-                            current_url = urljoin(current_url, location)
-                        else:
-                            current_url = location
+                        current_url = urljoin(current_url, location)
 
                         # Validate the new URL
                         is_valid, error_msg = validate_url(current_url)

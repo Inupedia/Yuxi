@@ -15,7 +15,7 @@
         </a-select>
       </template>
       <template #actions>
-        <a-tooltip title="刷新工具">
+        <a-tooltip title="刷新工具" placement="bottom">
           <a-button class="lucide-icon-btn" :disabled="loading" @click="fetchTools">
             <RefreshCw :size="14" />
           </a-button>
@@ -30,11 +30,11 @@
     <ExtensionCardGrid v-else>
       <InfoCard
         v-for="tool in filteredTools"
-        :key="tool.id"
-        :title="tool.name"
-        :subtitle="tool.id"
+        :key="getToolSlug(tool)"
+        :title="formatExtensionCardTitle(tool.name)"
+        :subtitle="getToolSlug(tool)"
         :description="tool.description || '无描述'"
-        :default-icon="getToolIcon(tool.id) || WrenchIcon"
+        :default-icon="getToolIcon(getToolSlug(tool)) || WrenchIcon"
         :tags="toolTags(tool)"
         @click="selectTool(tool)"
       >
@@ -119,6 +119,7 @@ import { getToolIcon } from '@/components/ToolCallingResult/toolRegistry'
 import ExtensionCardGrid from './ExtensionCardGrid.vue'
 import InfoCard from '@/components/shared/InfoCard.vue'
 import PageShoulder from '@/components/shared/PageShoulder.vue'
+import { formatExtensionCardTitle } from '@/utils/extensionDisplayName'
 
 const WrenchIcon = Wrench
 
@@ -129,9 +130,11 @@ const tools = ref([])
 const currentTool = ref(null)
 const detailVisible = ref(false)
 
-const categories = ['buildin', 'mysql', 'debug']
-const categoryLabels = { buildin: '内置工具', mysql: 'MySQL', debug: '调试' }
-const categoryColors = { buildin: 'blue', mysql: 'green', debug: 'orange' }
+const categories = ['buildin', 'knowledge', 'mysql', 'debug']
+const categoryLabels = { buildin: '内置工具', knowledge: '知识库', mysql: 'MySQL', debug: '调试' }
+const categoryColors = { buildin: 'blue', knowledge: 'purple', mysql: 'green', debug: 'orange' }
+
+const getToolSlug = (tool) => tool?.slug || tool?.id || ''
 
 const toolTags = (tool) => {
   const tags = []
@@ -161,7 +164,7 @@ const filteredTools = computed(() => {
     result = result.filter(
       (t) =>
         t.name.toLowerCase().includes(q) ||
-        t.id.toLowerCase().includes(q) ||
+        getToolSlug(t).toLowerCase().includes(q) ||
         t.description?.toLowerCase().includes(q) ||
         t.config_guide?.toLowerCase().includes(q)
     )

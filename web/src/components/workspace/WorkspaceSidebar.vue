@@ -7,7 +7,7 @@
         :class="{ active: activeKey === 'personal' && !isQuickAccessPath(currentPath) }"
         @click="$emit('select-personal')"
       >
-        <FolderKanban :size="16" />
+        <FileTypeIcon is-dir folder-variant="personal" :size="18" />
         <span>个人工作区</span>
       </button>
     </section>
@@ -22,7 +22,7 @@
         }"
         @click="$emit('select-path', savedArtifactsPath)"
       >
-        <Archive :size="15" />
+        <FileTypeIcon is-dir folder-variant="favorite" :size="18" />
         <span>Saved Artifacts</span>
       </button>
       <button
@@ -31,41 +31,53 @@
         :class="{ active: activeKey === 'personal' && isSameOrChildPath(currentPath, agentsPath) }"
         @click="$emit('select-path', agentsPath)"
       >
-        <Bot :size="15" />
+        <FileTypeIcon is-dir folder-variant="agent" :size="18" />
         <span>Agents</span>
       </button>
     </section>
 
-    <section class="sidebar-section">
-      <div class="section-title">知识库</div>
+    <section v-if="myDatabases.length" class="sidebar-section">
+      <div class="section-title">我的知识库</div>
       <button
-        v-for="database in databases"
-        :key="database.db_id || database.id || database.name"
+        v-for="database in myDatabases"
+        :key="database.kb_id || database.id || database.name"
         type="button"
         class="workspace-nav-item secondary"
-        :class="{ active: activeKey === `database:${database.db_id}` }"
+        :class="{ active: activeKey === `database:${database.kb_id}` }"
         @click="$emit('select-database', database)"
       >
-        <LibraryBig :size="15" />
+        <FileTypeIcon is-dir folder-variant="knowledge" :size="18" />
         <span>{{ database.name }}</span>
       </button>
-      <div v-if="loadingDatabases" class="sidebar-muted">正在加载知识库...</div>
-      <div v-else-if="!databases.length" class="sidebar-muted">暂无可访问知识库</div>
     </section>
 
-    <section class="sidebar-section">
-      <div class="section-title">共享空间</div>
-      <button type="button" class="workspace-nav-item secondary disabled" disabled>
-        <UsersRound :size="15" />
-        <span>团队工作区</span>
-        <span class="soon-tag">即将支持</span>
+    <section v-if="sharedDatabases.length" class="sidebar-section">
+      <div class="section-title">共享知识库</div>
+      <button
+        v-for="database in sharedDatabases"
+        :key="database.kb_id || database.id || database.name"
+        type="button"
+        class="workspace-nav-item secondary"
+        :class="{ active: activeKey === `database:${database.kb_id}` }"
+        @click="$emit('select-database', database)"
+      >
+        <FileTypeIcon is-dir folder-variant="enterprise" :size="18" />
+        <span>{{ database.name }}</span>
       </button>
+    </section>
+
+    <section v-if="loadingDatabases" class="sidebar-section">
+      <div class="sidebar-muted">正在加载知识库...</div>
+    </section>
+    <section v-else-if="!databases.length" class="sidebar-section">
+      <div class="sidebar-muted">暂无可访问知识库</div>
     </section>
   </aside>
 </template>
 
 <script setup>
-import { Archive, Bot, FolderKanban, LibraryBig, UsersRound } from 'lucide-vue-next'
+import { computed } from 'vue'
+import FileTypeIcon from '@/components/common/FileTypeIcon.vue'
 
 const savedArtifactsPath = '/saved_artifacts'
 const agentsPath = '/agents/'
@@ -80,21 +92,30 @@ const isSameOrChildPath = (path, targetPath) => {
 const isQuickAccessPath = (path) =>
   quickAccessPaths.some((targetPath) => isSameOrChildPath(path, targetPath))
 
-defineProps({
+const props = defineProps({
   activeKey: { type: String, default: 'personal' },
   currentPath: { type: String, default: '/' },
   databases: { type: Array, default: () => [] },
-  loadingDatabases: { type: Boolean, default: false }
+  loadingDatabases: { type: Boolean, default: false },
+  currentUid: { type: String, default: '' }
 })
 
 defineEmits(['select-personal', 'select-database', 'select-path'])
+
+const myDatabases = computed(() =>
+  props.databases.filter((db) => db.created_by === props.currentUid)
+)
+
+const sharedDatabases = computed(() =>
+  props.databases.filter((db) => db.created_by !== props.currentUid)
+)
 </script>
 
 <style scoped lang="less">
 .workspace-sidebar {
   display: flex;
   flex-direction: column;
-  gap: 18px;
+  gap: 12px;
   min-width: 0;
   padding: 14px 10px;
   border-right: 1px solid var(--gray-100);
@@ -105,11 +126,11 @@ defineEmits(['select-personal', 'select-database', 'select-path'])
 .sidebar-section {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  // gap: 6px;
 }
 
 .section-title {
-  padding: 0 8px;
+  padding: 4px 8px;
   color: var(--gray-500);
   font-size: 12px;
   font-weight: 600;
@@ -154,18 +175,6 @@ defineEmits(['select-personal', 'select-database', 'select-path'])
     min-height: 32px;
     font-size: 13px;
   }
-
-  &.disabled {
-    color: var(--gray-400);
-    cursor: not-allowed;
-  }
-}
-
-.soon-tag {
-  flex: 0 0 auto;
-  margin-left: auto;
-  color: var(--gray-400);
-  font-size: 11px;
 }
 
 .sidebar-muted {

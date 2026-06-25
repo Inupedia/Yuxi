@@ -4,39 +4,48 @@
 
 日志添加规范（For Agent）:
 
-- 同一版本的多次功能更新时，应以功能为单位进行更新，比如之前添加了 A 功能的更新，在后续的更新中修复了因 A 功能引入的 bug，那么这个修复说明应该和 A 功能描述放在一起，而不是新增一条修复记录，功能更新同理。
-
 
 ### 看板
 
-- Langfuse 增加 self-host 模式支持，补齐私有化部署与配置说明（已支持 cloud，待调试）
-- 检索测试中，添加问答
-- 集成 Memory，基于 deepagents 的文件后端实现，需要考虑定位
-- Yuxi-cli 相关的功能，放在后续版本中实现（不是类似于编程助手，而是管理平台的工，等各个 router 接口优化之后）
-- 完善测试基准自动生成功能，目前的实现过于简单，无法覆盖实际需求
-- 完善 Skills 的环境变量注入
-- 拓宽检索的知识源，统一多知识源（channel），目前已知知识库/知识图谱/网页，可拓展：个人知识库、数据库、历史对话等
-    - 前置任务，多知识库并行检索（扩展 query_kb）
-    - 新增 query_keywords 工具，专门用于基于关键词命中的排序，也结合词频（和 BM25 的区别？）
-- 参考 AgenticRAG 方案扩展当前 Search 工具：基于知识库工具返回的 resource_id/file_id 改进 Search 返回递增文件序列 ID，完善 Find 与 Open 能力；Summary 暂缓
-- 评估，基于 Agent 的评估，这里应该是结合 Langfuse 实现
+**知识库**
+- [ ] office 组件预览，docx/pptx 可以转PDF，然后前端预览 <Badge text="v0.7.1" />
+- [ ] 知识库工具新增 query_keywords 工具，专门用于基于关键词命中的排序 <Badge text="v0.7.1" />
+- [ ] 调研将当前知识库映射为虚拟文件系统的可行性，先明确文件树映射、权限边界、内容读取与 Agent 工具调用形态，再决定是否实现
+- [ ] 增强知识库检索体验：增强 metadata、标签等
+- [ ] 新增基于 PaddleOCR 的解析器：接入 PaddleOCR-VL-1.6、PP-OCRv6、PP-StructureV3，并抽象共用基类复用相似的脚本调用、产物收集和配置处理
+- [x] 优化思维导图构建的接口设计，支持增量构建和更新
+- [ ] 个人工作区增加可检索能力（但是不做向量化） <Badge text="v0.7.1" />
+- [ ] Yuxi CLI 支持 `yuxi kb upload <DIR_PATH|FILE_PATH>`，将本地文件上传、解析并添加到已有知识库 Badge text="v0.7.1" /> <Badge type="warning" text="开发中" />
+
+
+**智能体**
+- [ ] 子智能体缺少异步的机制 <Badge text="v0.7.1" />
+- [ ] 子智能体缺少 steer 机制 <Badge text="v0.7.1" />
+- [ ] 子智能体的双向通信，缺少 ask_for_main_agent 的机制
+- [ ] 子智能体与子智能体的通信机制
+- [ ] 如何停掉一个子智能体、查看智能体的进度
+- [ ] 优化 Agent `read_file` 工具：至少对齐 DeepAgents 的读取行为
+- [ ] RAG 评估支持 Agent 模式 <Badge text="v0.7.1" />
+- [ ] 添加 Agent 独立调用接口，方便后续评估使用
+- [ ] 任务队列 <Badge text="v0.7.2" />
+
+**并发与分布式**
+- [ ] 提高 FastAPI 的并发能力
+
+**其他**
+- [ ] 历史对话新增分组（或者叫做项目）
+- [ ] 集成 Memory，基于 deepagents 的文件后端实现，需要考虑定位
+- [ ] 优化 Task 模块定位：区分真正的后台任务实体与进度条管理工具，重新定义任务中心/Tasker 的职责边界
+- [ ] 模型供应商类型继续补齐非 OpenAI 兼容适配，并清理不再支持的 provider type 字样 <Badge text="v0.7.1" />
+- [ ] 优化 Agent 向用户追问交互：支持较长文本回答输入，并在流式输出时保持聊天区跟随最新内容（[#753](https://github.com/xerrors/Yuxi/issues/753)）
+
+**仅设想**
+- [ ] Yuxi CLI 更多管理命令，放在后续版本中实现（不是类似于编程助手，而是管理平台工具，等各个 router 接口优化之后）
+
 
 ### Bugs
-- 目前的知识库的图片存在公开访问风险
-
-### BREAKING CHANGE（不兼容变更，0.7 版本再实现）
-- 将自定义provider 的实现逻辑，从文件移动到数据库中，并将相关处理代码，移出 config 文件，放到 provider 模块中
-- 已补充方案文档：`docs/vibe/2026-04-18-custom-provider-db-refactor-plan.md`，明确采用“provider 一行、models 放 JSON、移除 provider 默认模型”的落地方案
-- 优化知识库的 API 接口设计，使用 /{db_id}/xxx 的形式，整合 mindmap / eval 接口
-- 移除 v1 版本的 provider 统一接口，改为 v2 版本的 provider 模块接口
-
-
-
-## 版本记录
-
-### 0.6.3 开发记录
-
-<!-- 0.6.3 的内容请放在这里 -->
+- [ ] 目前的知识库的图片存在公开访问风险
+- [ ] 点开对话的时候要能够自动定位到尾部，而不是最开始。
 
 ---
 

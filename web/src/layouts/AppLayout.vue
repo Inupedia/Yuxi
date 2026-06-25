@@ -1,12 +1,11 @@
 <script setup>
-import { ref, reactive, onMounted, computed, provide, watch } from 'vue'
+import { ref, onMounted, computed, provide, watch } from 'vue'
 import { RouterLink, RouterView, useRoute, useRouter } from 'vue-router'
 import { GithubOutlined } from '@ant-design/icons-vue'
 import {
-  LibraryBig,
   BarChart3,
   ClipboardList,
-  Blocks,
+  LibraryBig,
   Box,
   FolderKanban,
   PanelLeftClose,
@@ -41,11 +40,6 @@ const { activeCount: activeCountRef, isDrawerOpen } = storeToRefs(taskerStore)
 const { threads, currentThreadId, hasMoreThreads, isLoadingMoreThreads } =
   storeToRefs(chatThreadsStore)
 
-const layoutSettings = reactive({
-  showDebug: false,
-  useTopBar: false // 是否使用顶栏
-})
-
 // Add state for GitHub stars
 const githubStars = ref(0)
 const isLoadingStars = ref(false)
@@ -55,11 +49,13 @@ const showDebugModal = ref(false)
 
 // Add state for settings modal
 const showSettingsModal = ref(false)
+const settingsInitialTab = ref('')
 
 const { sidebarCollapsed } = storeToRefs(chatUIStore)
 
 // Provide settings modal methods to child components
-const openSettingsModal = () => {
+const openSettingsModal = (tab) => {
+  settingsInitialTab.value = tab || (userStore.isAdmin ? 'base' : 'account')
   showSettingsModal.value = true
 }
 
@@ -116,13 +112,14 @@ const route = useRoute()
 const router = useRouter()
 
 const activeTaskCount = computed(() => activeCountRef.value || 0)
+const activeConversationThreadId = computed(() => {
+  return route.path.startsWith('/agent') ? currentThreadId.value : null
+})
 const organizationName = computed(() => {
   return infoStore.organization.name || infoStore.branding.name || 'Yuxi'
 })
 
 // 下面是导航菜单部分，添加智能体项
-const isLiteMode = import.meta.env.VITE_LITE_MODE === 'true'
-
 const mainList = computed(() => {
   const items = [
     {
@@ -130,7 +127,8 @@ const mainList = computed(() => {
       path: '/agent',
       icon: MessageCirclePlus,
       activeIcon: MessageCirclePlus,
-      action: true
+      action: true,
+      exactActive: true
     }
   ]
 
@@ -141,33 +139,24 @@ const mainList = computed(() => {
     activeIcon: FolderKanban
   })
 
-  if (userStore.isAdmin) {
-    if (!isLiteMode) {
-      items.push({
-        name: '知识库',
-        path: '/database',
-        activePaths: ['/database', '/graph'],
-        icon: LibraryBig,
-        activeIcon: LibraryBig
-      })
-    }
+  items.push({
+    name: '智能体扩展',
+    path: '/extensions',
+    activePaths: ['/extensions'],
+    icon: LibraryBig,
+    activeIcon: LibraryBig
+  })
 
-    items.push({
-      name: '扩展管理',
-      path: '/extensions',
-      icon: Blocks,
-      activeIcon: Blocks
-    })
+  items.push({
+    name: '智能体管理',
+    path: '/model-manage',
+    icon: Box,
+    activeIcon: Box
+  })
 
+  if (userStore.isSuperAdmin) {
     items.push({
-      name: '模型配置',
-      path: '/model-config',
-      icon: Box,
-      activeIcon: Box
-    })
-
-    items.push({
-      name: 'Dashboard',
+      name: '数据总览',
       path: '/dashboard',
       icon: BarChart3,
       activeIcon: BarChart3
@@ -179,6 +168,9 @@ const mainList = computed(() => {
 
 const isNavItemActive = (item) => {
   const activePaths = item.activePaths || [item.path]
+  if (item.exactActive) {
+    return activePaths.some((path) => route.path === path)
+  }
   return activePaths.some((path) => route.path === path || route.path.startsWith(`${path}/`))
 }
 
@@ -258,11 +250,8 @@ provide('settingsModal', {
 </script>
 
 <template>
-  <div
-    class="app-layout"
-    :class="{ 'use-top-bar': layoutSettings.useTopBar, 'sidebar-collapsed': sidebarCollapsed }"
-  >
-    <div class="header" :class="{ 'top-bar': layoutSettings.useTopBar }">
+  <div class="app-layout" :class="{ 'sidebar-collapsed': sidebarCollapsed }">
+    <div class="header">
       <div class="sidebar-brand" @click.stop>
         <router-link v-if="!sidebarCollapsed" to="/" class="brand-link">
           <img :src="infoStore.organization.avatar" class="brand-avatar" />
@@ -296,7 +285,7 @@ provide('settingsModal', {
           :to="item.path"
           v-show="!item.hidden"
           class="nav-item"
-          :class="{ active: !item.action && isNavItemActive(item), 'primary-action': item.action }"
+          :class="{ active: isNavItemActive(item) }"
           :active-class="item.action ? '' : 'active'"
           @click.stop
         >
@@ -315,7 +304,7 @@ provide('settingsModal', {
         <ConversationNavSection
           v-if="!sidebarCollapsed"
           class="sidebar-conversations"
-          :current-chat-id="currentThreadId"
+          :current-chat-id="activeConversationThreadId"
           :chats-list="threads"
           :has-more-chats="hasMoreThreads"
           :is-loading-more="isLoadingMoreThreads"
@@ -387,18 +376,22 @@ provide('settingsModal', {
       <DebugComponent />
     </a-modal>
     <TaskCenterDrawer v-if="userStore.isAdmin" />
-    <SettingsModal v-model:visible="showSettingsModal" @close="() => (showSettingsModal = false)" />
+    <SettingsModal
+      v-model:visible="showSettingsModal"
+      :initial-tab="settingsInitialTab"
+      @close="() => (showSettingsModal = false)"
+    />
   </div>
 </template>
 
 <style lang="less" scoped>
 // Less 变量定义
-@sidebar-width: 252px;
+@sidebar-width: 230px;
 @sidebar-collapsed-width: 56px;
 @sidebar-padding: 6px 8px;
 @sidebar-item-height: 36px;
 @sidebar-item-padding-x: 10px;
-@sidebar-icon-size: 18px;
+@sidebar-icon-size: 16px;
 
 .app-layout {
   display: flex;
@@ -412,7 +405,6 @@ div.header,
 #app-router-view {
   height: 100%;
   max-width: 100%;
-  user-select: none;
 }
 
 #app-router-view {
@@ -433,6 +425,7 @@ div.header,
   border-right: 1px solid var(--gray-100);
   padding: @sidebar-padding;
   overflow: hidden;
+  user-select: none;
   transition:
     width 0.18s ease,
     flex-basis 0.18s ease;
@@ -483,7 +476,7 @@ div.header,
     text-decoration: none;
     border: 0;
     background: transparent;
-    padding: 0 6px;
+    padding: 0 4px;
     cursor: pointer;
   }
 
@@ -645,17 +638,14 @@ div.header,
         margin-left: auto;
         overflow: hidden;
         font-size: 12px;
-        color: var(--gray-500);
+        color: var(--gray-600);
+        background-color: var(--gray-100);
+        padding: 2px 8px;
+        border-radius: 6px;
         white-space: nowrap;
         transition:
           opacity 0.12s ease,
           max-width 0.18s ease;
-
-        .star-icon {
-          color: var(--color-warning-500);
-          font-size: 12px;
-          margin-right: 2px;
-        }
 
         .star-count {
           font-weight: 600;
@@ -817,127 +807,6 @@ div.header,
         padding: 0;
         :deep(.user-info-actions) {
           display: none;
-        }
-      }
-    }
-  }
-}
-
-.app-layout.use-top-bar {
-  flex-direction: column;
-}
-
-.header.top-bar {
-  flex-direction: row;
-  flex: 0 0 50px;
-  width: 100%;
-  height: 50px;
-  border-right: none;
-  border-bottom: 1px solid var(--main-40);
-  background-color: var(--main-20);
-  padding: 0 20px;
-  gap: 24px;
-
-  .logo {
-    width: fit-content;
-    height: 28px;
-    margin-right: 16px;
-    display: flex;
-    align-items: center;
-
-    a {
-      display: flex;
-      align-items: center;
-      text-decoration: none;
-      color: inherit;
-    }
-
-    img {
-      width: 28px;
-      height: 28px;
-      margin-right: 8px;
-    }
-  }
-
-  .nav {
-    flex-direction: row;
-    height: auto;
-    gap: 20px;
-  }
-
-  .nav-item {
-    flex-direction: row;
-    width: auto;
-    padding: 4px 16px;
-    margin: 0;
-
-    .icon {
-      margin-right: 8px;
-      font-size: 15px; // 减小图标大小
-      border: none;
-      outline: none;
-
-      &:focus,
-      &:active {
-        border: none;
-        outline: none;
-      }
-    }
-
-    .text {
-      margin-top: 0;
-      font-size: 15px;
-    }
-
-    &.github {
-      padding: 8px 12px;
-
-      .icon {
-        margin-right: 0;
-        font-size: 18px;
-      }
-
-      &.active {
-        color: var(--main-color);
-      }
-
-      a {
-        display: flex;
-        align-items: center;
-      }
-
-      .github-stars {
-        display: flex;
-        align-items: center;
-        margin-left: 6px;
-
-        .star-icon {
-          color: var(--color-warning-500);
-          font-size: 14px;
-          margin-right: 2px;
-        }
-      }
-    }
-
-    &.theme-toggle-nav {
-      padding: 8px 12px;
-
-      .theme-toggle-icon {
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        color: var(--gray-1000);
-        transition: color 0.2s ease-in-out;
-        cursor: pointer;
-
-        &:hover {
-          color: var(--main-color);
-        }
-      }
-
-      &.active {
-        .theme-toggle-icon {
-          color: var(--main-color);
         }
       }
     }

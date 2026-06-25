@@ -1,4 +1,4 @@
-import { apiGet, apiPost, apiAdminGet, apiAdminPost, apiAdminPut, apiAdminDelete } from './base'
+import { apiGet, apiAdminGet, apiAdminPost, apiAdminPut, apiAdminDelete } from './base'
 
 /**
  * 系统管理API模块
@@ -14,13 +14,7 @@ export const healthApi = {
    * 系统健康检查（公开接口）
    * @returns {Promise} - 健康检查结果
    */
-  checkHealth: () => apiGet('/api/system/health', {}, false),
-
-  /**
-   * OCR服务健康检查
-   * @returns {Promise} - OCR服务健康状态
-   */
-  checkOcrHealth: async () => apiAdminGet('/api/system/health/ocr')
+  checkHealth: () => apiGet('/api/system/health', {}, false)
 }
 
 // =============================================================================
@@ -71,13 +65,7 @@ export const brandApi = {
    * 获取系统信息配置（公开接口）
    * @returns {Promise} - 系统信息配置
    */
-  getInfoConfig: () => apiGet('/api/system/info', {}, false),
-
-  /**
-   * 重新加载信息配置
-   * @returns {Promise} - 重新加载结果
-   */
-  reloadInfoConfig: async () => apiPost('/api/system/info/reload', {}, {}, false)
+  getInfoConfig: () => apiGet('/api/system/info', {}, false)
 }
 
 // =============================================================================
@@ -108,11 +96,7 @@ export const modelProviderApi = {
   },
 
   getV2Models: async (modelType = 'chat') => {
-    return apiAdminGet(`/api/system/model-providers/models/v2?model_type=${modelType}`)
-  },
-
-  getCacheStatus: async () => {
-    return apiAdminGet('/api/system/model-providers/models/cache-status')
+    return apiGet(`/api/system/model-providers/models/v2?model_type=${modelType}`)
   },
 
   refreshModelCache: async () => {

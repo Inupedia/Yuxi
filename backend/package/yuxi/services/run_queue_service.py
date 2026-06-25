@@ -8,22 +8,15 @@ import os
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 
+from yuxi.storage.redis import close_async_redis_client, create_arq_redis_pool, get_async_redis_client
 from yuxi.utils.logging_config import logger
 
-REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379/0")
 RUN_CANCEL_KEY_TTL_SECONDS = int(os.getenv("RUN_CANCEL_KEY_TTL_SECONDS", "1800"))
 RUN_EVENTS_STREAM_TTL_SECONDS = int(os.getenv("RUN_EVENTS_STREAM_TTL_SECONDS", "7200"))
 RUN_EVENTS_STREAM_MAXLEN = int(os.getenv("RUN_EVENTS_STREAM_MAXLEN", "0"))
 RUN_CANCEL_CHANNEL = os.getenv("RUN_CANCEL_CHANNEL", "run:cancel:ch")
 
-_redis_client = None
 _arq_pool = None
-
-
-def _redacted_redis_url(url: str) -> str:
-    if "@" in url:
-        return url.split("@", 1)[1]
-    return url
 
 
 def _cancel_key(run_id: str) -> str:
@@ -41,12 +34,9 @@ def _is_valid_stream_seq(value: str) -> bool:
     return major.isdigit() and minor.isdigit()
 
 
-def normalize_after_seq(after_seq: str | int | None) -> str:
+def normalize_after_seq(after_seq: str | None) -> str:
     """Normalize after_seq cursor to redis stream id format."""
     if after_seq is None:
-        return "0-0"
-
-    if isinstance(after_seq, int):
         return "0-0"
 
     text = str(after_seq).strip()
@@ -58,28 +48,34 @@ def normalize_after_seq(after_seq: str | int | None) -> str:
     return "0-0"
 
 
+def build_run_event_envelope(
+    *,
+    run_id: str,
+    event_type: str,
+    payload: dict | None = None,
+    thread_id: str | None = None,
+    created_at: str | None = None,
+) -> dict:
+    return {
+        "schema_version": 1,
+        "run_id": run_id,
+        "thread_id": thread_id,
+        "event": event_type,
+        "payload": payload or {},
+        "created_at": created_at or datetime.now(tz=UTC).isoformat(),
+    }
+
+
+def _payload_thread_id(payload: dict | None) -> str | None:
+    chunk = payload.get("chunk") if isinstance(payload, dict) else None
+    if not isinstance(chunk, dict):
+        return None
+    thread_id = chunk.get("thread_id")
+    return thread_id.strip() if isinstance(thread_id, str) and thread_id.strip() else None
+
+
 async def get_redis_client():
-    global _redis_client
-    if _redis_client is not None:
-        return _redis_client
-
-    try:
-        from redis.asyncio import Redis
-    except Exception as e:
-        raise RuntimeError("redis dependency is required for run queue") from e
-
-    redis = Redis.from_url(REDIS_URL, decode_responses=True)
-    try:
-        await redis.ping()
-    except Exception as e:
-        try:
-            await redis.aclose()
-        except Exception:
-            pass
-        raise RuntimeError(f"Redis connection failed ({_redacted_redis_url(REDIS_URL)}): {e}") from e
-
-    _redis_client = redis
-    return _redis_client
+    return await get_async_redis_client()
 
 
 async def get_arq_pool():
@@ -87,13 +83,7 @@ async def get_arq_pool():
     if _arq_pool is not None:
         return _arq_pool
 
-    try:
-        from arq.connections import RedisSettings, create_pool
-    except Exception as e:
-        raise RuntimeError("arq dependency is required for run queue") from e
-
-    settings = RedisSettings.from_dsn(REDIS_URL)
-    _arq_pool = await create_pool(settings)
+    _arq_pool = await create_arq_redis_pool()
     return _arq_pool
 
 
@@ -162,13 +152,22 @@ async def clear_cancel_signal(run_id: str) -> None:
         logger.warning(f"Failed to clear cancel signal for run {run_id}: {e}")
 
 
-async def append_run_stream_event(run_id: str, event_type: str, payload: dict) -> str:
+async def append_run_stream_event(run_id: str, event_type: str, payload: dict, *, thread_id: str | None = None) -> str:
     redis = await get_redis_client()
     key = _event_stream_key(run_id)
-    now_ms = int(datetime.now(tz=UTC).timestamp() * 1000)
+    now = datetime.now(tz=UTC)
+    now_ms = int(now.timestamp() * 1000)
+    event_thread_id = thread_id or _payload_thread_id(payload)
+    envelope = build_run_event_envelope(
+        run_id=run_id,
+        event_type=event_type,
+        payload=payload or {},
+        thread_id=event_thread_id,
+        created_at=now.isoformat(),
+    )
     fields = {
         "event_type": event_type,
-        "payload": json.dumps(payload or {}, ensure_ascii=False),
+        "payload": json.dumps(envelope, ensure_ascii=False),
         "ts": str(now_ms),
     }
 
@@ -190,7 +189,7 @@ async def list_run_stream_events(
 ) -> list[dict]:
     redis = await get_redis_client()
     key = _event_stream_key(run_id)
-    start = "-" if after_seq in {"0", "0-0", ""} else f"{after_seq}"
+    start = "-" if after_seq in {"0-0", ""} else f"({after_seq}"
     rows = await redis.xrange(key, min=start, max="+", count=limit)
     events = []
 
@@ -201,11 +200,22 @@ async def list_run_stream_events(
         except Exception:
             payload = {}
 
+        event_type = fields.get("event_type") or "message"
+        if not isinstance(payload, dict) or payload.get("schema_version") != 1:
+            payload = {
+                "schema_version": 1,
+                "run_id": run_id,
+                "thread_id": None,
+                "event": event_type,
+                "payload": payload if isinstance(payload, dict) else {},
+                "created_at": None,
+            }
+
         ts_value = fields.get("ts")
         events.append(
             {
                 "seq": str(event_id),
-                "event_type": fields.get("event_type") or "message",
+                "event_type": event_type,
                 "payload": payload,
                 "ts": int(ts_value) if ts_value else None,
             }
@@ -224,16 +234,11 @@ async def get_last_run_stream_seq(run_id: str) -> str:
 
 
 async def close_queue_clients() -> None:
-    global _redis_client, _arq_pool
+    global _arq_pool
     if _arq_pool is not None:
         try:
             await _arq_pool.close()
         except Exception:
             pass
         _arq_pool = None
-    if _redis_client is not None:
-        try:
-            await _redis_client.aclose()
-        except Exception:
-            pass
-        _redis_client = None
+    await close_async_redis_client()
