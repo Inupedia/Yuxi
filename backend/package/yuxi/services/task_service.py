@@ -12,6 +12,12 @@ from yuxi.utils.logging_config import logger
 
 TaskCoroutine = Callable[["TaskContext"], Awaitable[Any]]
 TERMINAL_STATUSES = {"success", "failed", "cancelled"}
+# 纯进度推进时，进度增量小于该阈值则只更新内存、不落库（前端读内存，不受影响）
+PROGRESS_PERSIST_DELTA = 2.0
+# 内存与数据库各保留最近多少条终态任务，超出的自动清理
+MAX_TERMINAL_TASKS = 200
+# 哨兵：区分「未传参」与「显式传入 None」，使 result/error 可被清空
+_UNSET: Any = object()
 
 
 def _iso_to_utc_naive(value: str | None) -> datetime | None:
@@ -67,9 +73,10 @@ class Task:
 
 
 class TaskContext:
-    def __init__(self, tasker: "Tasker", task_id: str):
+    def __init__(self, tasker: "Tasker", task_id: str, payload: dict[str, Any] | None = None):
         self._tasker = tasker
         self.task_id = task_id
+        self.payload = payload or {}
 
     async def set_progress(self, progress: float, message: str | None = None) -> None:
         await self._tasker._update_task(
@@ -101,6 +108,8 @@ class Tasker:
         self._workers: list[asyncio.Task[Any]] = []
         self._started = False
         self._repo = TaskRepository()
+        # 记录每个任务上次落库时的进度，用于进度节流
+        self._last_persisted_progress: dict[str, float] = {}
 
     async def start(self) -> None:
         async with self._lock:
@@ -140,6 +149,54 @@ class Tasker:
             await self._queue.put((task_id, coroutine))
         logger.info("Enqueued task {} ({})", task_id, name)
         return task
+
+    async def find_task_by_payload(
+        self,
+        *,
+        task_type: str,
+        payload_match: dict[str, Any],
+        statuses: set[str] | None = None,
+    ) -> Task | None:
+        async with self._lock:
+            return self._find_task_by_payload_locked(task_type, payload_match, statuses)
+
+    async def enqueue_unique_by_payload(
+        self,
+        *,
+        name: str,
+        task_type: str,
+        payload: dict[str, Any] | None = None,
+        coroutine: TaskCoroutine,
+        payload_match: dict[str, Any],
+        statuses: set[str] | None = None,
+    ) -> tuple[Task, bool]:
+        task_payload = payload or {}
+        async with self._lock:
+            existing = self._find_task_by_payload_locked(task_type, payload_match, statuses)
+            if existing:
+                return existing, False
+            task_id = uuid.uuid4().hex
+            task = Task(id=task_id, name=name, type=task_type, payload=task_payload)
+            self._tasks[task_id] = task
+            await self._persist_task(task)
+            await self._queue.put((task_id, coroutine))
+        logger.info("Enqueued task {} ({})", task.id, name)
+        return task, True
+
+    def _find_task_by_payload_locked(
+        self,
+        task_type: str,
+        payload_match: dict[str, Any],
+        statuses: set[str] | None,
+    ) -> Task | None:
+        for task in self._tasks.values():
+            if task.type != task_type:
+                continue
+            if statuses is not None and task.status not in statuses:
+                continue
+            if all(task.payload.get(key) == value for key, value in payload_match.items()):
+                return task
+        return None
 
     async def list_tasks(self, status: str | None = None, limit: int = 100) -> dict[str, Any]:
         async with self._lock:
@@ -191,6 +248,7 @@ class Tasker:
             if task_id not in self._tasks:
                 return False
             del self._tasks[task_id]
+            self._last_persisted_progress.pop(task_id, None)
         await self._repo.delete(task_id)
         logger.info("Deleted task {}", task_id)
         return True
@@ -209,7 +267,7 @@ class Tasker:
                     await self._update_task(
                         task_id, status="running", progress=0.0, message="任务开始执行", started_at=utc_isoformat()
                     )
-                    context = TaskContext(self, task_id)
+                    context = TaskContext(self, task_id, task.payload)
                     try:
                         result = await coroutine(context)
                         if task.cancel_requested:
@@ -237,6 +295,7 @@ class Tasker:
                         )
                 finally:
                     self._queue.task_done()
+                    await self._prune_terminal_tasks()
             except asyncio.CancelledError:
                 break
             except Exception as exc:  # noqa: BLE001
@@ -262,8 +321,8 @@ class Tasker:
         status: str | None = None,
         progress: float | None = None,
         message: str | None = None,
-        result: Any = None,
-        error: str | None = None,
+        result: Any = _UNSET,
+        error: Any = _UNSET,
         started_at: str | None = None,
         completed_at: str | None = None,
     ) -> None:
@@ -277,40 +336,71 @@ class Tasker:
                 task.progress = max(0.0, min(progress, 100.0))
             if message is not None:
                 task.message = message
-            if result is not None:
+            if result is not _UNSET:
                 task.result = result
-            if error is not None:
+            if error is not _UNSET:
                 task.error = error
             if started_at is not None:
                 task.started_at = started_at
             if completed_at is not None:
                 task.completed_at = completed_at
             task.updated_at = utc_isoformat()
+
+            # 仅进度推进的高频更新做节流；状态切换、结果、错误、起止时间一律立即落库
+            only_progress = (
+                status is None and result is _UNSET and error is _UNSET and started_at is None and completed_at is None
+            )
+            if only_progress:
+                last = self._last_persisted_progress.get(task_id)
+                if last is not None and abs(task.progress - last) < PROGRESS_PERSIST_DELTA:
+                    return
+            self._last_persisted_progress[task_id] = task.progress
             await self._persist_task(task)
 
     def _is_cancel_requested(self, task_id: str) -> bool:
         task = self._tasks.get(task_id)
         return bool(task and task.cancel_requested)
 
+    def _collect_stale_terminal_ids(self) -> list[str]:
+        """从内存中剔除超出保留上限的旧终态任务，返回需要从数据库删除的 id（调用方须持锁）。"""
+        terminal = [task for task in self._tasks.values() if task.status in TERMINAL_STATUSES]
+        if len(terminal) <= MAX_TERMINAL_TASKS:
+            return []
+        terminal.sort(key=lambda item: item.created_at or "", reverse=True)
+        stale = terminal[MAX_TERMINAL_TASKS:]
+        for task in stale:
+            self._tasks.pop(task.id, None)
+            self._last_persisted_progress.pop(task.id, None)
+        return [task.id for task in stale]
+
+    async def _prune_terminal_tasks(self) -> None:
+        async with self._lock:
+            stale_ids = self._collect_stale_terminal_ids()
+        for task_id in stale_ids:
+            await self._repo.delete(task_id)
+        if stale_ids:
+            logger.info("Pruned {} old terminal tasks", len(stale_ids))
+
     async def _load_state(self) -> None:
         records = await self._repo.list_all()
-        updated: list[Task] = []
+        interrupted = 0
         for record in records:
             task = Task.from_dict(record.to_dict())
-            if task.status == "running":
+            if task.status not in TERMINAL_STATUSES:
+                # 进程重启后内存队列已丢失，无法续跑，统一标记为失败
+                task.message = "服务重启时任务中断" if task.status == "running" else "服务重启时任务未继续执行"
                 task.status = "failed"
-                task.message = "服务重启时任务中断"
                 task.updated_at = utc_isoformat()
-                updated.append(task)
-            elif task.status not in TERMINAL_STATUSES:
-                task.status = "failed"
-                task.message = "服务重启时任务未继续执行"
-                task.updated_at = utc_isoformat()
-                updated.append(task)
-        for task in updated:
-            await self._persist_task(task)
-        if updated:
-            logger.info("Marked {} interrupted tasks as failed", len(updated))
+                await self._persist_task(task)
+                interrupted += 1
+            self._tasks[task.id] = task
+        if interrupted:
+            logger.info("Marked {} interrupted tasks as failed", interrupted)
+        stale_ids = self._collect_stale_terminal_ids()
+        for task_id in stale_ids:
+            await self._repo.delete(task_id)
+        if stale_ids:
+            logger.info("Pruned {} old terminal tasks on startup", len(stale_ids))
 
     async def _persist_task(self, task: Task) -> None:
         data: dict[str, Any] = {

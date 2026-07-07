@@ -17,7 +17,30 @@ export const getWorkspaceTree = (path = '/', recursive = false, filesOnly = fals
 
 export const getWorkspaceFileContent = (path) => {
   const query = buildQuery({ path })
-  return apiGet(`/api/workspace/file?${query}`)
+  return apiGet(`/api/workspace/file?${query}`, {}, true, 'blob')
+}
+
+export const getWorkspaceKnowledgeTree = (kbId, params = {}) => {
+  const query = buildQuery({
+    kb_id: kbId,
+    parent_id: params.parentId,
+    path_prefix: params.pathPrefix,
+    page: params.page,
+    page_size: params.pageSize,
+    recursive: params.recursive || false,
+    files_only: params.filesOnly || false
+  })
+  return apiGet(`/api/workspace/knowledge/tree?${query}`)
+}
+
+export const getWorkspaceKnowledgeFileContent = (kbId, fileId) => {
+  const query = buildQuery({ kb_id: kbId, file_id: fileId })
+  return apiGet(`/api/workspace/knowledge/file?${query}`, {}, true, 'blob')
+}
+
+export const downloadWorkspaceKnowledgeFile = (kbId, fileId, variant = 'original') => {
+  const query = buildQuery({ kb_id: kbId, file_id: fileId, variant })
+  return apiGet(`/api/workspace/knowledge/download?${query}`, {}, true, 'blob')
 }
 
 export const saveWorkspaceFileContent = (path, content) => {
@@ -36,10 +59,10 @@ export const createWorkspaceDirectory = (parentPath, name) => {
   })
 }
 
-export const uploadWorkspaceFile = (parentPath, file) => {
+export const uploadWorkspaceFiles = (parentPath, files) => {
   const formData = new FormData()
   formData.append('parent_path', parentPath)
-  formData.append('file', file)
+  files.forEach((file) => formData.append('files', file))
   return apiPost('/api/workspace/upload', formData)
 }
 

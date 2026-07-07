@@ -1,22 +1,12 @@
 <template>
   <div class="attachment-options">
-    <div class="option-item">
-      <label class="attachment-upload-label" :class="{ disabled: disabled }">
-        <input
-          ref="fileInputRef"
-          type="file"
-          multiple
-          :disabled="disabled"
-          @change="handleFileChange"
-          style="display: none"
-        />
-        <a-tooltip title="支持任意文件格式 ≤ 5 MB" placement="right">
-          <div class="option-content">
-            <FileText :size="14" class="option-icon" />
-            <span class="option-text">添加附件</span>
-          </div>
-        </a-tooltip>
-      </label>
+    <div class="option-item" :class="{ disabled: disabled }" @click="handleAttachmentClick">
+      <a-tooltip title="支持任意文件格式 ≤ 5 MB" placement="right">
+        <div class="option-content">
+          <FileText :size="14" class="option-icon" />
+          <span class="option-text">添加附件</span>
+        </div>
+      </a-tooltip>
     </div>
 
     <div class="option-item" @click="handleImageUpload">
@@ -31,12 +21,9 @@
 </template>
 
 <script setup>
-import { ref } from 'vue'
 import { FileText, Image } from 'lucide-vue-next'
 import { message } from 'ant-design-vue'
-import { multimodalApi } from '@/apis/agent_api'
-
-const fileInputRef = ref(null)
+import { uploadMultimodalImage } from '@/utils/multimodal_image_upload'
 
 const props = defineProps({
   disabled: {
@@ -47,14 +34,9 @@ const props = defineProps({
 
 const emit = defineEmits(['upload', 'upload-image', 'upload-image-success'])
 
-// 处理文件选择变化
-const handleFileChange = (event) => {
-  const files = event.target.files
-  if (files && files.length > 0) {
-    emit('upload', Array.from(files))
-  }
-  // 清空文件输入，允许重复选择同一文件
-  event.target.value = ''
+const handleAttachmentClick = () => {
+  if (props.disabled) return
+  emit('upload')
 }
 
 // 处理图片上传
@@ -85,50 +67,14 @@ const handleImageUpload = () => {
 // 处理图片上传逻辑
 const processImageUpload = async (file) => {
   try {
-    // 验证文件大小（10MB）
-    if (file.size > 10 * 1024 * 1024) {
-      message.error('图片文件过大，请选择小于10MB的图片')
-      return
-    }
+    const imageData = await uploadMultimodalImage(file)
+    if (!imageData) return
 
-    // 验证文件类型
-    if (!file.type.startsWith('image/')) {
-      message.error('请选择有效的图片文件')
-      return
-    }
+    // 发出上传成功事件，包含处理后的图片数据
+    emit('upload-image', imageData)
 
-    message.loading({ content: '正在处理图片...', key: 'image-upload' })
-
-    const result = await multimodalApi.uploadImage(file)
-
-    if (result.success) {
-      message.success({
-        content: '图片处理成功',
-        key: 'image-upload',
-        duration: 2
-      })
-
-      // 发出上传成功事件，包含处理后的图片数据
-      emit('upload-image', {
-        success: true,
-        imageContent: result.image_content,
-        thumbnailContent: result.thumbnail_content,
-        width: result.width,
-        height: result.height,
-        format: result.format,
-        mimeType: result.mime_type || file.type,
-        sizeBytes: result.size_bytes,
-        originalName: file.name
-      })
-
-      // 发出上传成功通知事件，用于关闭选项面板
-      emit('upload-image-success')
-    } else {
-      message.error({
-        content: `图片处理失败: ${result.error}`,
-        key: 'image-upload'
-      })
-    }
+    // 发出上传成功通知事件，用于关闭选项面板
+    emit('upload-image-success')
   } catch (error) {
     console.error('图片上传失败:', error)
     message.error({
@@ -184,20 +130,5 @@ const processImageUpload = async (file) => {
 
 .option-text {
   font-weight: 500;
-}
-
-.attachment-upload-label {
-  display: block;
-  width: 100%;
-  cursor: pointer;
-
-  &.disabled {
-    cursor: not-allowed;
-    opacity: 0.5;
-
-    .option-content {
-      color: var(--gray-400);
-    }
-  }
 }
 </style>

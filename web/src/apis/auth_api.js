@@ -2,6 +2,8 @@
  * 认证相关 API
  */
 
+import { apiAdminGet, apiGet, apiPost } from './base'
+
 async function parseErrorDetail(response, fallbackMessage) {
   const contentType = response.headers.get('content-type') || ''
 
@@ -49,7 +51,7 @@ async function getOIDCLoginUrl(redirectPath = '/') {
  *   token_type: string,
  *   user_id: number,
  *   username: string,
- *   user_id_login: string,
+ *   uid: string,
  *   phone_number: string | null,
  *   avatar: string | null,
  *   role: string,
@@ -57,6 +59,10 @@ async function getOIDCLoginUrl(redirectPath = '/') {
  *   department_name: string | null
  * }>}
  */
+async function getUserAccessOptions() {
+  return apiAdminGet('/api/auth/users/access-options')
+}
+
 async function exchangeOIDCCode(code) {
   const response = await fetch('/api/auth/oidc/exchange-code', {
     method: 'POST',
@@ -74,8 +80,21 @@ async function exchangeOIDCCode(code) {
   return response.json()
 }
 
+async function getCLIAuthSession(userCode) {
+  const encoded = encodeURIComponent(userCode)
+  return apiGet(`/api/auth/cli/sessions/${encoded}`)
+}
+
+async function approveCLIAuthSession(userCode) {
+  const encoded = encodeURIComponent(userCode)
+  return apiPost(`/api/auth/cli/sessions/${encoded}/approve`, {})
+}
+
 export const authApi = {
   getOIDCConfig,
   getOIDCLoginUrl,
-  exchangeOIDCCode
+  getUserAccessOptions,
+  exchangeOIDCCode,
+  getCLIAuthSession,
+  approveCLIAuthSession
 }

@@ -23,15 +23,16 @@ export function useAgentThreadState({
     if (!chatState.threadStates[threadId]) {
       chatState.threadStates[threadId] = {
         isStreaming: false,
-        streamAbortController: null,
         runStreamAbortController: null,
         activeRunId: null,
-        runLastSeq: '0',
+        runLastSeq: '0-0',
         lastRetryableJobTry: null,
         replyLoadingVisible: false,
         pendingRequestId: null,
+        pendingInterrupt: null,
         onGoingConv: createOnGoingConvState(),
-        agentState: null
+        agentState: null,
+        contextCompressing: false
       }
     }
     return chatState.threadStates[threadId]
@@ -39,17 +40,9 @@ export function useAgentThreadState({
 
   const stopThreadStream = (threadId) => {
     if (!threadId) return
-    const threadState = chatState.threadStates[threadId]
     if (typeof onStopThread === 'function') {
       onStopThread(threadId)
     }
-
-    if (!threadState?.streamAbortController) return
-
-    threadState.streamAbortController.abort()
-    threadState.streamAbortController = null
-    threadState.isStreaming = false
-    resetThreadUiState(threadState)
   }
 
   const cleanupThreadState = (threadId) => {
@@ -61,9 +54,6 @@ export function useAgentThreadState({
       onBeforeCleanupThread(threadId)
     }
 
-    if (threadState.streamAbortController) {
-      threadState.streamAbortController.abort()
-    }
     if (threadState.runStreamAbortController) {
       threadState.runStreamAbortController.abort()
     }
@@ -82,10 +72,6 @@ export function useAgentThreadState({
         onBeforeResetThread(targetThreadId)
       }
 
-      if (threadState.streamAbortController) {
-        threadState.streamAbortController.abort()
-        threadState.streamAbortController = null
-      }
       if (threadState.runStreamAbortController) {
         threadState.runStreamAbortController.abort()
         threadState.runStreamAbortController = null

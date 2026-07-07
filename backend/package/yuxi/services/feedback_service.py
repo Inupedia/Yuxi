@@ -1,8 +1,9 @@
-import traceback
+import asyncio
 
 from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from yuxi.services.langfuse_service import submit_user_feedback_score
 from yuxi.storage.postgres.models_business import Conversation, Message, MessageFeedback
 from yuxi.utils.logging_config import logger
 
@@ -13,7 +14,7 @@ async def submit_message_feedback_view(
     rating: str,
     reason: str | None,
     db: AsyncSession,
-    current_user_id: str,
+    current_uid: str,
 ) -> dict:
     if rating not in ["like", "dislike"]:
         raise HTTPException(status_code=422, detail="Rating must be 'like' or 'dislike'")
@@ -26,11 +27,11 @@ async def submit_message_feedback_view(
 
         conversation_result = await db.execute(select(Conversation).filter_by(id=message.conversation_id))
         conversation = conversation_result.scalar_one_or_none()
-        if not conversation or conversation.user_id != str(current_user_id):
+        if not conversation or conversation.uid != str(current_uid):
             raise HTTPException(status_code=403, detail="Access denied")
 
         existing_feedback_result = await db.execute(
-            select(MessageFeedback).filter_by(message_id=message_id, user_id=str(current_user_id))
+            select(MessageFeedback).filter_by(message_id=message_id, uid=str(current_uid))
         )
         existing_feedback = existing_feedback_result.scalar_one_or_none()
         if existing_feedback:
@@ -38,7 +39,7 @@ async def submit_message_feedback_view(
 
         new_feedback = MessageFeedback(
             message_id=message_id,
-            user_id=str(current_user_id),
+            uid=str(current_uid),
             rating=rating,
             reason=reason,
         )
@@ -47,7 +48,22 @@ async def submit_message_feedback_view(
         await db.commit()
         await db.refresh(new_feedback)
 
-        logger.info(f"User {current_user_id} submitted {rating} feedback for message {message_id}")
+        trace_id = (message.extra_metadata or {}).get("langfuse_trace_id")
+        if trace_id:
+            # submit_user_feedback_score 内部会同步调用 client.flush() 发起阻塞网络请求，
+            # 放到线程池执行避免阻塞事件循环；本地反馈已落库，上传失败不影响主流程。
+            await asyncio.to_thread(
+                submit_user_feedback_score,
+                trace_id=trace_id,
+                feedback_id=new_feedback.id,
+                message_id=new_feedback.message_id,
+                conversation_id=message.conversation_id,
+                uid=str(current_uid),
+                rating=rating,
+                reason=reason,
+            )
+
+        logger.info(f"User {current_uid} submitted {rating} feedback for message {message_id}")
 
         return {
             "id": new_feedback.id,
@@ -60,7 +76,7 @@ async def submit_message_feedback_view(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error submitting message feedback: {e}, {traceback.format_exc()}")
+        logger.exception(f"Error submitting message feedback: {e}")
         await db.rollback()
         raise HTTPException(status_code=500, detail=f"Failed to submit feedback: {str(e)}")
 
@@ -69,11 +85,11 @@ async def get_message_feedback_view(
     *,
     message_id: int,
     db: AsyncSession,
-    current_user_id: str,
+    current_uid: str,
 ) -> dict:
     try:
         feedback_result = await db.execute(
-            select(MessageFeedback).filter_by(message_id=message_id, user_id=str(current_user_id))
+            select(MessageFeedback).filter_by(message_id=message_id, uid=str(current_uid))
         )
         feedback = feedback_result.scalar_one_or_none()
 
@@ -91,5 +107,5 @@ async def get_message_feedback_view(
         }
 
     except Exception as e:
-        logger.error(f"Error getting message feedback: {e}")
+        logger.exception(f"Error getting message feedback: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to get feedback: {str(e)}")

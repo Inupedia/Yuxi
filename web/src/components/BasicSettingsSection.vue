@@ -48,23 +48,29 @@
               </div>
             </div>
           </div>
-        </template>
-        <div class="setting-row">
-          <div class="col-item">
-            <div class="setting-label">默认智能体</div>
-            <div class="setting-content">
-              <a-select
-                class="agent-select"
-                :value="agentStore.defaultAgentId"
-                :options="agentOptions"
-                :loading="isSettingDefaultAgent"
-                :disabled="isSettingDefaultAgent || !agentOptions.length"
-                placeholder="请选择默认智能体"
-                @change="handleDefaultAgentChange"
-              />
+          <div class="setting-row two-cols">
+            <div class="col-item">
+              <div class="setting-label">
+                {{ items?.default_ocr_engine?.des || '默认 OCR 解析引擎' }}
+              </div>
+              <div class="setting-content">
+                <a-select
+                  :value="configStore.config?.default_ocr_engine || 'rapid_ocr'"
+                  @change="handleChange('default_ocr_engine', $event)"
+                  class="full-width"
+                >
+                  <a-select-option
+                    v-for="option in ocrEngineOptions"
+                    :key="option.value"
+                    :value="option.value"
+                  >
+                    {{ option.label }}
+                  </a-select-option>
+                </a-select>
+              </div>
             </div>
           </div>
-        </div>
+        </template>
       </div>
 
       <template v-if="userStore.isSuperAdmin">
@@ -174,10 +180,8 @@
 </template>
 
 <script setup>
-import { computed, h, onMounted, ref } from 'vue'
-import { message } from 'ant-design-vue'
+import { computed, h } from 'vue'
 import { useConfigStore } from '@/stores/config'
-import { useAgentStore } from '@/stores/agent'
 import { useUserStore } from '@/stores/user'
 import { Globe } from 'lucide-vue-next'
 import ModelSelectorComponent from '@/components/ModelSelectorComponent.vue'
@@ -185,16 +189,18 @@ import EmbeddingModelSelector from '@/components/EmbeddingModelSelector.vue'
 import RerankModelSelector from '@/components/RerankModelSelector.vue'
 
 const configStore = useConfigStore()
-const agentStore = useAgentStore()
 const userStore = useUserStore()
 const items = computed(() => configStore.config?._config_items || {})
-const isSettingDefaultAgent = ref(false)
-const agentOptions = computed(() =>
-  (agentStore.agents || []).map((agent) => ({
-    label: agent.name || 'Unknown',
-    value: agent.id
-  }))
-)
+const ocrEngineOptions = [
+  { value: 'disable', label: '不启用' },
+  { value: 'rapid_ocr', label: 'RapidOCR (ONNX)' },
+  { value: 'mineru_ocr', label: 'MinerU OCR' },
+  { value: 'mineru_official', label: 'MinerU Official API' },
+  { value: 'pp_structure_v3_ocr', label: 'PP-Structure-V3' },
+  { value: 'deepseek_ocr', label: 'DeepSeek OCR' },
+  { value: 'paddleocr_vl_1_6', label: 'PaddleOCR-VL-1.6' },
+  { value: 'paddleocr_pp_ocrv6', label: 'PP-OCRv6' }
+]
 
 const handleChange = (key, e) => {
   configStore.setConfigValue(key, e)
@@ -218,30 +224,9 @@ const handleContentGuardModelSelect = (spec) => {
   }
 }
 
-const handleDefaultAgentChange = async (agentId) => {
-  if (!agentId || agentId === agentStore.defaultAgentId) return
-
-  isSettingDefaultAgent.value = true
-  try {
-    await agentStore.setDefaultAgent(agentId)
-    message.success('默认智能体已更新')
-  } finally {
-    isSettingDefaultAgent.value = false
-  }
-}
-
 const openLink = (url) => {
   window.open(url, '_blank')
 }
-
-onMounted(async () => {
-  if (!agentStore.agents.length) {
-    await agentStore.fetchAgents()
-  }
-  if (!agentStore.defaultAgentId) {
-    await agentStore.fetchDefaultAgent()
-  }
-})
 </script>
 
 <style lang="less" scoped>

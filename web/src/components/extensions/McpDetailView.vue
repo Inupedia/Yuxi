@@ -69,47 +69,22 @@
                       <h3>编辑 MCP</h3>
                       <p>修改后保存会立即更新当前 MCP 配置。</p>
                     </div>
-                    <div class="mode-slider" :class="{ 'is-json': formMode === 'json' }">
-                      <span class="mode-slider-thumb"></span>
-                      <button
-                        type="button"
-                        class="lucide-icon-btn mode-slider-btn"
-                        :class="{ active: formMode === 'form' }"
-                        title="表单模式"
-                        aria-label="切换到表单模式"
-                        @click="formMode = 'form'"
-                      >
-                        <Rows3 :size="14" />
-                      </button>
-                      <button
-                        type="button"
-                        class="lucide-icon-btn mode-slider-btn"
-                        :class="{ active: formMode === 'json' }"
-                        title="JSON 模式"
-                        aria-label="切换到 JSON 模式"
-                        @click="formMode = 'json'"
-                      >
-                        <Braces :size="14" />
-                      </button>
-                    </div>
                   </div>
 
-                  <a-form
-                    v-if="formMode === 'form'"
-                    layout="vertical"
-                    class="extension-form inline-edit-form"
-                  >
+                  <a-form layout="vertical" class="extension-form inline-edit-form">
                     <section class="form-section">
                       <div class="form-section-title">
                         <span>基础信息</span>
                         <small>定义 MCP 的名称、描述与展示方式。</small>
                       </div>
                       <div class="form-grid form-grid-three">
+                        <a-form-item label="MCP 标识" required class="form-item">
+                          <a-input v-model:value="editForm.slug" disabled />
+                        </a-form-item>
                         <a-form-item label="MCP 名称" required class="form-item">
                           <a-input
                             v-model:value="editForm.name"
-                            placeholder="请输入 MCP 名称（唯一标识）"
-                            disabled
+                            placeholder="请输入 MCP 展示名称"
                           />
                         </a-form-item>
                         <a-form-item label="传输类型" required class="form-item">
@@ -230,23 +205,6 @@
                       </template>
                     </section>
                   </a-form>
-
-                  <div v-else class="json-mode">
-                    <div class="json-mode-header">
-                      <span>JSON 配置</span>
-                      <small>适合批量调整完整 MCP 配置，保存前请确认 JSON 格式有效。</small>
-                    </div>
-                    <a-textarea
-                      v-model:value="jsonContent"
-                      :rows="15"
-                      placeholder="请输入 JSON 配置"
-                      class="json-textarea"
-                    />
-                    <div class="json-actions">
-                      <a-button size="small" @click="formatJson">格式化</a-button>
-                      <a-button size="small" @click="parseJsonToForm">解析到表单</a-button>
-                    </div>
-                  </div>
 
                   <div class="edit-panel-actions">
                     <a-button @click="cancelEdit" :disabled="editLoading" class="lucide-icon-btn">
@@ -459,9 +417,7 @@ import {
   Settings2,
   Wrench,
   Save,
-  X,
-  Rows3,
-  Braces
+  X
 } from 'lucide-vue-next'
 import { mcpApi } from '@/apis/mcp_api'
 import { formatFullDateTime } from '@/utils/time'
@@ -469,7 +425,7 @@ import McpEnvEditor from '@/components/McpEnvEditor.vue'
 
 const route = useRoute()
 const router = useRouter()
-const name = computed(() => decodeURIComponent(route.params.name))
+const slug = computed(() => decodeURIComponent(route.params.slug ?? route.params.name))
 
 const loading = ref(false)
 const server = ref(null)
@@ -484,10 +440,9 @@ const toggleToolLoading = ref(null)
 
 const isEditing = ref(false)
 const editLoading = ref(false)
-const formMode = ref('form')
-const jsonContent = ref('')
 
 const editForm = reactive({
+  slug: '',
   name: '',
   description: '',
   transport: 'streamable_http',
@@ -537,6 +492,7 @@ const getTransportColor = (transport) => {
 
 const resetEditForm = (data) => {
   Object.assign(editForm, {
+    slug: data?.slug || '',
     name: data?.name || '',
     description: data?.description || '',
     transport: data?.transport || 'streamable_http',
@@ -550,13 +506,11 @@ const resetEditForm = (data) => {
     tags: data?.tags || [],
     icon: data?.icon || ''
   })
-  jsonContent.value = data ? JSON.stringify(data, null, 2) : ''
 }
 
 const startEdit = () => {
   if (!server.value) return
   detailTab.value = 'general'
-  formMode.value = 'form'
   resetEditForm(server.value)
   isEditing.value = true
 }
@@ -566,36 +520,7 @@ const cancelEdit = () => {
   resetEditForm(server.value)
 }
 
-const formatJson = () => {
-  try {
-    const obj = JSON.parse(jsonContent.value)
-    jsonContent.value = JSON.stringify(obj, null, 2)
-  } catch {
-    message.error('JSON 格式错误，无法格式化')
-  }
-}
-
-const parseJsonToForm = () => {
-  try {
-    const obj = JSON.parse(jsonContent.value)
-    resetEditForm(obj)
-    formMode.value = 'form'
-    message.success('已解析到表单')
-  } catch {
-    message.error('JSON 格式错误')
-  }
-}
-
 const buildEditPayload = () => {
-  if (formMode.value === 'json') {
-    try {
-      return JSON.parse(jsonContent.value)
-    } catch {
-      message.error('JSON 格式错误')
-      return null
-    }
-  }
-
   let headers = null
   if (editForm.headersText.trim()) {
     try {
@@ -649,7 +574,7 @@ const handleSaveEdit = async () => {
 
   try {
     editLoading.value = true
-    const result = await mcpApi.updateMcpServer(server.value.name, data)
+    const result = await mcpApi.updateMcpServer(server.value.slug, data)
     if (result.success) {
       message.success('MCP 更新成功')
       isEditing.value = false
@@ -667,8 +592,14 @@ const handleSaveEdit = async () => {
 const fetchServer = async () => {
   try {
     loading.value = true
-    const result = await mcpApi.getMcpServer(name.value)
+    const result = await mcpApi.getMcpServer(slug.value)
     if (result.success) {
+      if (result.data?.enabled === false) {
+        server.value = null
+        message.info('请先添加 MCP 后再查看详情')
+        router.replace({ path: '/extensions', query: { tab: 'mcp' } })
+        return
+      }
       server.value = result.data
     } else {
       message.error(result.message || '获取 MCP 详情失败')
@@ -685,7 +616,7 @@ const fetchTools = async () => {
   try {
     toolsLoading.value = true
     toolsError.value = null
-    const result = await mcpApi.getMcpServerTools(server.value.name)
+    const result = await mcpApi.getMcpServerTools(server.value.slug)
     if (result.success) {
       tools.value = result.data || []
     } else {
@@ -704,7 +635,7 @@ const handleToggleTool = async (tool) => {
   if (!server.value) return
   try {
     toggleToolLoading.value = tool.name
-    const result = await mcpApi.toggleMcpServerTool(server.value.name, tool.name)
+    const result = await mcpApi.toggleMcpServerTool(server.value.slug, tool.name)
     if (result.success) {
       message.success(result.message)
       const targetTool = tools.value.find((t) => t.name === tool.name)
@@ -732,7 +663,7 @@ const handleTestServer = async () => {
   if (!server.value) return
   try {
     testLoading.value = server.value.name
-    const result = await mcpApi.testMcpServer(server.value.name)
+    const result = await mcpApi.testMcpServer(server.value.slug)
     if (result.success) {
       message.success(result.message)
     } else {
@@ -760,7 +691,7 @@ const handleDangerAction = async () => {
 
 const handleSetServerEnabled = async (srv, enabled) => {
   try {
-    const result = await mcpApi.updateMcpServerStatus(srv.name, enabled)
+    const result = await mcpApi.updateMcpServerStatus(srv.slug, enabled)
     if (result.success) {
       message.success(result.message || `MCP 已${enabled ? '添加' : '移除'}`)
       await fetchServer()
@@ -781,7 +712,7 @@ const confirmDeleteServer = (srv) => {
     cancelText: '取消',
     async onOk() {
       try {
-        const result = await mcpApi.deleteMcpServer(srv.name)
+        const result = await mcpApi.deleteMcpServer(srv.slug)
         if (result.success) {
           message.success('MCP 删除成功')
           router.push({ path: '/extensions', query: { tab: 'mcp' } })
@@ -840,56 +771,6 @@ onMounted(() => {
     }
   }
 
-  .mode-slider {
-    position: relative;
-    display: inline-grid;
-    grid-template-columns: 1fr 1fr;
-    width: 72px;
-    height: 32px;
-    padding: 3px;
-    border: 1px solid var(--gray-150);
-    border-radius: 8px;
-    background: var(--gray-50);
-    flex-shrink: 0;
-  }
-
-  .mode-slider-thumb {
-    position: absolute;
-    top: 3px;
-    left: 3px;
-    width: 32px;
-    height: 24px;
-    border-radius: 6px;
-    background: var(--gray-0);
-    box-shadow: 0 1px 4px rgba(15, 23, 42, 0.08);
-    transition: transform 0.18s ease;
-  }
-
-  .mode-slider.is-json .mode-slider-thumb {
-    transform: translateX(34px);
-  }
-
-  .mode-slider-btn {
-    position: relative;
-    z-index: 1;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 32px;
-    height: 24px;
-    padding: 0;
-    border: none;
-    border-radius: 6px;
-    background: transparent;
-    color: var(--gray-500);
-    cursor: pointer;
-    transition: color 0.15s ease;
-
-    &.active {
-      color: var(--main-color);
-    }
-  }
-
   .inline-edit-form {
     display: flex;
     flex-direction: column;
@@ -921,8 +802,7 @@ onMounted(() => {
     }
   }
 
-  .form-section-title,
-  .json-mode-header {
+  .form-section-title {
     display: flex;
     flex-direction: column;
     gap: 3px;
@@ -960,8 +840,7 @@ onMounted(() => {
     color: var(--gray-500);
   }
 
-  .config-textarea,
-  .json-textarea {
+  .config-textarea {
     font-family: @mono-font;
     font-size: 13px;
     line-height: 1.6;
@@ -969,18 +848,6 @@ onMounted(() => {
 
   .env-editor-shell {
     padding: 0;
-  }
-
-  .json-mode {
-    .json-mode-header {
-      margin-bottom: 14px;
-    }
-
-    .json-actions {
-      margin-top: 12px;
-      display: flex;
-      gap: 8px;
-    }
   }
 
   .edit-panel-actions {

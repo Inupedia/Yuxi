@@ -1,17 +1,17 @@
 <script setup>
-import { ref, reactive, onMounted, computed, provide, watch } from 'vue'
+import { ref, onMounted, computed, provide, watch } from 'vue'
 import { RouterLink, RouterView, useRoute, useRouter } from 'vue-router'
 import { GithubOutlined } from '@ant-design/icons-vue'
 import {
-  LibraryBig,
   BarChart3,
   ClipboardList,
-  Blocks,
+  LibraryBig,
   Box,
   FolderKanban,
   PanelLeftClose,
   PanelLeftOpen,
-  MessageCirclePlus
+  MessageCirclePlus,
+  Search
 } from 'lucide-vue-next'
 
 import { useConfigStore } from '@/stores/config'
@@ -28,6 +28,7 @@ import DebugComponent from '@/components/DebugComponent.vue'
 import TaskCenterDrawer from '@/components/TaskCenterDrawer.vue'
 import SettingsModal from '@/components/SettingsModal.vue'
 import ConversationNavSection from '@/components/ConversationNavSection.vue'
+import ConversationSearchModal from '@/components/ConversationSearchModal.vue'
 
 const configStore = useConfigStore()
 const agentStore = useAgentStore()
@@ -41,11 +42,6 @@ const { activeCount: activeCountRef, isDrawerOpen } = storeToRefs(taskerStore)
 const { threads, currentThreadId, hasMoreThreads, isLoadingMoreThreads } =
   storeToRefs(chatThreadsStore)
 
-const layoutSettings = reactive({
-  showDebug: false,
-  useTopBar: false // 是否使用顶栏
-})
-
 // Add state for GitHub stars
 const githubStars = ref(0)
 const isLoadingStars = ref(false)
@@ -55,11 +51,14 @@ const showDebugModal = ref(false)
 
 // Add state for settings modal
 const showSettingsModal = ref(false)
+const settingsInitialTab = ref('')
 
 const { sidebarCollapsed } = storeToRefs(chatUIStore)
+const conversationSearchOpen = ref(false)
 
 // Provide settings modal methods to child components
-const openSettingsModal = () => {
+const openSettingsModal = (tab) => {
+  settingsInitialTab.value = tab || (userStore.isAdmin ? 'base' : 'account')
   showSettingsModal.value = true
 }
 
@@ -69,7 +68,6 @@ const handleDebugModalClose = () => {
 }
 
 const getRemoteConfig = async () => {
-  if (!userStore.isAdmin) return
   try {
     await configStore.refreshConfig()
   } catch (error) {
@@ -104,9 +102,9 @@ onMounted(async () => {
   // 加载信息配置与知识库数据无依赖，可并行
   await Promise.all([infoStore.loadInfoConfig(), getRemoteDatabase()])
   await initAgentNavigation()
-  // 仅管理员加载系统配置和任务中心数据
+  await getRemoteConfig()
+  // 仅管理员加载任务中心数据
   if (userStore.isAdmin) {
-    await getRemoteConfig()
     taskerStore.loadTasks()
     fetchGithubStars() // Fetch GitHub stars on mount
   }
@@ -116,13 +114,14 @@ const route = useRoute()
 const router = useRouter()
 
 const activeTaskCount = computed(() => activeCountRef.value || 0)
+const activeConversationThreadId = computed(() => {
+  return route.path.startsWith('/agent') ? currentThreadId.value : null
+})
 const organizationName = computed(() => {
   return infoStore.organization.name || infoStore.branding.name || 'Yuxi'
 })
 
 // 下面是导航菜单部分，添加智能体项
-const isLiteMode = import.meta.env.VITE_LITE_MODE === 'true'
-
 const mainList = computed(() => {
   const items = [
     {
@@ -130,7 +129,8 @@ const mainList = computed(() => {
       path: '/agent',
       icon: MessageCirclePlus,
       activeIcon: MessageCirclePlus,
-      action: true
+      action: true,
+      exactActive: true
     }
   ]
 
@@ -141,33 +141,24 @@ const mainList = computed(() => {
     activeIcon: FolderKanban
   })
 
-  if (userStore.isAdmin) {
-    if (!isLiteMode) {
-      items.push({
-        name: '知识库',
-        path: '/database',
-        activePaths: ['/database', '/graph'],
-        icon: LibraryBig,
-        activeIcon: LibraryBig
-      })
-    }
+  items.push({
+    name: '智能体扩展',
+    path: '/extensions',
+    activePaths: ['/extensions'],
+    icon: LibraryBig,
+    activeIcon: LibraryBig
+  })
 
-    items.push({
-      name: '扩展管理',
-      path: '/extensions',
-      icon: Blocks,
-      activeIcon: Blocks
-    })
+  items.push({
+    name: '智能体管理',
+    path: '/model-manage',
+    icon: Box,
+    activeIcon: Box
+  })
 
+  if (userStore.isSuperAdmin) {
     items.push({
-      name: '模型配置',
-      path: '/model-config',
-      icon: Box,
-      activeIcon: Box
-    })
-
-    items.push({
-      name: 'Dashboard',
+      name: '数据总览',
       path: '/dashboard',
       icon: BarChart3,
       activeIcon: BarChart3
@@ -177,8 +168,14 @@ const mainList = computed(() => {
   return items
 })
 
+const primaryNavItem = computed(() => mainList.value[0] || null)
+const secondaryNavItems = computed(() => mainList.value.slice(1))
+
 const isNavItemActive = (item) => {
   const activePaths = item.activePaths || [item.path]
+  if (item.exactActive) {
+    return activePaths.some((path) => route.path === path)
+  }
   return activePaths.some((path) => route.path === path || route.path.startsWith(`${path}/`))
 }
 
@@ -188,6 +185,10 @@ const setSidebarCollapsed = (collapsed) => {
 
 const toggleSidebar = () => {
   setSidebarCollapsed(!sidebarCollapsed.value)
+}
+
+const openConversationSearch = () => {
+  conversationSearchOpen.value = true
 }
 
 const initAgentNavigation = async () => {
@@ -205,6 +206,21 @@ const handleSelectChat = (threadId) => {
   if (!threadId) return
   chatThreadsStore.setCurrentThreadId(threadId)
   router.push({ name: 'AgentCompWithThreadId', params: { thread_id: threadId } })
+}
+
+const handleSearchThreadFound = (thread) => {
+  chatThreadsStore.upsertThread(thread)
+}
+
+const handleSearchSelectThread = (thread) => {
+  if (!thread?.id) return
+  chatThreadsStore.upsertThread(thread)
+  handleSelectChat(thread.id)
+}
+
+const handleCreateConversationFromSearch = () => {
+  chatThreadsStore.setCurrentThreadId(null)
+  router.push({ name: 'AgentComp' })
 }
 
 const handleDeleteChat = async (threadId) => {
@@ -258,11 +274,8 @@ provide('settingsModal', {
 </script>
 
 <template>
-  <div
-    class="app-layout"
-    :class="{ 'use-top-bar': layoutSettings.useTopBar, 'sidebar-collapsed': sidebarCollapsed }"
-  >
-    <div class="header" :class="{ 'top-bar': layoutSettings.useTopBar }">
+  <div class="app-layout" :class="{ 'sidebar-collapsed': sidebarCollapsed }">
+    <div class="header">
       <div class="sidebar-brand" @click.stop>
         <router-link v-if="!sidebarCollapsed" to="/" class="brand-link">
           <img :src="infoStore.organization.avatar" class="brand-avatar" />
@@ -289,14 +302,47 @@ provide('settingsModal', {
         </button>
       </div>
       <div class="nav">
-        <!-- 使用mainList渲染导航项 -->
         <RouterLink
-          v-for="(item, index) in mainList"
+          v-if="primaryNavItem"
+          :to="primaryNavItem.path"
+          class="nav-item"
+          :class="{ active: isNavItemActive(primaryNavItem) }"
+          :active-class="primaryNavItem.action ? '' : 'active'"
+          @click.stop
+        >
+          <a-tooltip placement="right" :open="sidebarCollapsed ? undefined : false">
+            <template #title>{{ primaryNavItem.name }}</template>
+            <component
+              class="icon"
+              :is="
+                isNavItemActive(primaryNavItem) ? primaryNavItem.activeIcon : primaryNavItem.icon
+              "
+              size="18"
+            />
+          </a-tooltip>
+          <span class="nav-text">{{ primaryNavItem.name }}</span>
+        </RouterLink>
+
+        <button
+          type="button"
+          class="nav-item"
+          :class="{ active: conversationSearchOpen }"
+          @click.stop="openConversationSearch"
+        >
+          <a-tooltip placement="right" :open="sidebarCollapsed ? undefined : false">
+            <template #title>搜索对话</template>
+            <Search class="icon" size="18" />
+          </a-tooltip>
+          <span class="nav-text">搜索对话</span>
+        </button>
+
+        <RouterLink
+          v-for="(item, index) in secondaryNavItems"
           :key="index"
           :to="item.path"
           v-show="!item.hidden"
           class="nav-item"
-          :class="{ active: !item.action && isNavItemActive(item), 'primary-action': item.action }"
+          :class="{ active: isNavItemActive(item) }"
           :active-class="item.action ? '' : 'active'"
           @click.stop
         >
@@ -315,7 +361,7 @@ provide('settingsModal', {
         <ConversationNavSection
           v-if="!sidebarCollapsed"
           class="sidebar-conversations"
-          :current-chat-id="currentThreadId"
+          :current-chat-id="activeConversationThreadId"
           :chats-list="threads"
           :has-more-chats="hasMoreThreads"
           :is-loading-more="isLoadingMoreThreads"
@@ -373,6 +419,14 @@ provide('settingsModal', {
       <component :is="Component" v-else />
     </router-view>
 
+    <ConversationSearchModal
+      v-model:open="conversationSearchOpen"
+      :recent-threads="threads"
+      @select-thread="handleSearchSelectThread"
+      @create-thread="handleCreateConversationFromSearch"
+      @thread-found="handleSearchThreadFound"
+    />
+
     <!-- Debug Modal -->
     <a-modal
       v-model:open="showDebugModal"
@@ -387,18 +441,38 @@ provide('settingsModal', {
       <DebugComponent />
     </a-modal>
     <TaskCenterDrawer v-if="userStore.isAdmin" />
-    <SettingsModal v-model:visible="showSettingsModal" @close="() => (showSettingsModal = false)" />
+    <SettingsModal
+      v-model:visible="showSettingsModal"
+      :initial-tab="settingsInitialTab"
+      @close="() => (showSettingsModal = false)"
+    />
   </div>
 </template>
 
 <style lang="less" scoped>
 // Less 变量定义
-@sidebar-width: 252px;
+@sidebar-width: 230px;
 @sidebar-collapsed-width: 56px;
-@sidebar-padding: 6px 8px;
-@sidebar-item-height: 36px;
+@sidebar-padding-y: 6px;
+@sidebar-padding-x: 8px;
+@sidebar-padding: @sidebar-padding-y @sidebar-padding-x;
+@sidebar-border-width: 1px;
+@sidebar-item-height: 32px;
 @sidebar-item-padding-x: 10px;
-@sidebar-icon-size: 18px;
+@sidebar-icon-size: 16px;
+@brand-avatar-size: 28px;
+@sidebar-collapsed-content-width: @sidebar-collapsed-width - (2 * @sidebar-padding-x) -
+  @sidebar-border-width;
+@sidebar-collapsed-icon-padding-x: (
+  (@sidebar-collapsed-content-width - @sidebar-icon-size - (2 * @sidebar-border-width)) / 2
+);
+@sidebar-collapsed-avatar-padding-x: (
+  (@sidebar-collapsed-content-width - @sidebar-item-height - (2 * @sidebar-border-width)) / 2
+);
+@sidebar-collapsed-brand-padding-x: ((@sidebar-collapsed-content-width - @brand-avatar-size) / 2);
+@sidebar-collapsed-brand-icon-padding-x: (
+  (@sidebar-collapsed-content-width - @sidebar-icon-size) / 2
+);
 
 .app-layout {
   display: flex;
@@ -412,7 +486,6 @@ div.header,
 #app-router-view {
   height: 100%;
   max-width: 100%;
-  user-select: none;
 }
 
 #app-router-view {
@@ -433,6 +506,7 @@ div.header,
   border-right: 1px solid var(--gray-100);
   padding: @sidebar-padding;
   overflow: hidden;
+  user-select: none;
   transition:
     width 0.18s ease,
     flex-basis 0.18s ease;
@@ -483,14 +557,14 @@ div.header,
     text-decoration: none;
     border: 0;
     background: transparent;
-    padding: 0 6px;
+    padding: 0 4px;
     cursor: pointer;
   }
 
   .brand-avatar {
-    flex: 0 0 28px;
-    width: 28px;
-    height: 28px;
+    flex: 0 0 @brand-avatar-size;
+    width: @brand-avatar-size;
+    height: @brand-avatar-size;
     border-radius: 6px;
     object-fit: cover;
   }
@@ -645,17 +719,14 @@ div.header,
         margin-left: auto;
         overflow: hidden;
         font-size: 12px;
-        color: var(--gray-500);
+        color: var(--gray-600);
+        background-color: var(--gray-100);
+        padding: 2px 8px;
+        border-radius: 6px;
         white-space: nowrap;
         transition:
           opacity 0.12s ease,
           max-width 0.18s ease;
-
-        .star-icon {
-          color: var(--color-warning-500);
-          font-size: 12px;
-          margin-right: 2px;
-        }
 
         .star-count {
           font-weight: 600;
@@ -761,14 +832,19 @@ div.header,
     }
 
     .brand-expand-button {
-      flex: 0 0 @sidebar-item-height;
-      justify-content: center;
-      width: @sidebar-item-height;
-      padding: 0 6px;
+      flex: 0 0 100%;
+      justify-content: flex-start;
+      width: 100%;
+      padding: 0;
       border-radius: 8px;
+
+      .brand-avatar-image {
+        margin-left: @sidebar-collapsed-brand-padding-x;
+      }
 
       .brand-expand-icon {
         display: none;
+        margin-left: @sidebar-collapsed-brand-icon-padding-x;
         width: @sidebar-icon-size;
         height: @sidebar-icon-size;
         color: var(--main-color);
@@ -796,8 +872,8 @@ div.header,
 
     .nav-item {
       justify-content: flex-start;
-      width: @sidebar-item-height;
-      padding: 0 10px;
+      width: 100%;
+      padding: 0 @sidebar-collapsed-icon-padding-x;
 
       .nav-text,
       .github-stars {
@@ -814,130 +890,15 @@ div.header,
       }
 
       &.user-info {
-        padding: 0;
+        padding: 0 @sidebar-collapsed-avatar-padding-x;
+
+        :deep(.user-info-component),
+        :deep(.user-info-dropdown) {
+          justify-content: flex-start;
+        }
+
         :deep(.user-info-actions) {
           display: none;
-        }
-      }
-    }
-  }
-}
-
-.app-layout.use-top-bar {
-  flex-direction: column;
-}
-
-.header.top-bar {
-  flex-direction: row;
-  flex: 0 0 50px;
-  width: 100%;
-  height: 50px;
-  border-right: none;
-  border-bottom: 1px solid var(--main-40);
-  background-color: var(--main-20);
-  padding: 0 20px;
-  gap: 24px;
-
-  .logo {
-    width: fit-content;
-    height: 28px;
-    margin-right: 16px;
-    display: flex;
-    align-items: center;
-
-    a {
-      display: flex;
-      align-items: center;
-      text-decoration: none;
-      color: inherit;
-    }
-
-    img {
-      width: 28px;
-      height: 28px;
-      margin-right: 8px;
-    }
-  }
-
-  .nav {
-    flex-direction: row;
-    height: auto;
-    gap: 20px;
-  }
-
-  .nav-item {
-    flex-direction: row;
-    width: auto;
-    padding: 4px 16px;
-    margin: 0;
-
-    .icon {
-      margin-right: 8px;
-      font-size: 15px; // 减小图标大小
-      border: none;
-      outline: none;
-
-      &:focus,
-      &:active {
-        border: none;
-        outline: none;
-      }
-    }
-
-    .text {
-      margin-top: 0;
-      font-size: 15px;
-    }
-
-    &.github {
-      padding: 8px 12px;
-
-      .icon {
-        margin-right: 0;
-        font-size: 18px;
-      }
-
-      &.active {
-        color: var(--main-color);
-      }
-
-      a {
-        display: flex;
-        align-items: center;
-      }
-
-      .github-stars {
-        display: flex;
-        align-items: center;
-        margin-left: 6px;
-
-        .star-icon {
-          color: var(--color-warning-500);
-          font-size: 14px;
-          margin-right: 2px;
-        }
-      }
-    }
-
-    &.theme-toggle-nav {
-      padding: 8px 12px;
-
-      .theme-toggle-icon {
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        color: var(--gray-1000);
-        transition: color 0.2s ease-in-out;
-        cursor: pointer;
-
-        &:hover {
-          color: var(--main-color);
-        }
-      }
-
-      &.active {
-        .theme-toggle-icon {
-          color: var(--main-color);
         }
       }
     }

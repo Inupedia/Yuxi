@@ -114,13 +114,13 @@ echo "========================="
 
 # List of Docker images to pull
 images=(
-    "python:3.12-slim"
+    "python:3.13-slim"
     "node:24-slim"
     "node:24-alpine"
     "milvusdb/milvus:v2.5.6"
     "neo4j:5.26"
     "minio/minio:RELEASE.2023-03-20T20-16-18Z"
-    "ghcr.io/astral-sh/uv:0.7.2"
+    "ghcr.io/astral-sh/uv:0.11.26"
     "nginx:alpine"
     "quay.io/coreos/etcd:v3.5.5"
     "postgres:16"
@@ -137,6 +137,10 @@ for image in "${images[@]}"; do
         exit 1
     fi
 done
+
+echo "🔄 Pulling enterprise-public-cn-beijing.cr.volces.com/vefaas-public/all-in-one-sandbox:latest..."
+docker pull enterprise-public-cn-beijing.cr.volces.com/vefaas-public/all-in-one-sandbox:latest
+echo "✅ Successfully pulled enterprise-public-cn-beijing.cr.volces.com/vefaas-public/all-in-one-sandbox:latest"
 
 echo ""
 echo "🎉 Initialization complete!"

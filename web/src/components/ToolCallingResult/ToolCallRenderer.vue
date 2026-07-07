@@ -23,15 +23,18 @@ import WebSearchTool from './tools/WebSearchTool.vue'
 import ListKbsTool from './tools/ListKbsTool.vue'
 import GetMindmapTool from './tools/GetMindmapTool.vue'
 import QueryKbTool from './tools/QueryKbTool.vue'
-import KnowledgeGraphTool from './tools/KnowledgeGraphTool.vue'
+import FindKbDocumentTool from './tools/FindKbDocumentTool.vue'
+import OpenKbDocumentTool from './tools/OpenKbDocumentTool.vue'
 import CalculatorTool from './tools/CalculatorTool.vue'
 import TodoListTool from './tools/TodoListTool.vue'
 import TaskTool from './tools/TaskTool.vue'
+import SubagentLifecycleTool from './tools/SubagentLifecycleTool.vue'
 import ImageTool from './tools/ImageTool.vue'
 import WriteFileTool from './tools/WriteFileTool.vue'
 import ReadFileTool from './tools/ReadFileTool.vue'
 import ListDirectoryTool from './tools/ListDirectoryTool.vue'
 import SearchFileContentTool from './tools/SearchFileContentTool.vue'
+import SearchFileTool from './tools/SearchFileTool.vue'
 import GrepTool from './tools/GrepTool.vue'
 import GlobTool from './tools/GlobTool.vue'
 import EditFileTool from './tools/EditFileTool.vue'
@@ -40,7 +43,8 @@ import MysqlDescribeTableTool from './tools/MysqlDescribeTableTool.vue'
 import MysqlListTablesTool from './tools/MysqlListTablesTool.vue'
 import AskUserQuestionTool from './tools/AskUserQuestionTool.vue'
 import ExecuteTool from './tools/ExecuteTool.vue'
-import { getToolCallId, HIDDEN_TOOL_CALL_IDS } from './toolRegistry'
+import OcrParseFileTool from './tools/OcrParseFileTool.vue'
+import { getToolCallId, isHiddenToolCall } from './toolRegistry'
 
 const props = defineProps({
   toolCall: {
@@ -66,6 +70,7 @@ const TOOL_RENDERERS = {
   cmd: ExecuteTool,
   edit_file: EditFileTool,
   execute: ExecuteTool,
+  find_kb_document: FindKbDocumentTool,
   get_mindmap: GetMindmapTool,
   glob: GlobTool,
   grep: GrepTool,
@@ -75,12 +80,19 @@ const TOOL_RENDERERS = {
   mysql_describe_table: MysqlDescribeTableTool,
   mysql_list_tables: MysqlListTablesTool,
   mysql_query: MysqlQueryTool,
+  ocr_parse_file: OcrParseFileTool,
+  open_kb_document: OpenKbDocumentTool,
   query_kb: QueryKbTool,
-  query_knowledge_graph: KnowledgeGraphTool,
   read_file: ReadFileTool,
   replace: EditFileTool,
   run_shell_command: ExecuteTool,
+  search_file: SearchFileTool,
   search_file_content: SearchFileContentTool,
+  subagent_await: SubagentLifecycleTool,
+  subagent_cancel: SubagentLifecycleTool,
+  subagent_events: SubagentLifecycleTool,
+  subagent_start: SubagentLifecycleTool,
+  subagent_status: SubagentLifecycleTool,
   task: TaskTool,
   tavily_search: WebSearchTool,
   text_to_img_qwen_image: ImageTool,
@@ -89,7 +101,7 @@ const TOOL_RENDERERS = {
 }
 
 const currentRenderer = computed(() => TOOL_RENDERERS[toolId.value] || null)
-const isHidden = computed(() => HIDDEN_TOOL_CALL_IDS.includes(toolId.value))
+const isHidden = computed(() => isHiddenToolCall(props.toolCall))
 
 const toolRendererRef = ref(null)
 const refreshGraph = () => {

@@ -2,10 +2,19 @@
   <div class="workspace-view layout-container">
     <PageHeader title="工作区" :loading="loadingTree || loadingPreview" :show-border="true">
       <template #actions>
+        <a-button
+          v-if="isAgentsWorkspacePath"
+          class="lucide-icon-btn"
+          @click="openAgentsGuideModal"
+        >
+          <template #icon><CircleHelp :size="16" /></template>
+          使用说明
+        </a-button>
         <a-button :disabled="activeSourceKey !== 'personal'" @click="openCreateDirectoryModal">
           新建文件夹
         </a-button>
         <a-button
+          type="primary"
           :loading="uploadingFile"
           :disabled="activeSourceKey !== 'personal'"
           @click="openUploadFilePicker"
@@ -19,6 +28,7 @@
       ref="uploadInputRef"
       class="upload-input"
       type="file"
+      multiple
       @change="handleUploadInputChange"
     />
 
@@ -37,6 +47,7 @@
           :current-path="currentPath"
           :databases="databases"
           :loading-databases="loadingDatabases"
+          :current-uid="userStore.uid"
           @select-personal="selectPersonalWorkspace"
           @select-database="selectDatabase"
           @select-path="selectWorkspacePath"
@@ -58,22 +69,27 @@
         :class="{ 'is-inline-preview': showInlinePreview }"
         :style="workspaceMainStyle"
       >
-        <template v-if="activeSourceKey === 'personal'">
+        <template v-if="activeSourceKey === 'personal' || selectedDatabase">
           <WorkspaceFileList
-            :entries="filteredEntries"
+            :entries="entries"
             :current-path="currentPath"
             :selected-path="selectedEntry?.path || ''"
             :selected-paths="selectedPaths"
             :deleting-paths="deletingPaths"
             :selection-mode="selectionMode"
             :loading="loadingTree"
+            :readonly="isKnowledgeSource"
+            :root-label="selectedDatabase?.name || '工作区'"
+            :breadcrumb-items="isKnowledgeSource ? knowledgeBreadcrumbItems : null"
+            :pagination="isKnowledgeSource ? knowledgePagination : null"
             @select-entry="handleSelectEntry"
-            @select-path="selectWorkspacePath"
+            @breadcrumb-click="handleListBreadcrumbClick"
             @update:selected-paths="selectedPaths = $event"
             @update:selection-mode="handleSelectionModeChange"
             @delete-selected="confirmDeleteEntries(selectedEntries)"
             @delete-entry="(entry) => confirmDeleteEntries([entry])"
             @download-entry="downloadEntry"
+            @page-change="handleKnowledgePageChange"
           />
           <div
             v-if="showInlinePreview"
@@ -86,9 +102,9 @@
           <WorkspacePreviewPane
             v-if="showInlinePreview"
             :file="previewFile"
-            :file-path="selectedEntry?.path || ''"
+            :file-path="selectedPreviewPath"
             :loading="loadingPreview"
-            :editable="true"
+            :editable="!isKnowledgeSource"
             :saving="savingPreviewFile"
             @close="closePreview"
             @save="handleSavePreviewFile"
@@ -97,8 +113,8 @@
 
         <div v-else class="workspace-placeholder">
           <LibraryBig :size="32" />
-          <h2>{{ selectedDatabase?.name || '知识库' }}</h2>
-          <p>当前版本仅展示可访问知识库到列表级别，知识库文件浏览后续支持。</p>
+          <h2>知识库</h2>
+          <p>请选择一个可访问知识库以浏览文件。</p>
         </div>
       </main>
     </div>
@@ -120,10 +136,41 @@
     </a-modal>
 
     <a-modal
+      v-model:open="agentsGuideModalVisible"
+      title="Agents 目录说明"
+      okText="我知道了"
+      :cancelButtonProps="{ style: { display: 'none' } }"
+      @ok="closeAgentsGuideModal"
+    >
+      <div class="agents-guide-content">
+        <p>
+          这个文件夹中的说明文件会在合适的时机注入到 Agent
+          的执行流程中，用来补充你的长期偏好、业务背景和协作要求。
+        </p>
+        <p>
+          目前支持 <code>AGENTS.md</code>：其中内容会在每次会话中注入到 Agent Prompt，适合写入希望
+          Agent 长期遵守的信息。
+        </p>
+
+        <section class="agents-guide-section">
+          <h3>填写建议</h3>
+          <ul>
+            <li>写清常用工作背景，例如部门职责、常见任务、知识库使用方式。</li>
+            <li>写清回答偏好，例如语言风格、详略程度、是否优先给结论。</li>
+            <li>写清业务术语和固定称呼，帮助 Agent 保持表达一致。</li>
+            <li>写清资料使用要求，例如优先引用哪些知识库、哪些内容需要谨慎确认。</li>
+            <li>写清协作边界，例如不确定时先提问，涉及重要决策时先给方案再执行。</li>
+            <li>优先使用明确、可执行的规则，避免“尽量做好”这类模糊描述。</li>
+          </ul>
+        </section>
+      </div>
+    </a-modal>
+
+    <a-modal
       :open="previewModalVisible && !useInlinePreview"
       width="880px"
       :style="{ maxWidth: '92vw', top: '5vh' }"
-      :bodyStyle="{ maxHeight: '90vh', overflow: 'auto' }"
+      :bodyStyle="{ height: '82vh', maxHeight: '90vh', padding: '0', overflow: 'hidden' }"
       :footer="null"
       :closable="false"
       wrapClassName="workspace-file-preview-modal"
@@ -131,12 +178,15 @@
     >
       <AgentFilePreview
         :file="previewFile"
-        :filePath="selectedEntry?.path || ''"
+        :filePath="selectedPreviewPath"
         :showClose="true"
         :showDownload="false"
         :showFullscreen="true"
+        :full-height="true"
         :editable="activeSourceKey === 'personal'"
         :saving="savingPreviewFile"
+        container-class="workspace-modal-preview-container"
+        content-class="workspace-modal-preview-content"
         @close="closePreview"
         @save="handleSavePreviewFile"
       />
@@ -145,27 +195,35 @@
 </template>
 
 <script setup>
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { message, Modal } from 'ant-design-vue'
-import { ChevronLeft, ChevronRight, LibraryBig } from 'lucide-vue-next'
+import { ChevronLeft, ChevronRight, CircleHelp, LibraryBig } from 'lucide-vue-next'
 import PageHeader from '@/components/shared/PageHeader.vue'
 import AgentFilePreview from '@/components/AgentFilePreview.vue'
 import WorkspaceFileList from '@/components/workspace/WorkspaceFileList.vue'
 import WorkspacePreviewPane from '@/components/workspace/WorkspacePreviewPane.vue'
 import WorkspaceSidebar from '@/components/workspace/WorkspaceSidebar.vue'
 import { databaseApi } from '@/apis/knowledge_api'
+import { useUserStore } from '@/stores/user'
 import {
   createWorkspaceDirectory,
   deleteWorkspacePath,
   downloadWorkspaceFile,
+  downloadWorkspaceKnowledgeFile,
   getWorkspaceFileContent,
+  getWorkspaceKnowledgeFileContent,
+  getWorkspaceKnowledgeTree,
   getWorkspaceTree,
   saveWorkspaceFileContent,
-  uploadWorkspaceFile
+  uploadWorkspaceFiles
 } from '@/apis/workspace_api'
+import { normalizePreviewResponse } from '@/utils/file_preview'
+
+const userStore = useUserStore()
 
 const activeSourceKey = ref('personal')
 const currentPath = ref('/')
+const knowledgeBreadcrumbItems = ref([])
 const entries = ref([])
 const selectedEntry = ref(null)
 const selectedPaths = ref([])
@@ -179,10 +237,10 @@ const savingPreviewFile = ref(false)
 const loadingDatabases = ref(false)
 const databases = ref([])
 const selectedDatabase = ref(null)
-const searchQuery = ref('')
 const workspaceMainRef = ref(null)
 const workspaceMainWidth = ref(0)
 const createDirectoryModalVisible = ref(false)
+const agentsGuideModalVisible = ref(false)
 const newDirectoryName = ref('')
 const creatingDirectory = ref(false)
 const uploadingFile = ref(false)
@@ -192,26 +250,53 @@ const sidebarCollapsed = ref(false)
 const previewWidthPercent = ref(50)
 const previewRequestId = ref(0)
 const INLINE_PREVIEW_MIN_WIDTH = 960
+const MAX_WORKSPACE_UPLOAD_FILES = 50
+const AGENTS_WORKSPACE_PATH = '/agents'
+const knowledgeFileBrowser = reactive({
+  parentId: null,
+  pathPrefix: '',
+  page: 1,
+  pageSize: 100,
+  total: 0,
+  hasMore: false
+})
 
 const useInlinePreview = computed(() => workspaceMainWidth.value >= INLINE_PREVIEW_MIN_WIDTH)
+const isKnowledgeSource = computed(() => activeSourceKey.value.startsWith('database:'))
+const comparablePath = (path) => String(path || '/').replace(/\/$/, '') || '/'
+const isSameOrChildPath = (path, targetPath) => {
+  const normalizedPath = comparablePath(path)
+  const normalizedTargetPath = comparablePath(targetPath)
+  return (
+    normalizedPath === normalizedTargetPath || normalizedPath.startsWith(`${normalizedTargetPath}/`)
+  )
+}
+const isAgentsWorkspacePath = computed(
+  () =>
+    activeSourceKey.value === 'personal' &&
+    isSameOrChildPath(currentPath.value, AGENTS_WORKSPACE_PATH)
+)
+const selectedPreviewPath = computed(() =>
+  selectedEntry.value?.source === 'knowledge'
+    ? selectedEntry.value.name || ''
+    : selectedEntry.value?.path || ''
+)
 const showInlinePreview = computed(() => useInlinePreview.value && Boolean(previewFile.value))
 const workspaceMainStyle = computed(() => {
   if (!showInlinePreview.value) return {}
   const listWidthPercent = 100 - previewWidthPercent.value
   return {
-    gridTemplateColumns: `minmax(0, ${listWidthPercent}%) 6px minmax(280px, ${previewWidthPercent.value}%)`
+    gridTemplateColumns: `minmax(0, ${listWidthPercent}%) 3px minmax(280px, ${previewWidthPercent.value}%)`
   }
 })
 
-const filteredEntries = computed(() => {
-  const keyword = searchQuery.value.trim().toLowerCase()
-  if (!keyword) return entries.value
-  return entries.value.filter((entry) =>
-    String(entry.name || '')
-      .toLowerCase()
-      .includes(keyword)
-  )
-})
+const knowledgePagination = computed(() => ({
+  current: knowledgeFileBrowser.page,
+  pageSize: knowledgeFileBrowser.pageSize,
+  total: knowledgeFileBrowser.total,
+  showSizeChanger: true,
+  pageSizeOptions: ['100', '300', '500']
+}))
 
 const selectedEntries = computed(() => {
   const selectedPathSet = new Set(selectedPaths.value)
@@ -220,27 +305,115 @@ const selectedEntries = computed(() => {
 
 const revokePreviewObjectUrl = () => {
   if (!previewObjectUrl.value) return
-  URL.revokeObjectURL(previewObjectUrl.value)
+  window.URL.revokeObjectURL(previewObjectUrl.value)
   previewObjectUrl.value = ''
 }
 
 const normalizePreviewFile = async (entry, response) => {
-  const previewType = response.preview_type || response.previewType || 'text'
-  const file = {
-    ...response,
-    previewType,
-    supported: response.supported !== false
+  return normalizePreviewResponse(response, entry)
+}
+
+const KNOWLEDGE_PREVIEW_LOAD_MESSAGES = {
+  log: '加载知识库文件预览失败:',
+  resolveUserMessage: () => '加载知识库文件预览失败'
+}
+
+const buildPreviewLoadingFile = (entry, baseFile = entry) => ({
+  ...baseFile,
+  ...entry,
+  content: 'Loading...',
+  supported: true,
+  previewType: 'text',
+  message: '',
+  previewUrl: ''
+})
+
+const buildPreviewErrorFile = (entry, error) => ({
+  ...entry,
+  content: `Error loading file: ${error?.message || 'unknown error'}`,
+  supported: false,
+  previewType: 'unsupported',
+  message: error?.message || '文件预览失败',
+  previewUrl: ''
+})
+
+const startPreviewRequest = (entry, baseFile = entry) => {
+  const requestId = previewRequestId.value + 1
+  previewRequestId.value = requestId
+  selectedEntry.value = entry
+  revokePreviewObjectUrl()
+  previewFile.value = buildPreviewLoadingFile(entry, baseFile)
+  previewModalVisible.value = !useInlinePreview.value
+  loadingPreview.value = true
+  return requestId
+}
+
+const isCurrentPreviewEntry = (requestId, entry) => {
+  if (previewRequestId.value !== requestId) return false
+  if (entry.source === 'knowledge') {
+    return selectedEntry.value?.file_id === entry.file_id
+  }
+  return selectedEntry.value?.path === entry.path
+}
+
+const applyPreviewFile = (requestId, entry, file) => {
+  if (!isCurrentPreviewEntry(requestId, entry)) {
+    if (file.previewUrl) {
+      window.URL.revokeObjectURL(file.previewUrl)
+    }
+    return
   }
 
-  if (previewType === 'image' || previewType === 'pdf') {
-    const downloadResponse = await downloadWorkspaceFile(entry.path)
-    const blob = await downloadResponse.blob()
+  if (file.previewUrl) {
     revokePreviewObjectUrl()
-    previewObjectUrl.value = URL.createObjectURL(blob)
-    file.previewUrl = previewObjectUrl.value
+    previewObjectUrl.value = file.previewUrl
   }
+  previewFile.value = file
+}
 
-  return file
+const showPreviewError = (requestId, entry, error, logMessage, userMessage) => {
+  if (!isCurrentPreviewEntry(requestId, entry)) return
+  console.warn(logMessage, error)
+  previewFile.value = buildPreviewErrorFile(entry, error)
+  message.error(userMessage)
+}
+
+const finishPreviewRequest = (requestId) => {
+  if (previewRequestId.value === requestId) {
+    loadingPreview.value = false
+  }
+}
+
+const loadWorkspacePreview = async (entry) => {
+  const requestId = startPreviewRequest(entry)
+  try {
+    const response = await getWorkspaceFileContent(entry.path)
+    if (!isCurrentPreviewEntry(requestId, entry)) return
+    const file = await normalizePreviewFile(entry, response)
+    applyPreviewFile(requestId, entry, file)
+  } catch (error) {
+    showPreviewError(requestId, entry, error, '加载文件预览失败:', '加载文件预览失败')
+  } finally {
+    finishPreviewRequest(requestId)
+  }
+}
+
+const loadKnowledgePreview = async (
+  entry,
+  baseFile = entry,
+  messages = KNOWLEDGE_PREVIEW_LOAD_MESSAGES
+) => {
+  const requestId = startPreviewRequest(entry, baseFile)
+  try {
+    const response = await getWorkspaceKnowledgeFileContent(entry.kb_id, entry.file_id)
+    if (!isCurrentPreviewEntry(requestId, entry)) return
+    const file = await normalizePreviewFile(entry, response)
+    applyPreviewFile(requestId, entry, file)
+  } catch (error) {
+    showPreviewError(requestId, entry, error, messages.log, messages.resolveUserMessage(error))
+  } finally {
+    finishPreviewRequest(requestId)
+  }
 }
 
 const syncSelectedPaths = () => {
@@ -265,6 +438,7 @@ const loadWorkspaceEntries = async (path = '/') => {
     const response = await getWorkspaceTree(path)
     entries.value = response.entries || []
     currentPath.value = path
+    knowledgeBreadcrumbItems.value = []
     syncSelectedPaths()
     if (!selectedPaths.value.length) {
       selectionMode.value = false
@@ -277,11 +451,65 @@ const loadWorkspaceEntries = async (path = '/') => {
   }
 }
 
+const loadKnowledgeEntries = async (
+  database,
+  {
+    parentId = null,
+    pathPrefix = '',
+    page = 1,
+    pageSize = knowledgeFileBrowser.pageSize,
+    breadcrumbs = null
+  } = {}
+) => {
+  if (!database?.kb_id) return
+
+  loadingTree.value = true
+  try {
+    const response = await getWorkspaceKnowledgeTree(database.kb_id, {
+      parentId,
+      pathPrefix,
+      page,
+      pageSize
+    })
+    entries.value = response.entries || []
+    knowledgeBreadcrumbItems.value = breadcrumbs || [
+      {
+        name: database.name || '知识库',
+        path: '/',
+        parentId: null,
+        pathPrefix: '',
+        isVirtualFolder: false
+      }
+    ]
+    currentPath.value = knowledgeBreadcrumbItems.value.at(-1)?.path || '/'
+    Object.assign(knowledgeFileBrowser, {
+      parentId: response.parent_id || parentId || null,
+      pathPrefix: response.path_prefix || pathPrefix || '',
+      page: response.page || page,
+      pageSize: response.page_size || pageSize,
+      total: response.total || 0,
+      hasMore: Boolean(response.has_more)
+    })
+    syncSelectedPaths()
+    if (!selectedPaths.value.length) {
+      selectionMode.value = false
+    }
+  } catch (error) {
+    console.warn('加载知识库目录失败:', error)
+    entries.value = []
+    message.error(error?.message || '加载知识库目录失败')
+  } finally {
+    loadingTree.value = false
+  }
+}
+
 const loadDatabases = async () => {
   loadingDatabases.value = true
   try {
     const response = await databaseApi.getAccessibleDatabases()
-    databases.value = response?.databases || []
+    databases.value = (response?.databases || []).filter((database) => {
+      return database?.supports_documents !== false
+    })
   } catch (error) {
     console.warn('加载可访问知识库失败:', error)
     databases.value = []
@@ -291,11 +519,13 @@ const loadDatabases = async () => {
 }
 
 const selectPersonalWorkspace = async () => {
+  const wasKnowledgeSource = isKnowledgeSource.value
   activeSourceKey.value = 'personal'
   selectedDatabase.value = null
+  knowledgeBreadcrumbItems.value = []
   closePreview()
   clearWorkspaceSelection()
-  if (currentPath.value !== '/' || !entries.value.length) {
+  if (wasKnowledgeSource || currentPath.value !== '/' || !entries.value.length) {
     await loadWorkspaceEntries('/')
   }
 }
@@ -303,61 +533,100 @@ const selectPersonalWorkspace = async () => {
 const selectWorkspacePath = async (path) => {
   activeSourceKey.value = 'personal'
   selectedDatabase.value = null
+  knowledgeBreadcrumbItems.value = []
   closePreview()
   clearWorkspaceSelection()
   await loadWorkspaceEntries(path)
 }
 
-const selectDatabase = (database) => {
+const selectKnowledgeBreadcrumb = async (item, index) => {
+  if (!selectedDatabase.value || !item) return
+  closePreview()
+  clearWorkspaceSelection()
+  const breadcrumbs = knowledgeBreadcrumbItems.value.slice(0, index + 1)
+  await loadKnowledgeEntries(selectedDatabase.value, {
+    parentId: item.parentId || null,
+    pathPrefix: item.pathPrefix || '',
+    page: 1,
+    breadcrumbs
+  })
+}
+
+const handleListBreadcrumbClick = async ({ item, index }) => {
+  if (isKnowledgeSource.value) {
+    await selectKnowledgeBreadcrumb(item, index)
+    return
+  }
+  await selectWorkspacePath(item?.path || '/')
+}
+
+const selectDatabase = async (database) => {
+  if (database?.supports_documents === false) return
   closePreview()
   clearWorkspaceSelection()
   selectedDatabase.value = database
-  activeSourceKey.value = `database:${database.db_id}`
+  activeSourceKey.value = `database:${database.kb_id}`
+  await loadKnowledgeEntries(database)
+}
+
+const openKnowledgeDirectory = async (entry) => {
+  closePreview()
+  clearWorkspaceSelection()
+  const parentPath = knowledgeBreadcrumbItems.value.at(-1)?.path || '/'
+  const nextPath = parentPath === '/' ? `/${entry.name}` : `${parentPath}/${entry.name}`
+  const currentBreadcrumb = knowledgeBreadcrumbItems.value.at(-1)
+  const isVirtualFolder = Boolean(entry.is_virtual_folder)
+  const nextBreadcrumb = {
+    name: entry.name,
+    path: nextPath,
+    parentId: isVirtualFolder ? currentBreadcrumb?.parentId || null : entry.file_id,
+    pathPrefix: isVirtualFolder ? entry.path_prefix || '' : '',
+    isVirtualFolder
+  }
+  await loadKnowledgeEntries(selectedDatabase.value, {
+    parentId: nextBreadcrumb.parentId,
+    pathPrefix: nextBreadcrumb.pathPrefix,
+    page: 1,
+    breadcrumbs: [...knowledgeBreadcrumbItems.value, nextBreadcrumb]
+  })
+}
+
+const handleKnowledgePageChange = async ({ page, pageSize }) => {
+  if (!selectedDatabase.value || !isKnowledgeSource.value) return
+  closePreview()
+  clearWorkspaceSelection()
+  const currentBreadcrumb = knowledgeBreadcrumbItems.value.at(-1)
+  await loadKnowledgeEntries(selectedDatabase.value, {
+    parentId: currentBreadcrumb?.parentId || null,
+    pathPrefix: currentBreadcrumb?.pathPrefix || '',
+    page,
+    pageSize,
+    breadcrumbs: [...knowledgeBreadcrumbItems.value]
+  })
+}
+
+const openWorkspaceDirectory = async (entry) => {
+  closePreview()
+  clearWorkspaceSelection()
+  await loadWorkspaceEntries(entry.path)
 }
 
 const handleSelectEntry = async (entry) => {
   if (entry.is_dir) {
-    closePreview()
-    clearWorkspaceSelection()
-    await loadWorkspaceEntries(entry.path)
+    if (isKnowledgeSource.value) {
+      await openKnowledgeDirectory(entry)
+      return
+    }
+    await openWorkspaceDirectory(entry)
     return
   }
 
-  const requestId = previewRequestId.value + 1
-  previewRequestId.value = requestId
-  selectedEntry.value = entry
-  revokePreviewObjectUrl()
-  previewFile.value = {
-    ...entry,
-    content: 'Loading...',
-    supported: true,
-    previewType: 'text',
-    message: '',
-    previewUrl: ''
+  if (isKnowledgeSource.value) {
+    await loadKnowledgePreview(entry)
+    return
   }
-  previewModalVisible.value = !useInlinePreview.value
-  loadingPreview.value = true
-  try {
-    const response = await getWorkspaceFileContent(entry.path)
-    if (previewRequestId.value !== requestId || selectedEntry.value?.path !== entry.path) return
-    previewFile.value = await normalizePreviewFile(entry, response)
-  } catch (error) {
-    if (previewRequestId.value !== requestId || selectedEntry.value?.path !== entry.path) return
-    console.warn('加载文件预览失败:', error)
-    previewFile.value = {
-      ...entry,
-      content: `Error loading file: ${error?.message || 'unknown error'}`,
-      supported: false,
-      previewType: 'unsupported',
-      message: error?.message || '文件预览失败',
-      previewUrl: ''
-    }
-    message.error('加载文件预览失败')
-  } finally {
-    if (previewRequestId.value === requestId) {
-      loadingPreview.value = false
-    }
-  }
+
+  await loadWorkspacePreview(entry)
 }
 
 const closePreview = () => {
@@ -370,6 +639,10 @@ const closePreview = () => {
 }
 
 const handleSavePreviewFile = async (content) => {
+  if (selectedEntry.value?.source === 'knowledge') {
+    message.warning('知识库文件为只读，无法保存')
+    return
+  }
   if (!selectedEntry.value?.path || savingPreviewFile.value) return
 
   savingPreviewFile.value = true
@@ -396,6 +669,14 @@ const openCreateDirectoryModal = () => {
   if (activeSourceKey.value !== 'personal') return
   newDirectoryName.value = ''
   createDirectoryModalVisible.value = true
+}
+
+const openAgentsGuideModal = () => {
+  agentsGuideModalVisible.value = true
+}
+
+const closeAgentsGuideModal = () => {
+  agentsGuideModalVisible.value = false
 }
 
 const createDirectory = async () => {
@@ -430,14 +711,19 @@ const openUploadFilePicker = () => {
 }
 
 const handleUploadInputChange = async (event) => {
-  const file = event.target?.files?.[0]
-  if (!file || uploadingFile.value) return
+  const files = Array.from(event.target?.files || [])
+  if (!files.length || uploadingFile.value) return
+  if (files.length > MAX_WORKSPACE_UPLOAD_FILES) {
+    message.warning(`一次最多上传 ${MAX_WORKSPACE_UPLOAD_FILES} 个文件`)
+    event.target.value = ''
+    return
+  }
 
   uploadingFile.value = true
   try {
-    await uploadWorkspaceFile(currentPath.value, file)
+    await uploadWorkspaceFiles(currentPath.value, files)
     await loadWorkspaceEntries(currentPath.value)
-    message.success('文件上传成功')
+    message.success(`${files.length} 个文件上传成功`)
   } catch (error) {
     console.warn('上传文件失败:', error)
     message.error(error?.message || '上传文件失败')
@@ -445,16 +731,6 @@ const handleUploadInputChange = async (event) => {
     uploadingFile.value = false
     event.target.value = ''
   }
-}
-
-const comparablePath = (path) => String(path || '/').replace(/\/$/, '') || '/'
-
-const isSameOrChildPath = (path, targetPath) => {
-  const normalizedPath = comparablePath(path)
-  const normalizedTargetPath = comparablePath(targetPath)
-  return (
-    normalizedPath === normalizedTargetPath || normalizedPath.startsWith(`${normalizedTargetPath}/`)
-  )
 }
 
 const confirmDeleteEntries = (targetEntries) => {
@@ -524,10 +800,13 @@ const parseDownloadFilename = (contentDisposition) => {
 }
 
 const downloadEntry = async (entry) => {
-  if (!entry?.path || entry.is_dir) return
+  if (!entry || entry.is_dir) return
 
   try {
-    const response = await downloadWorkspaceFile(entry.path)
+    const response =
+      entry.source === 'knowledge'
+        ? await downloadWorkspaceKnowledgeFile(entry.kb_id, entry.file_id)
+        : await downloadWorkspaceFile(entry.path)
     const blob = await response.blob()
     const contentDisposition =
       response.headers.get('Content-Disposition') || response.headers.get('content-disposition')
@@ -697,15 +976,13 @@ watch(useInlinePreview, (isInline, wasInline) => {
 }
 
 .workspace-preview-resizer {
-  width: 6px;
-  min-width: 6px;
-  border-left: 1px solid var(--gray-100);
-  border-right: 1px solid var(--gray-100);
-  background: var(--gray-25);
+  width: 2px;
+  min-width: 2px;
+  background: var(--gray-100);
   cursor: col-resize;
 
   &:hover {
-    background: var(--main-20);
+    background: var(--gray-200);
   }
 }
 
@@ -735,6 +1012,48 @@ watch(useInlinePreview, (isInline, wasInline) => {
     line-height: 1.6;
   }
 }
+
+.agents-guide-content {
+  color: var(--gray-700);
+  font-size: 14px;
+  line-height: 1.7;
+
+  p {
+    margin: 0 0 12px;
+  }
+
+  code {
+    padding: 2px 5px;
+    border-radius: 4px;
+    background: var(--gray-50);
+    color: var(--main-700);
+    font-size: 13px;
+  }
+}
+
+.agents-guide-section {
+  margin-top: 16px;
+  padding: 14px 16px;
+  border: 1px solid var(--gray-150);
+  border-radius: 8px;
+  background: var(--gray-10);
+
+  h3 {
+    margin: 0 0 10px;
+    color: var(--gray-900);
+    font-size: 14px;
+    font-weight: 600;
+  }
+
+  ul {
+    margin: 0;
+    padding-left: 18px;
+  }
+
+  li + li {
+    margin-top: 6px;
+  }
+}
 </style>
 
 <style lang="less">
@@ -751,7 +1070,27 @@ watch(useInlinePreview, (isInline, wasInline) => {
     }
 
     .ant-modal-body {
+      height: 82vh;
       padding: 0;
+      overflow: hidden;
+    }
+
+    .workspace-modal-preview-container {
+      height: 100%;
+      max-height: none;
+    }
+
+    .workspace-modal-preview-content {
+      flex: 1 1 auto;
+      max-height: none;
+      min-height: 0;
+    }
+
+    .workspace-modal-preview-content .html-preview,
+    .workspace-modal-preview-content .pdf-preview {
+      display: block;
+      height: 100%;
+      min-height: 100%;
     }
   }
 }

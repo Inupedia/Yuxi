@@ -9,15 +9,12 @@ pytestmark = [pytest.mark.asyncio, pytest.mark.integration]
 
 
 async def _create_thread_for_user(test_client, headers: dict[str, str]) -> str:
-    agents_resp = await test_client.get("/api/chat/agent", headers=headers)
-    assert agents_resp.status_code == 200, agents_resp.text
-    agents = agents_resp.json().get("agents", [])
-    if not agents:
-        pytest.skip("No agents available for viewer filesystem integration tests.")
-
-    agent_id = agents[0].get("id")
+    agent_resp = await test_client.get("/api/agent/default", headers=headers)
+    assert agent_resp.status_code == 200, agent_resp.text
+    agent = agent_resp.json().get("agent") or {}
+    agent_id = agent.get("slug") or agent.get("id")
     if not agent_id:
-        pytest.skip("Agent payload missing id field.")
+        pytest.skip("Default agent payload missing id field.")
 
     create_resp = await test_client.post(
         "/api/chat/thread",
@@ -37,11 +34,11 @@ async def _create_thread_for_user(test_client, headers: dict[str, str]) -> str:
 
 async def test_viewer_download_blocks_workspace_symlink_escape(test_client, standard_user, tmp_path):
     headers = standard_user["headers"]
-    user_id = str(standard_user["user"]["id"])
+    uid = str(standard_user["user"]["uid"])
     thread_id = await _create_thread_for_user(test_client, headers)
 
-    ensure_thread_dirs(thread_id, user_id)
-    workspace_dir = sandbox_workspace_dir(thread_id, user_id)
+    ensure_thread_dirs(thread_id, uid)
+    workspace_dir = sandbox_workspace_dir(thread_id, uid)
     outside_file = tmp_path / "outside.txt"
     outside_file.write_text("outside", encoding="utf-8")
     symlink_path = workspace_dir / "escape.txt"
@@ -59,11 +56,11 @@ async def test_viewer_download_blocks_workspace_symlink_escape(test_client, stan
 
 async def test_viewer_upload_blocks_workspace_symlink_escape(test_client, standard_user, tmp_path):
     headers = standard_user["headers"]
-    user_id = str(standard_user["user"]["id"])
+    uid = str(standard_user["user"]["uid"])
     thread_id = await _create_thread_for_user(test_client, headers)
 
-    ensure_thread_dirs(thread_id, user_id)
-    workspace_dir = sandbox_workspace_dir(thread_id, user_id)
+    ensure_thread_dirs(thread_id, uid)
+    workspace_dir = sandbox_workspace_dir(thread_id, uid)
     outside_dir = tmp_path / "outside-dir"
     outside_dir.mkdir()
     symlink_path = workspace_dir / "escape-dir"
@@ -73,7 +70,7 @@ async def test_viewer_upload_blocks_workspace_symlink_escape(test_client, standa
     response = await test_client.post(
         "/api/viewer/filesystem/upload",
         data={"thread_id": thread_id, "parent_path": parent_path},
-        files={"file": ("escape.txt", b"outside", "text/plain")},
+        files={"files": ("escape.txt", b"outside", "text/plain")},
         headers=headers,
     )
 

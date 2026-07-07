@@ -9,6 +9,11 @@ from yuxi.services import chat_service as chat_svc
 from yuxi.services import conversation_service as svc
 
 
+def test_tmp_attachment_ocr_methods_use_processor_factory():
+    assert svc.TMP_ATTACHMENT_OCR_METHODS == tuple(svc.DocumentProcessorFactory.get_available_processors())
+    assert "paddleocr_vl_1_6" in svc.TMP_ATTACHMENT_OCR_METHODS
+
+
 class _DummyUpload:
     def __init__(self, *, filename: str, content_type: str | None, data: bytes):
         self.filename = filename
@@ -74,12 +79,13 @@ async def test_sync_thread_attachment_state_updates_graph(monkeypatch: pytest.Mo
     ]
     await svc._sync_thread_upload_state(
         thread_id="thread-1",
-        user_id="u1",
+        uid="u1",
         agent_id="ChatbotAgent",
+        backend_id=None,
         attachments=attachments,
     )
 
-    assert captured["write_config"] == {"configurable": {"thread_id": "thread-1", "user_id": "u1"}}
+    assert captured["write_config"] == {"configurable": {"thread_id": "thread-1", "uid": "u1"}}
     assert captured["write_values"] == {"uploads": svc._build_state_uploads(attachments)}
 
 
@@ -95,8 +101,9 @@ async def test_sync_thread_attachment_state_skips_when_agent_missing(monkeypatch
 
     await svc._sync_thread_upload_state(
         thread_id="thread-1",
-        user_id="u1",
+        uid="u1",
         agent_id="MissingAgent",
+        backend_id=None,
         attachments=[],
     )
 

@@ -18,21 +18,33 @@ def _prepare_skills_dir(root: Path) -> None:
     )
 
 
+def test_selected_skills_backend_none_exposes_no_skills(tmp_path, monkeypatch):
+    _prepare_skills_dir(tmp_path)
+    monkeypatch.setattr(skills_backend, "get_skills_root_dir", lambda: tmp_path)
+
+    backend = skills_backend.SelectedSkillsReadonlyBackend(selected_slugs=None)
+
+    assert backend.ls("/").entries == []
+    assert backend.read("/alpha/SKILL.md").error == "Access denied: file is outside selected skills."
+
+
 def test_selected_skills_backend_readonly_and_visible_only_selected(tmp_path, monkeypatch):
     _prepare_skills_dir(tmp_path)
     monkeypatch.setattr(skills_backend, "get_skills_root_dir", lambda: tmp_path)
 
     backend = skills_backend.SelectedSkillsReadonlyBackend(selected_slugs=["alpha"])
 
-    root_entries = backend.ls_info("/")
-    paths = sorted(entry.get("path") for entry in root_entries)
+    root_result = backend.ls("/")
+    assert root_result.error is None
+    paths = sorted(entry.get("path") for entry in (root_result.entries or []))
     assert paths == ["/alpha/"]
 
     ok_read = backend.read("/alpha/SKILL.md")
-    assert "alpha" in ok_read
+    assert ok_read.file_data is not None
+    assert "alpha" in ok_read.file_data["content"]
 
     denied_read = backend.read("/beta/SKILL.md")
-    assert "Access denied" in denied_read
+    assert denied_read.error and "Access denied" in denied_read.error
 
     write_result = backend.write("/alpha/new.md", "x")
     assert write_result.error and "read-only" in write_result.error

@@ -12,11 +12,11 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-from sqlalchemy import Integer, String, cast, distinct, func, or_, select, text
+from sqlalchemy import Integer, String, cast, distinct, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from server.routers.auth_router import get_admin_user
-from server.utils.auth_middleware import get_db
+from server.utils.auth_middleware import get_db, get_superadmin_user
+from yuxi.repositories.agent_repository import AgentRepository
 from yuxi.repositories.conversation_repository import ConversationRepository
 from yuxi.storage.postgres.models_business import User
 from yuxi.utils.datetime_utils import UTC, ensure_shanghai, shanghai_now, utc_now
@@ -90,13 +90,14 @@ class AgentAnalytics(BaseModel):
     agent_satisfaction_rates: list[dict]
     agent_tool_usage: list[dict]
     top_performing_agents: list[dict]
+    agent_names: dict[str, str] = {}  # agent_id -> agent_name 映射
 
 
 class ConversationListItem(BaseModel):
     """Conversation list item"""
 
     thread_id: str
-    user_id: str
+    uid: str
     agent_id: str
     title: str
     status: str
@@ -109,7 +110,7 @@ class ConversationDetailResponse(BaseModel):
     """Conversation detail"""
 
     thread_id: str
-    user_id: str
+    uid: str
     agent_id: str
     title: str
     status: str
@@ -127,15 +128,15 @@ class ConversationDetailResponse(BaseModel):
 
 @dashboard.get("/conversations", response_model=list[ConversationListItem])
 async def get_all_conversations(
-    user_id: str | None = None,
+    uid: str | None = None,
     agent_id: str | None = None,
     status: str = "active",
     limit: int = 100,
     offset: int = 0,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_admin_user),
+    current_user: User = Depends(get_superadmin_user),
 ):
-    """获取所有对话（管理员权限）"""
+    """获取所有对话（超级管理员权限）"""
     from yuxi.storage.postgres.models_business import Conversation, ConversationStats
 
     try:
@@ -145,8 +146,8 @@ async def get_all_conversations(
         )
 
         # Apply filters
-        if user_id:
-            query = query.filter(Conversation.user_id == user_id)
+        if uid:
+            query = query.filter(Conversation.uid == uid)
         if agent_id:
             query = query.filter(Conversation.agent_id == agent_id)
         if status != "all":
@@ -161,7 +162,7 @@ async def get_all_conversations(
         return [
             {
                 "thread_id": conv.thread_id,
-                "user_id": conv.user_id,
+                "uid": conv.uid,
                 "agent_id": conv.agent_id,
                 "title": conv.title,
                 "status": conv.status,
@@ -181,9 +182,9 @@ async def get_all_conversations(
 async def get_conversation_detail(
     thread_id: str,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_admin_user),
+    current_user: User = Depends(get_superadmin_user),
 ):
-    """获取指定对话详情（管理员权限）"""
+    """获取指定对话详情（超级管理员权限）"""
     try:
         conv_manager = ConversationRepository(db)
         conversation = await conv_manager.get_conversation_by_thread_id(thread_id)
@@ -223,7 +224,7 @@ async def get_conversation_detail(
 
         return {
             "thread_id": conversation.thread_id,
-            "user_id": conversation.user_id,
+            "uid": conversation.uid,
             "agent_id": conversation.agent_id,
             "title": conversation.title,
             "status": conversation.status,
@@ -242,16 +243,16 @@ async def get_conversation_detail(
 
 
 # =============================================================================
-# 用户活动统计（管理员权限）
+# 用户活动统计（超级管理员权限）
 # =============================================================================
 
 
 @dashboard.get("/stats/users", response_model=UserActivityStats)
 async def get_user_activity_stats(
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_admin_user),
+    current_user: User = Depends(get_superadmin_user),
 ):
-    """获取用户活动统计（管理员权限）"""
+    """获取用户活动统计（超级管理员权限）"""
     try:
         from yuxi.storage.postgres.models_business import Conversation, User
 
@@ -259,12 +260,9 @@ async def get_user_activity_stats(
         # PostgreSQL with asyncpg requires naive datetime for naive DateTime columns
         naive_now = now.replace(tzinfo=None)
 
-        # Conversations may store either the numeric user primary key or the login user_id string.
+        # Conversations may store either the numeric user primary key or the login uid string.
         # Join condition accounts for both representations.
-        user_join_condition = or_(
-            Conversation.user_id == User.user_id,
-            Conversation.user_id == cast(User.id, String),
-        )
+        user_join_condition = Conversation.uid == User.uid
 
         # 基础用户统计（排除已删除用户）
         total_users_result = await db.execute(select(func.count(User.id)).filter(User.is_deleted == 0))
@@ -323,9 +321,9 @@ async def get_user_activity_stats(
 @dashboard.get("/stats/tools", response_model=ToolCallStats)
 async def get_tool_call_stats(
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_admin_user),
+    current_user: User = Depends(get_superadmin_user),
 ):
-    """获取工具调用统计（管理员权限）"""
+    """获取工具调用统计（超级管理员权限）"""
     try:
         from yuxi.storage.postgres.models_business import ToolCall
 
@@ -391,16 +389,16 @@ async def get_tool_call_stats(
 
 
 # =============================================================================
-# 知识库统计（管理员权限）
+# 知识库统计（超级管理员权限）
 # =============================================================================
 
 
 @dashboard.get("/stats/knowledge", response_model=KnowledgeStats)
 async def get_knowledge_stats(
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_admin_user),
+    current_user: User = Depends(get_superadmin_user),
 ):
-    """获取知识库统计（管理员权限）"""
+    """获取知识库统计（超级管理员权限）"""
     try:
         from yuxi.repositories.knowledge_base_repository import KnowledgeBaseRepository
         from yuxi.repositories.knowledge_file_repository import KnowledgeFileRepository
@@ -446,7 +444,6 @@ async def get_knowledge_stats(
         for kb in kb_rows:
             kb_type = (kb.kb_type or "unknown").lower()
             display_type = {
-                "lightrag": "LightRAG",
                 "faiss": "FAISS",
                 "milvus": "Milvus",
                 "dify": "Dify",
@@ -456,7 +453,7 @@ async def get_knowledge_stats(
             }.get(kb_type, kb.kb_type or "未知类型")
             databases_by_type[display_type] = databases_by_type.get(display_type, 0) + 1
 
-            files = await file_repo.list_by_db_id(kb.db_id)
+            files = await file_repo.list_by_kb_id(kb.kb_id)
             total_files += len(files)
             for record in files:
                 file_ext = (record.file_type or "").lower()
@@ -470,7 +467,7 @@ async def get_knowledge_stats(
             total_nodes=total_nodes,
             total_storage_size=total_storage_size,
             databases_by_type=databases_by_type,
-            file_type_distribution=files_by_type,  # 保持API兼容，但使用新的数据
+            file_type_distribution=files_by_type,
         )
 
     except Exception as e:
@@ -480,16 +477,16 @@ async def get_knowledge_stats(
 
 
 # =============================================================================
-# 智能体分析（管理员权限）
+# 智能体分析（超级管理员权限）
 # =============================================================================
 
 
 @dashboard.get("/stats/agents", response_model=AgentAnalytics)
 async def get_agent_analytics(
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_admin_user),
+    current_user: User = Depends(get_superadmin_user),
 ):
-    """获取智能体分析（管理员权限）"""
+    """获取智能体分析（超级管理员权限）"""
     try:
         from yuxi.storage.postgres.models_business import Conversation, Message, MessageFeedback, ToolCall
 
@@ -562,12 +559,19 @@ async def get_agent_analytics(
         top_performing_agents.sort(key=lambda x: x["conversation_count"], reverse=True)
         top_performing_agents = top_performing_agents[:5]
 
+        agent_slugs = [agent_id for agent_id, _ in agents if agent_id]
+        agent_names = {}
+        if agent_slugs:
+            agent_repo = AgentRepository(db)
+            agent_names = {agent.slug: agent.name for agent in await agent_repo.list_by_slugs(agent_slugs)}
+
         return AgentAnalytics(
             total_agents=total_agents,
             agent_conversation_counts=agent_conversation_counts,
             agent_satisfaction_rates=agent_satisfaction,
             agent_tool_usage=agent_tool_usage,
             top_performing_agents=top_performing_agents,
+            agent_names=agent_names,
         )
 
     except Exception as e:
@@ -577,16 +581,16 @@ async def get_agent_analytics(
 
 
 # =============================================================================
-# 基础统计（管理员权限）
+# 基础统计（超级管理员权限）
 # =============================================================================
 
 
 @dashboard.get("/stats")
 async def get_dashboard_stats(
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_admin_user),
+    current_user: User = Depends(get_superadmin_user),
 ):
-    """获取基础统计（管理员权限）"""
+    """获取基础统计（超级管理员权限）"""
     from yuxi.storage.postgres.models_business import Conversation, Message, MessageFeedback
 
     try:
@@ -634,7 +638,7 @@ async def get_dashboard_stats(
 
 
 # =============================================================================
-# 反馈管理（管理员权限）
+# 反馈管理（超级管理员权限）
 # =============================================================================
 
 
@@ -642,7 +646,7 @@ class FeedbackListItem(BaseModel):
     """反馈列表项"""
 
     id: int
-    user_id: str
+    uid: str
     username: str | None
     avatar: str | None
     rating: str
@@ -658,22 +662,17 @@ async def get_all_feedbacks(
     rating: str | None = None,
     agent_id: str | None = None,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_admin_user),
+    current_user: User = Depends(get_superadmin_user),
 ):
-    """获取所有反馈记录（管理员权限）"""
+    """获取所有反馈记录（超级管理员权限）"""
     from yuxi.storage.postgres.models_business import Conversation, Message, MessageFeedback, User
 
     try:
-        # Build query with joins including User table
-        # Try both User.id and User.user_id as MessageFeedback.user_id might be stored as either
         query = (
             select(MessageFeedback, Message, Conversation, User)
             .join(Message, MessageFeedback.message_id == Message.id)
             .join(Conversation, Message.conversation_id == Conversation.id)
-            .outerjoin(
-                User,
-                (MessageFeedback.user_id == cast(User.id, String)) | (MessageFeedback.user_id == User.user_id),
-            )
+            .outerjoin(User, MessageFeedback.uid == User.uid)
         )
 
         # Apply filters
@@ -696,7 +695,7 @@ async def get_all_feedbacks(
             {
                 "id": feedback.id,
                 "message_id": feedback.message_id,
-                "user_id": feedback.user_id,
+                "uid": feedback.uid,
                 "username": user.username if user else None,
                 "avatar": user.avatar if user else None,
                 "rating": feedback.rating,
@@ -715,7 +714,7 @@ async def get_all_feedbacks(
 
 
 # =============================================================================
-# 调用分析时间序列统计（管理员权限）
+# 调用分析时间序列统计（超级管理员权限）
 # =============================================================================
 
 
@@ -728,6 +727,7 @@ class TimeSeriesStats(BaseModel):
     average_count: float
     peak_count: int
     peak_date: str
+    agent_names: dict[str, str] | None = None  # agent_id -> agent_name 映射（仅 type=agents）
 
 
 @dashboard.get("/stats/calls/timeseries", response_model=TimeSeriesStats)
@@ -735,9 +735,9 @@ async def get_call_timeseries_stats(
     type: str = "models",  # models/agents/tokens/tools
     time_range: str = "14days",  # 14hours/14days/14weeks
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_admin_user),
+    current_user: User = Depends(get_superadmin_user),
 ):
-    """获取调用分析时间序列统计（管理员权限）"""
+    """获取调用分析时间序列统计（超级管理员权限）"""
     try:
         from yuxi.storage.postgres.models_business import Conversation, Message, ToolCall
 
@@ -897,6 +897,13 @@ async def get_call_timeseries_stats(
 
         categories = sorted(list(categories))
 
+        agent_names = None
+        if type == "agents" and categories:
+            agent_slugs = [c for c in categories if c]
+            if agent_slugs:
+                agent_repo = AgentRepository(db)
+                agent_names = {agent.slug: agent.name for agent in await agent_repo.list_by_slugs(agent_slugs)}
+
         # 重新组织数据：按时间点分组每个类别的数据
         time_data = {}
 
@@ -971,6 +978,7 @@ async def get_call_timeseries_stats(
             average_count=average_count,
             peak_count=peak_data["total"],
             peak_date=peak_data["date"],
+            agent_names=agent_names,
         )
 
     except HTTPException:

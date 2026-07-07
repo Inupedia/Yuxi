@@ -8,7 +8,12 @@
     class="task-center-modal"
     @cancel="handleClose"
   >
-    <p>提醒：任务执行成功，只代表任务已执行完成，但是任务内部可能有问题已捕获，请注意观察日志。</p>
+    <a-alert
+      type="info"
+      show-icon
+      class="task-tip"
+      message="状态为「已完成」仅代表任务执行结束，其内部仍可能存在已捕获的问题，请留意日志。"
+    />
     <div class="task-center">
       <div class="task-toolbar">
         <div class="task-filter-group">
@@ -33,7 +38,7 @@
           :key="task.id"
           class="task-card"
           :class="taskCardClasses(task)"
-          @click="handleTaskCardClick(task)"
+          @click="handleDetail(task.id)"
         >
           <!-- 状态指示器 -->
           <div class="task-card-status-indicator" :class="`status-${task.status}`">
@@ -81,9 +86,6 @@
               <span v-if="!task.started_at">创建 {{ formatTime(task.created_at, 'short') }}</span>
             </div>
             <div class="task-card-actions">
-              <a-button type="text" size="small" @click.stop="handleDetail(task.id)">
-                详情
-              </a-button>
               <a-button
                 type="text"
                 size="small"
@@ -109,17 +111,15 @@
 
       <div v-else class="task-empty">
         <div class="task-empty-icon">🗂️</div>
-        <div class="task-empty-title">暂无任务</div>
-        <div class="task-empty-subtitle">
-          当你提交知识库导入或其他后台任务时，会在这里展示实时进度（仅展示最近的 100 个任务）。
-        </div>
+        <div class="task-empty-title">{{ emptyHint.title }}</div>
+        <div class="task-empty-subtitle">{{ emptyHint.subtitle }}</div>
       </div>
     </div>
   </a-modal>
 </template>
 
 <script setup>
-import { computed, h, onBeforeUnmount, watch, ref } from 'vue'
+import { computed, h, watch, ref } from 'vue'
 import { Modal } from 'ant-design-vue'
 import { useTaskerStore } from '@/stores/tasker'
 import { storeToRefs } from 'pinia'
@@ -181,15 +181,35 @@ const taskFilterOptions = computed(() => [
   }
 ])
 
+const STATUS_CONFIG = {
+  pending: { label: '等待中', terminal: false, cancelable: true, progress: 'active' },
+  queued: { label: '已排队', terminal: false, cancelable: true, progress: 'active' },
+  running: { label: '进行中', terminal: false, cancelable: true, progress: 'active' },
+  success: { label: '已完成', terminal: true, cancelable: false, progress: 'success' },
+  failed: { label: '失败', terminal: true, cancelable: false, progress: 'exception' },
+  cancelled: { label: '已取消', terminal: true, cancelable: false, progress: 'normal' }
+}
+const TASK_TYPE_LABELS = {
+  knowledge_ingest: '知识库导入',
+  knowledge_parse: '文档解析',
+  knowledge_index: '文档入库',
+  knowledge_graph_index: '图谱构建',
+  dataset_generation: '评估集生成',
+  rag_evaluation: 'RAG 评估'
+}
+
+const isActiveStatus = (status) => Boolean(STATUS_CONFIG[status]) && !STATUS_CONFIG[status].terminal
+const isFailedStatus = (status) => status === 'failed' || status === 'cancelled'
+
 const filteredTasks = computed(() => {
   const list = tasks.value
   switch (statusFilter.value) {
     case 'active':
-      return list.filter((task) => ACTIVE_CLASS_STATUSES.has(task.status))
+      return list.filter((task) => isActiveStatus(task.status))
     case 'success':
       return list.filter((task) => task.status === 'success')
     case 'failed':
-      return list.filter((task) => FAILED_STATUSES.has(task.status))
+      return list.filter((task) => isFailedStatus(task.status))
     default:
       return list
   }
@@ -197,18 +217,25 @@ const filteredTasks = computed(() => {
 
 const hasTasks = computed(() => filteredTasks.value.length > 0)
 
-const ACTIVE_CLASS_STATUSES = new Set(['pending', 'queued', 'running'])
-const FAILED_STATUSES = new Set(['failed', 'cancelled'])
-const TASK_TYPE_LABELS = {
-  knowledge_ingest: '知识库导入',
-  knowledge_rechunks: '文档重新分块',
-  graph_task: '图谱处理',
-  agent_job: '智能体任务'
-}
+const emptyHint = computed(() => {
+  switch (statusFilter.value) {
+    case 'active':
+      return { title: '暂无进行中的任务', subtitle: '当前没有正在执行的后台任务。' }
+    case 'success':
+      return { title: '暂无已完成的任务', subtitle: '执行成功的后台任务会显示在这里。' }
+    case 'failed':
+      return { title: '暂无失败的任务', subtitle: '失败或已取消的后台任务会显示在这里。' }
+    default:
+      return {
+        title: '暂无任务',
+        subtitle: '提交知识库导入等后台任务后，将在这里展示实时进度（仅展示最近的 100 个任务）。'
+      }
+  }
+})
 
 function taskCardClasses(task) {
   return {
-    'task-card--active': ACTIVE_CLASS_STATUSES.has(task.status),
+    'task-card--active': isActiveStatus(task.status),
     'task-card--success': task.status === 'success',
     'task-card--failed': task.status === 'failed'
   }
@@ -229,17 +256,10 @@ watch(
   (open) => {
     if (open) {
       taskerStore.loadTasks()
-      taskerStore.startPolling()
-    } else {
-      taskerStore.stopPolling()
     }
   },
   { immediate: true }
 )
-
-onBeforeUnmount(() => {
-  taskerStore.stopPolling()
-})
 
 function handleClose() {
   taskerStore.closeDrawer()
@@ -249,8 +269,25 @@ function handleRefresh() {
   taskerStore.loadTasks()
 }
 
-function handleTaskCardClick(task) {
-  console.log('Task clicked:', task)
+function prettyJson(value) {
+  try {
+    return JSON.stringify(value, null, 2)
+  } catch {
+    return String(value)
+  }
+}
+
+const DETAIL_ROW_STYLE = 'display:flex;gap:8px;padding:3px 0;font-size:13px'
+const DETAIL_LABEL_STYLE = 'color:var(--gray-500);min-width:64px;flex-shrink:0'
+const DETAIL_TITLE_STYLE = 'font-weight:600;margin-top:12px;font-size:13px'
+const DETAIL_JSON_STYLE =
+  'max-height:240px;overflow:auto;background:var(--gray-50);padding:10px;border-radius:6px;' +
+  'font-size:12px;white-space:pre-wrap;word-break:break-all;margin:4px 0 0'
+
+function hasContent(value) {
+  if (value === null || value === undefined) return false
+  if (typeof value === 'object') return Object.keys(value).length > 0
+  return true
 }
 
 function handleDetail(taskId) {
@@ -258,17 +295,35 @@ function handleDetail(taskId) {
   if (!task) {
     return
   }
-  const detail = h('div', { class: 'task-detail' }, [
-    h('p', [h('strong', '状态：'), statusLabel(task.status)]),
-    h('p', [h('strong', '进度：'), `${Math.round(task.progress || 0)}%`]),
-    h('p', [h('strong', '更新时间：'), formatTime(task.updated_at)]),
-    h('p', [h('strong', '描述：'), task.message || '-']),
-    h('p', [h('strong', '错误：'), task.error || '-'])
-  ])
+  const rows = [
+    ['类型', taskTypeLabel(task.type)],
+    ['状态', statusLabel(task.status)],
+    ['进度', `${Math.round(task.progress || 0)}%`],
+    ['创建时间', formatTime(task.created_at)],
+    ['开始时间', task.started_at ? formatTime(task.started_at) : '-'],
+    ['完成时间', task.completed_at ? formatTime(task.completed_at) : '-'],
+    ['耗时', getTaskDuration(task) || '-'],
+    ['描述', task.message || '-'],
+    ['错误', task.error || '-']
+  ]
+  const children = rows.map(([label, value]) =>
+    h('div', { style: DETAIL_ROW_STYLE }, [
+      h('span', { style: DETAIL_LABEL_STYLE }, label),
+      h('span', value)
+    ])
+  )
+  if (hasContent(task.payload)) {
+    children.push(h('div', { style: DETAIL_TITLE_STYLE }, '参数'))
+    children.push(h('pre', { style: DETAIL_JSON_STYLE }, prettyJson(task.payload)))
+  }
+  if (hasContent(task.result)) {
+    children.push(h('div', { style: DETAIL_TITLE_STYLE }, '结果'))
+    children.push(h('pre', { style: DETAIL_JSON_STYLE }, prettyJson(task.result)))
+  }
   Modal.info({
     title: task.name,
-    width: 520,
-    content: detail
+    width: 560,
+    content: h('div', children)
   })
 }
 
@@ -327,29 +382,19 @@ function getTaskDuration(task) {
 }
 
 function isTaskCompleted(task) {
-  return ['success', 'failed', 'cancelled'].includes(task.status)
+  return Boolean(STATUS_CONFIG[task.status]?.terminal)
 }
 
 function statusLabel(status) {
-  const map = {
-    pending: '等待中',
-    queued: '已排队',
-    running: '进行中',
-    success: '已完成',
-    failed: '失败',
-    cancelled: '已取消'
-  }
-  return map[status] || status
+  return STATUS_CONFIG[status]?.label || status
 }
 
 function progressStatus(status) {
-  if (status === 'failed') return 'exception'
-  if (status === 'cancelled') return 'normal'
-  return 'active'
+  return STATUS_CONFIG[status]?.progress || 'active'
 }
 
 function canCancel(task) {
-  return ['pending', 'running', 'queued'].includes(task.status) && !task.cancel_requested
+  return Boolean(STATUS_CONFIG[task.status]?.cancelable) && !task.cancel_requested
 }
 </script>
 <style scoped lang="less">
@@ -398,6 +443,10 @@ function canCancel(task) {
   margin-bottom: 4px;
 }
 
+.task-tip {
+  margin-bottom: 12px;
+}
+
 .task-list {
   flex: 1;
   min-height: 0;
@@ -418,6 +467,7 @@ function canCancel(task) {
   flex-direction: column;
   gap: 10px;
   position: relative;
+  cursor: pointer;
 }
 
 .task-card:hover {

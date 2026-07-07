@@ -4,8 +4,8 @@ import pytest
 
 os.environ.setdefault("OPENAI_API_KEY", "test-key")
 
-from yuxi.config.builtin_providers import BUILTIN_PROVIDERS
-from yuxi.services.model_provider_service import (
+from yuxi.models.providers.builtin import BUILTIN_PROVIDERS
+from yuxi.models.providers.service import (
     check_credential_status,
     _normalize_payload,
     _normalize_remote_model,
@@ -28,6 +28,22 @@ def test_normalize_payload_accepts_enabled_chat_model():
     assert "models_endpoint" not in payload
     assert "embedding_models_endpoint" not in payload
     assert payload["enabled_models"][0]["display_name"] == "anthropic/claude-sonnet-4.5"
+
+
+def test_normalize_payload_accepts_anthropic_provider_type():
+    payload = _normalize_payload(
+        {
+            "provider_id": "xiaomi-token-plan",
+            "display_name": "Xiaomi Token Plan",
+            "provider_type": "anthropic",
+            "base_url": "https://token-plan-cn.xiaomimimo.com/anthropic",
+            "capabilities": ["chat"],
+            "enabled_models": [{"id": "mimo-v2.5-pro", "type": "chat", "source": "manual"}],
+        }
+    )
+
+    assert payload["provider_type"] == "anthropic"
+    assert payload["enabled_models"][0]["id"] == "mimo-v2.5-pro"
 
 
 def test_normalize_payload_rejects_unknown_enabled_model_type():
@@ -96,7 +112,7 @@ async def test_fetch_remote_models_loads_embedding_only_when_capability_enabled(
         calls.append((endpoint, model_type))
         return [{"id": f"{model_type}-model", "type": model_type}]
 
-    monkeypatch.setattr("yuxi.services.model_provider_service._fetch_models_from_endpoint", fake_fetch)
+    monkeypatch.setattr("yuxi.models.providers.service._fetch_models_from_endpoint", fake_fetch)
 
     class Provider:
         base_url = "https://example.com/v1"
@@ -114,6 +130,18 @@ async def test_fetch_remote_models_loads_embedding_only_when_capability_enabled(
     assert [model["type"] for model in models] == ["chat", "embedding"]
 
 
+def test_normalize_payload_rejects_ollama_provider_type():
+    with pytest.raises(ValueError, match="provider_type 必须是"):
+        _normalize_payload(
+            {
+                "provider_id": "ollama-local",
+                "display_name": "Ollama Local",
+                "provider_type": "ollama",
+                "base_url": "http://localhost:11434",
+            }
+        )
+
+
 def test_builtin_provider_templates_default_to_openai_provider_type():
     assert len(BUILTIN_PROVIDERS) >= 16
     provider_types = {
@@ -128,6 +156,7 @@ def test_builtin_provider_templates_default_to_openai_provider_type():
         for provider in BUILTIN_PROVIDERS
     }
     assert provider_types == {"openai"}
+    assert all("ollama" not in provider["provider_id"] for provider in BUILTIN_PROVIDERS)
 
 
 def test_builtin_siliconflow_provider_includes_default_runnable_models():
@@ -144,8 +173,23 @@ def test_builtin_siliconflow_provider_includes_default_runnable_models():
     assert "base_url_override" not in models["Pro/BAAI/bge-reranker-v2-m3"]
 
 
+def test_builtin_dashscope_provider_includes_default_embedding_and_rerank_models():
+    provider = next(item for item in BUILTIN_PROVIDERS if item["provider_id"] == "alibaba")
+    models = {model["id"]: model for model in provider["enabled_models"]}
+
+    assert provider["capabilities"] == ["chat", "embedding", "rerank"]
+    assert provider["embedding_base_url"] == "https://dashscope.aliyuncs.com/compatible-mode/v1/embeddings"
+    assert provider["rerank_base_url"] == "https://dashscope.aliyuncs.com/compatible-api/v1/reranks"
+    assert "embedding_models_endpoint" not in provider
+    assert "rerank_models_endpoint" not in provider
+    assert models["text-embedding-v4"]["type"] == "embedding"
+    assert models["text-embedding-v4"]["dimension"] == 1024
+    assert models["qwen3-rerank"]["type"] == "rerank"
+
+
 def testcheck_credential_status_disabled_provider_always_ok():
     """未启用的 provider 无论凭证如何配置，状态始终为 ok。"""
+
     class Provider:
         is_enabled = False
         api_key = None
@@ -156,6 +200,7 @@ def testcheck_credential_status_disabled_provider_always_ok():
 
 def testcheck_credential_status_direct_api_key_ok():
     """直接配置了 api_key 的启用 provider 状态为 ok。"""
+
     class Provider:
         is_enabled = True
         api_key = "sk-test"
@@ -190,6 +235,7 @@ def testcheck_credential_status_env_key_missing_warning(monkeypatch):
 
 def testcheck_credential_status_both_empty_warning():
     """api_key 和 api_key_env 都未配置时状态为 warning。"""
+
     class Provider:
         is_enabled = True
         api_key = None
@@ -223,9 +269,7 @@ def test_normalize_payload_accepts_manual_source():
             "display_name": "Custom Local",
             "base_url": "https://example.com/v1",
             "capabilities": ["chat"],
-            "enabled_models": [
-                {"id": "my-chat-model", "type": "chat", "source": "manual"}
-            ],
+            "enabled_models": [{"id": "my-chat-model", "type": "chat", "source": "manual"}],
         }
     )
 
@@ -240,9 +284,7 @@ def test_normalize_payload_rejects_invalid_source():
                 "provider_id": "custom-local",
                 "display_name": "Custom Local",
                 "base_url": "https://example.com/v1",
-                "enabled_models": [
-                    {"id": "x", "type": "chat", "source": "custom"}
-                ],
+                "enabled_models": [{"id": "x", "type": "chat", "source": "custom"}],
             }
         )
 
@@ -256,9 +298,7 @@ def test_normalize_payload_rejects_model_type_not_in_capabilities():
                 "display_name": "Chat Only",
                 "base_url": "https://example.com/v1",
                 "capabilities": ["chat"],
-                "enabled_models": [
-                    {"id": "rogue-embedding", "type": "embedding", "dimension": 1024}
-                ],
+                "enabled_models": [{"id": "rogue-embedding", "type": "embedding", "dimension": 1024}],
             }
         )
 

@@ -3,6 +3,7 @@ import AppLayout from '@/layouts/AppLayout.vue'
 import BlankLayout from '@/layouts/BlankLayout.vue'
 import { useUserStore } from '@/stores/user'
 import { useAgentStore } from '@/stores/agent'
+import { sanitizeRedirect } from '@/utils/oidcAutoStart'
 
 const router = createRouter({
   history: createWebHistory(import.meta.env.BASE_URL),
@@ -31,6 +32,12 @@ const router = createRouter({
       name: 'OIDCCallback',
       component: () => import('@/views/OIDCCallbackView.vue'),
       meta: { public: true }
+    },
+    {
+      path: '/auth/cli/authorize',
+      name: 'CLIAuthAuthorize',
+      component: () => import('@/views/CLIAuthAuthorizeView.vue'),
+      meta: { requiresAuth: true }
     },
     {
       path: '/agent',
@@ -65,38 +72,6 @@ const router = createRouter({
       ]
     },
     {
-      path: '/graph',
-      name: 'graph',
-      component: AppLayout,
-      children: [
-        {
-          path: '',
-          name: 'GraphComp',
-          component: () => import('../views/GraphView.vue'),
-          meta: { keepAlive: false, requiresAuth: true, requiresAdmin: true }
-        }
-      ]
-    },
-    {
-      path: '/database',
-      name: 'database',
-      component: AppLayout,
-      children: [
-        {
-          path: '',
-          name: 'DatabaseComp',
-          component: () => import('../views/DataBaseView.vue'),
-          meta: { keepAlive: true, requiresAuth: true, requiresAdmin: true }
-        },
-        {
-          path: ':database_id',
-          name: 'DatabaseInfoComp',
-          component: () => import('../views/DataBaseInfoView.vue'),
-          meta: { keepAlive: false, requiresAuth: true, requiresAdmin: true }
-        }
-      ]
-    },
-    {
       path: '/dashboard',
       name: 'dashboard',
       component: AppLayout,
@@ -105,20 +80,20 @@ const router = createRouter({
           path: '',
           name: 'DashboardComp',
           component: () => import('../views/DashboardView.vue'),
-          meta: { keepAlive: false, requiresAuth: true, requiresAdmin: true }
+          meta: { keepAlive: false, requiresAuth: true, requiresSuperAdmin: true }
         }
       ]
     },
     {
-      path: '/model-config',
-      name: 'model-config',
+      path: '/model-manage',
+      name: 'model-manage',
       component: AppLayout,
       children: [
         {
           path: '',
-          name: 'ModelConfigComp',
-          component: () => import('../views/ModelConfigView.vue'),
-          meta: { keepAlive: false, requiresAuth: true, requiresAdmin: true }
+          name: 'ModelManageComp',
+          component: () => import('../views/ModelManageView.vue'),
+          meta: { keepAlive: false, requiresAuth: true }
         }
       ]
     },
@@ -133,46 +108,41 @@ const router = createRouter({
           component: () => import('../views/ExtensionsView.vue'),
           meta: {
             keepAlive: false,
-            requiresAuth: true,
-            requiresAdmin: true
-          }
-        },
-        {
-          path: 'mcp/:name',
-          name: 'ExtensionMcpDetail',
-          component: () => import('../components/extensions/McpDetailView.vue'),
-          meta: {
-            keepAlive: false,
-            requiresAuth: true,
-            requiresAdmin: true
-          }
-        },
-        {
-          path: 'subagent/:name',
-          name: 'ExtensionSubagentDetail',
-          component: () => import('../components/extensions/SubagentDetailView.vue'),
-          meta: {
-            keepAlive: false,
-            requiresAuth: true,
-            requiresAdmin: true
-          }
-        },
-        {
-          path: 'skill/:slug',
-          name: 'ExtensionSkillDetail',
-          component: () => import('../components/extensions/SkillDetailView.vue'),
-          meta: {
-            keepAlive: false,
-            requiresAuth: true,
-            requiresAdmin: true
-          }
+            requiresAuth: true
+          },
+          children: [
+            {
+              path: 'knowledgebase/:kbId',
+              name: 'ExtensionKnowledgeBaseDetail',
+              component: () => import('../views/DataBaseInfoView.vue'),
+              meta: {
+                keepAlive: false,
+                requiresAuth: true,
+                requiresAdmin: true
+              }
+            },
+            {
+              path: 'mcp/:slug',
+              name: 'ExtensionMcpDetail',
+              component: () => import('../components/extensions/McpDetailView.vue'),
+              meta: {
+                keepAlive: false,
+                requiresAuth: true,
+                requiresAdmin: true
+              }
+            },
+            {
+              path: 'skill/:slug',
+              name: 'ExtensionSkillDetail',
+              component: () => import('../components/extensions/SkillDetailView.vue'),
+              meta: {
+                keepAlive: false,
+                requiresAuth: true
+              }
+            }
+          ]
         }
       ]
-    },
-    {
-      path: '/skills',
-      name: 'skills',
-      redirect: '/extensions'
     },
     {
       path: '/:pathMatch(.*)*',
@@ -244,9 +214,9 @@ router.beforeEach(async (to) => {
     }
   }
 
-  // 如果用户已登录但访问登录页
+  // 如果用户已登录但访问登录页，按 redirect 参数跳转
   if (to.path === '/login' && isLoggedIn) {
-    return '/'
+    return sanitizeRedirect(to.query.redirect)
   }
 
   // 其他情况正常导航

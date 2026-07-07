@@ -1,38 +1,32 @@
 import traceback
 import uuid
 from typing import Any
-from mimetypes import guess_type
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, UploadFile, File
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from yuxi.storage.postgres.models_business import User
-from server.routers.auth_router import get_admin_user
 from server.utils.auth_middleware import get_db, get_required_user
 from yuxi import config as conf
-from yuxi.agents.buildin import agent_manager
 from yuxi.models import select_model
-from yuxi.services.chat_service import agent_chat, get_agent_state_view, stream_agent_chat, stream_agent_resume
-from yuxi.services.agent_run_service import (
-    cancel_agent_run_view,
-    create_agent_run_view,
-    get_active_run_by_thread,
-    get_agent_run_view,
-    stream_agent_run_events,
-)
-from yuxi.repositories.conversation_repository import ConversationRepository
+from yuxi.services.chat_service import get_agent_state_view
 from yuxi.services.conversation_service import (
+    confirm_tmp_thread_attachments_view,
     create_thread_view,
     delete_thread_attachment_view,
     delete_thread_view,
     get_thread_history_view,
     list_thread_attachments_view,
     list_threads_view,
+    parse_tmp_attachment_view,
+    search_threads_view,
     update_thread_view,
     upload_thread_attachment_view,
+    upload_tmp_attachment_view,
 )
+from yuxi.services.file_preview import detect_media_type
 from yuxi.services.thread_files_service import (
     list_thread_files_view,
     read_thread_file_content_view,
@@ -40,13 +34,13 @@ from yuxi.services.thread_files_service import (
     save_thread_artifact_to_workspace_view,
 )
 from yuxi.services.feedback_service import get_message_feedback_view, submit_message_feedback_view
-from yuxi.repositories.agent_config_repository import AgentConfigRepository
 from yuxi.utils.logging_config import logger
 from yuxi.utils.image_processor import process_uploaded_image
 from yuxi.utils.paths import VIRTUAL_PATH_PREFIX
 
 
 # TODO：当前文件的功能过于庞杂，路由标签混乱
+
 
 # 图片上传响应模型
 class ImageUploadResponse(BaseModel):
@@ -61,91 +55,7 @@ class ImageUploadResponse(BaseModel):
     error: str | None = None
 
 
-class AgentConfigCreate(BaseModel):
-    name: str
-    description: str | None = None
-    icon: str | None = None
-    pics: list[str] | None = None
-    examples: list[str] | None = None
-    config_json: dict | None = None
-    set_default: bool = False
-
-
-class AgentConfigUpdate(BaseModel):
-    name: str | None = None
-    description: str | None = None
-    icon: str | None = None
-    pics: list[str] | None = None
-    examples: list[str] | None = None
-    config_json: dict | None = None
-
-
-class AgentRunCreate(BaseModel):
-    query: str = Field(..., description="用户输入的问题")
-    agent_config_id: int = Field(..., description="智能体配置 ID，后端将据此解析 agent_id 和运行时 context")
-    thread_id: str = Field(..., description="会话线程 ID")
-    meta: dict = Field(default_factory=dict, description="可选，请求追踪信息，例如 request_id")
-    image_content: str | None = Field(None, description="可选，base64 图片内容")
-
-
-class AgentChatRequest(BaseModel):
-    query: str = Field(..., description="用户输入的问题")
-    agent_config_id: int = Field(..., description="智能体配置 ID，后端将据此解析 agent_id 和运行时 context")
-    thread_id: str | None = Field(None, description="可选，会话线程 ID；不传则自动创建")
-    meta: dict = Field(default_factory=dict, description="可选，请求追踪信息，例如 request_id")
-    image_content: str | None = Field(None, description="可选，base64 图片内容")
-
-
 chat = APIRouter(prefix="/chat", tags=["chat"])
-
-# =============================================================================
-# > === 智能体管理分组 ===
-# =============================================================================
-
-
-@chat.get("/default_agent")
-async def get_default_agent(current_user: User = Depends(get_required_user)):
-    """获取默认智能体ID（需要登录）"""
-    try:
-        default_agent_id = conf.default_agent_id
-        # 如果没有设置默认智能体，尝试获取第一个可用的智能体
-        if not default_agent_id:
-            agents = await agent_manager.get_agents_info(include_configurable_items=False)
-            if agents:
-                default_agent_id = agents[0].get("id", "")
-
-        return {"default_agent_id": default_agent_id}
-    except Exception as e:
-        logger.error(f"获取默认智能体出错: {e}")
-        raise HTTPException(status_code=500, detail=f"获取默认智能体出错: {str(e)}")
-
-
-@chat.post("/set_default_agent")
-async def set_default_agent(request_data: dict = Body(...), current_user=Depends(get_admin_user)):
-    """设置默认智能体ID (仅管理员)"""
-    try:
-        agent_id = request_data.get("agent_id")
-        if not agent_id:
-            raise HTTPException(status_code=422, detail="缺少必需的 agent_id 字段")
-
-        # 验证智能体是否存在
-        agents = await agent_manager.get_agents_info(include_configurable_items=False)
-        agent_ids = [agent.get("id", "") for agent in agents]
-
-        if agent_id not in agent_ids:
-            raise HTTPException(status_code=404, detail=f"智能体 {agent_id} 不存在")
-
-        # 设置默认智能体ID
-        conf.default_agent_id = agent_id
-        # 保存配置
-        conf.save()
-
-        return {"success": True, "default_agent_id": agent_id}
-    except HTTPException as he:
-        raise he
-    except Exception as e:
-        logger.error(f"设置默认智能体出错: {e}")
-        raise HTTPException(status_code=500, detail=f"设置默认智能体出错: {str(e)}")
 
 
 @chat.post("/call")
@@ -157,433 +67,12 @@ async def call(query: str = Body(...), meta: dict = Body(None), current_user: Us
     if "request_id" not in meta or not meta.get("request_id"):
         meta["request_id"] = str(uuid.uuid4())
 
-    model = select_model(
-        model_provider=meta.get("model_provider"),
-        model_name=meta.get("model_name"),
-        model_spec=meta.get("model_spec") or meta.get("model"),
-    )
+    model = select_model(model_spec=meta.get("model_spec") or meta.get("model") or conf.default_model)
 
     response = await model.call(query)
     logger.debug({"query": query, "response": response.content})
 
     return {"response": response.content, "request_id": meta["request_id"]}
-
-
-@chat.get("/agent")
-async def get_agent(current_user: User = Depends(get_required_user)):
-    """获取所有可用智能体的基本信息（需要登录）"""
-    agents_info = await agent_manager.get_agents_info(include_configurable_items=False)
-    return {"agents": agents_info}
-
-
-@chat.get("/agent/{agent_id}")
-async def get_single_agent(agent_id: str, current_user: User = Depends(get_required_user)):
-    """获取指定智能体的完整信息（包含配置选项）（需要登录）"""
-    try:
-        # 检查智能体是否存在
-        if not (agent := agent_manager.get_agent(agent_id)):
-            raise HTTPException(status_code=404, detail=f"智能体 {agent_id} 不存在")
-
-        # 获取智能体的完整信息（包含 configurable_items）
-        agent_info = await agent.get_info()
-
-        return agent_info
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"获取智能体 {agent_id} 信息出错: {e}")
-        raise HTTPException(status_code=500, detail=f"获取智能体信息出错: {str(e)}")
-
-
-@chat.get("/agent/{agent_id}/configs")
-async def list_agent_configs(
-    agent_id: str,
-    current_user: User = Depends(get_required_user),
-    db: AsyncSession = Depends(get_db),
-):
-    if not agent_manager.get_agent(agent_id):
-        raise HTTPException(status_code=404, detail=f"智能体 {agent_id} 不存在")
-
-    repo = AgentConfigRepository(db)
-    items = await repo.list_by_department_agent(department_id=current_user.department_id, agent_id=agent_id)
-    if not items:
-        await repo.get_or_create_default(
-            department_id=current_user.department_id,
-            agent_id=agent_id,
-            created_by=str(current_user.id),
-        )
-        items = await repo.list_by_department_agent(department_id=current_user.department_id, agent_id=agent_id)
-
-    configs = [
-        {
-            "id": item.id,
-            "name": item.name,
-            "description": item.description,
-            "icon": item.icon,
-            "pics": item.pics or [],
-            "examples": item.examples or [],
-            "is_default": bool(item.is_default),
-        }
-        for item in items
-    ]
-    return {"configs": configs}
-
-
-@chat.get("/agent/{agent_id}/configs/{config_id}")
-async def get_agent_config_profile(
-    agent_id: str,
-    config_id: int,
-    current_user: User = Depends(get_required_user),
-    db: AsyncSession = Depends(get_db),
-):
-    if not agent_manager.get_agent(agent_id):
-        raise HTTPException(status_code=404, detail=f"智能体 {agent_id} 不存在")
-
-    repo = AgentConfigRepository(db)
-    item = await repo.get_by_id(config_id)
-    if not item or item.agent_id != agent_id or item.department_id != current_user.department_id:
-        raise HTTPException(status_code=404, detail="配置不存在")
-
-    return {"config": item.to_dict()}
-
-
-@chat.post("/agent/{agent_id}/configs")
-async def create_agent_config_profile(
-    agent_id: str,
-    payload: AgentConfigCreate,
-    current_user: User = Depends(get_admin_user),
-    db: AsyncSession = Depends(get_db),
-):
-    if not agent_manager.get_agent(agent_id):
-        raise HTTPException(status_code=404, detail=f"智能体 {agent_id} 不存在")
-
-    repo = AgentConfigRepository(db)
-    item = await repo.create(
-        department_id=current_user.department_id,
-        agent_id=agent_id,
-        name=payload.name,
-        description=payload.description,
-        icon=payload.icon,
-        pics=payload.pics,
-        examples=payload.examples,
-        config_json=payload.config_json,
-        is_default=payload.set_default,
-        created_by=str(current_user.id),
-    )
-    if payload.set_default:
-        item = await repo.set_default(config=item, updated_by=str(current_user.id))
-
-    return {"config": item.to_dict()}
-
-
-@chat.put("/agent/{agent_id}/configs/{config_id}")
-async def update_agent_config_profile(
-    agent_id: str,
-    config_id: int,
-    payload: AgentConfigUpdate,
-    current_user: User = Depends(get_admin_user),
-    db: AsyncSession = Depends(get_db),
-):
-    if not agent_manager.get_agent(agent_id):
-        raise HTTPException(status_code=404, detail=f"智能体 {agent_id} 不存在")
-
-    repo = AgentConfigRepository(db)
-    item = await repo.get_by_id(config_id)
-    if not item or item.agent_id != agent_id or item.department_id != current_user.department_id:
-        raise HTTPException(status_code=404, detail="配置不存在")
-
-    updated = await repo.update(
-        item,
-        name=payload.name,
-        description=payload.description,
-        icon=payload.icon,
-        pics=payload.pics,
-        examples=payload.examples,
-        config_json=payload.config_json,
-        updated_by=str(current_user.id),
-    )
-    return {"config": updated.to_dict()}
-
-
-@chat.post("/agent/{agent_id}/configs/{config_id}/set_default")
-async def set_agent_config_default(
-    agent_id: str,
-    config_id: int,
-    current_user: User = Depends(get_admin_user),
-    db: AsyncSession = Depends(get_db),
-):
-    if not agent_manager.get_agent(agent_id):
-        raise HTTPException(status_code=404, detail=f"智能体 {agent_id} 不存在")
-
-    repo = AgentConfigRepository(db)
-    item = await repo.get_by_id(config_id)
-    if not item or item.agent_id != agent_id or item.department_id != current_user.department_id:
-        raise HTTPException(status_code=404, detail="配置不存在")
-
-    updated = await repo.set_default(config=item, updated_by=str(current_user.id))
-    return {"config": updated.to_dict()}
-
-
-@chat.delete("/agent/{agent_id}/configs/{config_id}")
-async def delete_agent_config_profile(
-    agent_id: str,
-    config_id: int,
-    current_user: User = Depends(get_admin_user),
-    db: AsyncSession = Depends(get_db),
-):
-    if not agent_manager.get_agent(agent_id):
-        raise HTTPException(status_code=404, detail=f"智能体 {agent_id} 不存在")
-
-    repo = AgentConfigRepository(db)
-    item = await repo.get_by_id(config_id)
-    if not item or item.agent_id != agent_id or item.department_id != current_user.department_id:
-        raise HTTPException(status_code=404, detail="配置不存在")
-
-    await repo.delete(config=item, updated_by=str(current_user.id))
-    return {"success": True}
-
-
-@chat.post("/agent")
-async def chat_agent(
-    payload: AgentChatRequest,
-    current_user: User = Depends(get_required_user),
-    db: AsyncSession = Depends(get_db),
-):
-    """使用特定智能体进行对话（需要登录）"""
-    logger.info(f"query: {payload.query}, agent_config_id: {payload.agent_config_id}, meta: {payload.meta}")
-
-    # 查看图片内容
-    logger.info(f"image_content present: {payload.image_content is not None}")
-    if payload.image_content:
-        logger.info(f"image_content length: {len(payload.image_content)}")
-        logger.info(f"image_content preview: {payload.image_content[:50]}...")
-
-    return StreamingResponse(
-        stream_agent_chat(
-            query=payload.query,
-            agent_config_id=payload.agent_config_id,
-            thread_id=payload.thread_id,
-            meta=dict(payload.meta or {}),
-            image_content=payload.image_content,
-            current_user=current_user,
-            db=db,
-        ),
-        media_type="application/json",
-    )
-
-
-@chat.post("/agent/sync")
-async def chat_agent_sync(
-    payload: AgentChatRequest,
-    current_user: User = Depends(get_required_user),
-    db: AsyncSession = Depends(get_db),
-):
-    """使用特定智能体进行非流式对话（需要登录）"""
-    logger.info(f"[sync] query: {payload.query}, agent_config_id: {payload.agent_config_id}, meta: {payload.meta}")
-    logger.info(f"[sync] image_content present: {payload.image_content is not None}")
-    if payload.image_content:
-        logger.info(f"[sync] image_content length: {len(payload.image_content)}")
-
-    return await agent_chat(
-        query=payload.query,
-        agent_config_id=payload.agent_config_id,
-        thread_id=payload.thread_id,
-        meta=dict(payload.meta or {}),
-        image_content=payload.image_content,
-        current_user=current_user,
-        db=db,
-    )
-
-
-@chat.post("/runs")
-async def create_agent_run(
-    payload: AgentRunCreate,
-    current_user: User = Depends(get_required_user),
-    db: AsyncSession = Depends(get_db),
-):
-    """创建异步 run 任务并入队（需要登录）"""
-    return await create_agent_run_view(
-        query=payload.query,
-        agent_config_id=payload.agent_config_id,
-        thread_id=payload.thread_id,
-        meta=dict(payload.meta or {}),
-        image_content=payload.image_content,
-        current_user_id=str(current_user.id),
-        db=db,
-    )
-
-
-@chat.get("/runs/{run_id}")
-async def get_agent_run(
-    run_id: str,
-    current_user: User = Depends(get_required_user),
-    db: AsyncSession = Depends(get_db),
-):
-    """获取 run 状态（需要登录）"""
-    return await get_agent_run_view(run_id=run_id, current_user_id=str(current_user.id), db=db)
-
-
-@chat.post("/runs/{run_id}/cancel")
-async def cancel_agent_run(
-    run_id: str,
-    current_user: User = Depends(get_required_user),
-    db: AsyncSession = Depends(get_db),
-):
-    """取消 run（需要登录）"""
-    return await cancel_agent_run_view(run_id=run_id, current_user_id=str(current_user.id), db=db)
-
-
-@chat.get("/runs/{run_id}/events")
-async def stream_run_events(
-    run_id: str,
-    after_seq: str = Query("0"),
-    current_user: User = Depends(get_required_user),
-):
-    """SSE 拉取 run 事件（需要登录）"""
-    return StreamingResponse(
-        stream_agent_run_events(
-            run_id=run_id,
-            after_seq=after_seq,
-            current_user_id=str(current_user.id),
-        ),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",
-        },
-    )
-
-# =============================================================================
-# > === 模型管理分组 ===
-# =============================================================================
-
-
-@chat.get("/models")
-async def get_chat_models(model_provider: str, current_user: User = Depends(get_admin_user)):
-    """获取指定模型提供商的模型列表（需要登录）"""
-    model = select_model(model_provider=model_provider)
-    models = await model.get_models()
-    return {"models": models}
-
-
-@chat.post("/models/update")
-async def update_chat_models(model_provider: str, model_names: list[str], current_user=Depends(get_admin_user)):
-    """更新指定模型提供商的模型列表 (仅管理员)"""
-    conf.model_names[model_provider].models = model_names
-    conf._save_models_to_file(model_provider)
-    return {"models": conf.model_names[model_provider].models}
-
-
-@chat.post("/thread/{thread_id}/resume")
-async def resume_thread_chat(
-    thread_id: str,
-    approved: bool | None = Body(None),
-    answer: dict | None = Body(None),
-    config: dict = Body({}),
-    current_user: User = Depends(get_required_user),
-    db: AsyncSession = Depends(get_db),
-):
-    """恢复被人工审批中断的对话（需要登录）"""
-
-    # 验证 thread 存在且属于当前用户
-    conv_repo = ConversationRepository(db)
-    conversation = await conv_repo.get_conversation_by_thread_id(thread_id)
-    if not conversation or conversation.user_id != str(current_user.id) or conversation.status == "deleted":
-        raise HTTPException(status_code=404, detail="对话线程不存在")
-    agent_id = conversation.agent_id
-
-    def normalize_resume_input(raw_answer: Any, raw_approved: bool | None) -> Any:
-        def normalize_single_answer(value: Any) -> Any:
-            if isinstance(value, str):
-                normalized = value.strip()
-                if not normalized:
-                    raise HTTPException(status_code=422, detail="answer 不能为空")
-                return normalized
-
-            if isinstance(value, list):
-                if len(value) == 0:
-                    raise HTTPException(status_code=422, detail="answer 不能为空")
-
-                normalized_list: list[str] = []
-                for item in value:
-                    if not isinstance(item, str) or not item.strip():
-                        raise HTTPException(status_code=422, detail="answer 列表必须是非空字符串")
-                    normalized_list.append(item.strip())
-                return normalized_list
-
-            if isinstance(value, dict):
-                if value.get("type") == "other":
-                    text = value.get("text")
-                    if not isinstance(text, str) or not text.strip():
-                        raise HTTPException(status_code=422, detail="other 文本不能为空")
-                return value
-
-            raise HTTPException(status_code=422, detail="answer 值类型不支持")
-
-        if raw_answer is not None:
-            if isinstance(raw_answer, dict):
-                if len(raw_answer) == 0:
-                    raise HTTPException(status_code=422, detail="answer 不能为空")
-
-                normalized_answers: dict[str, Any] = {}
-                for question_id, value in raw_answer.items():
-                    normalized_question_id = str(question_id).strip()
-                    if not normalized_question_id:
-                        raise HTTPException(status_code=422, detail="question_id 不能为空")
-                    normalized_answers[normalized_question_id] = normalize_single_answer(value)
-                return normalized_answers
-
-            raise HTTPException(status_code=422, detail="answer 必须是对象映射 {question_id: answer}")
-
-        if raw_approved is not None:
-            return "approve" if raw_approved else "reject"
-
-        raise HTTPException(status_code=422, detail="approved 或 answer 至少提供一个")
-
-    resume_input = normalize_resume_input(answer, approved)
-
-    logger.info(
-        "Resuming agent_id: %s, thread_id: %s, approved: %s, answer_type: %s",
-        agent_id,
-        thread_id,
-        approved,
-        type(answer).__name__ if answer is not None else "None",
-    )
-
-    meta = {
-        "agent_id": agent_id,
-        "thread_id": thread_id,
-        "user_id": current_user.id,
-        "approved": approved,
-        "answer": answer,
-        "resume_input": resume_input,
-    }
-    if "request_id" not in meta or not meta.get("request_id"):
-        meta["request_id"] = str(uuid.uuid4())
-    return StreamingResponse(
-        stream_agent_resume(
-            agent_id=agent_id,
-            thread_id=thread_id,
-            resume_input=resume_input,
-            meta=meta,
-            config=config,
-            current_user=current_user,
-            db=db,
-        ),
-        media_type="application/json",
-    )
-
-
-@chat.get("/thread/{thread_id}/active_run")
-async def get_thread_active_run(
-    thread_id: str,
-    current_user: User = Depends(get_required_user),
-    db: AsyncSession = Depends(get_db),
-):
-    """获取当前会话活跃 run（需要登录）"""
-    return await get_active_run_by_thread(thread_id=thread_id, current_user_id=str(current_user.id), db=db)
 
 
 @chat.get("/thread/{thread_id}/history")
@@ -594,7 +83,7 @@ async def get_thread_history(
     try:
         return await get_thread_history_view(
             thread_id=thread_id,
-            current_user_id=str(current_user.id),
+            current_uid=str(current_user.uid),
             db=db,
         )
 
@@ -606,6 +95,7 @@ async def get_thread_history(
 @chat.get("/thread/{thread_id}/state")
 async def get_thread_state(
     thread_id: str,
+    include_messages: bool = Query(False),
     current_user: User = Depends(get_required_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -613,8 +103,9 @@ async def get_thread_state(
     try:
         return await get_agent_state_view(
             thread_id=thread_id,
-            current_user_id=str(current_user.id),
+            current_user=current_user,
             db=db,
+            include_messages=include_messages,
         )
     except HTTPException:
         raise
@@ -634,13 +125,34 @@ class ThreadCreate(BaseModel):
 
 class ThreadResponse(BaseModel):
     id: str
-    user_id: str
+    uid: str
     agent_id: str
     title: str | None = None
     is_pinned: bool = False
     created_at: str
     updated_at: str
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class ThreadSearchSnippet(BaseModel):
+    message_id: int | None = None
+    content: str
+    created_at: str | None = None
+
+
+class ThreadSearchItem(ThreadResponse):
+    thread_id: str
+    matched_count: int
+    message_id: int | None = None
+    latest_match_at: str | None = None
+    snippets: list[ThreadSearchSnippet] = Field(default_factory=list)
+
+
+class ThreadSearchResponse(BaseModel):
+    items: list[ThreadSearchItem]
+    has_more: bool
+    limit: int
+    offset: int
 
 
 class AttachmentResponse(BaseModel):
@@ -655,6 +167,7 @@ class AttachmentResponse(BaseModel):
     original_path: str | None = None
     original_artifact_url: str | None = None
     minio_url: str | None = None
+    request_id: str | None = None
 
 
 class AttachmentLimits(BaseModel):
@@ -665,6 +178,55 @@ class AttachmentLimits(BaseModel):
 class AttachmentListResponse(BaseModel):
     attachments: list[AttachmentResponse]
     limits: AttachmentLimits
+
+
+class TmpAttachmentResponse(BaseModel):
+    tmp_file_id: str
+    file_name: str
+    file_type: str | None = None
+    file_size: int
+    bucket_name: str
+    object_name: str
+    minio_url: str
+    uploaded_at: str
+    parse_supported: bool = False
+    parse_methods: list[str] = Field(default_factory=list)
+
+
+class TmpAttachmentParseRequest(BaseModel):
+    object_name: str
+    file_name: str
+    parse_method: str | None = None
+    bucket_name: str | None = None
+
+
+class TmpAttachmentParseResponse(BaseModel):
+    tmp_file_id: str
+    file_name: str
+    bucket_name: str
+    object_name: str
+    parsed_object_name: str
+    parsed_minio_url: str
+    parse_method: str
+    status: str
+    truncated: bool = False
+
+
+class TmpAttachmentConfirmItem(BaseModel):
+    file_name: str
+    file_type: str | None = None
+    bucket_name: str
+    object_name: str
+    parsed_object_name: str | None = None
+    truncated: bool = False
+
+
+class TmpAttachmentConfirmRequest(BaseModel):
+    attachments: list[TmpAttachmentConfirmItem]
+
+
+class TmpAttachmentConfirmResponse(BaseModel):
+    attachments: list[AttachmentResponse]
 
 
 class ThreadFileEntry(BaseModel):
@@ -712,11 +274,11 @@ async def create_thread(
 ):
     """创建新对话线程 (使用新存储系统)"""
     return await create_thread_view(
-        agent_id=thread.agent_id,
+        agent_slug=thread.agent_id,
         title=thread.title,
         metadata=thread.metadata,
         db=db,
-        current_user_id=str(current_user.id),
+        current_uid=str(current_user.uid),
     )
 
 
@@ -730,7 +292,27 @@ async def list_threads(
 ):
     """获取用户的所有对话线程 (使用新存储系统)"""
     return await list_threads_view(
-        agent_id=agent_id, db=db, current_user_id=str(current_user.id), limit=limit, offset=offset
+        agent_slug=agent_id, db=db, current_uid=str(current_user.uid), limit=limit, offset=offset
+    )
+
+
+@chat.get("/threads/search", response_model=ThreadSearchResponse)
+async def search_threads(
+    q: str = Query(..., min_length=1, max_length=200),
+    agent_id: str | None = Query(None),
+    limit: int = Query(20, ge=1, le=50),
+    offset: int = Query(0, ge=0),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_required_user),
+):
+    """搜索当前用户的历史对话。"""
+    return await search_threads_view(
+        query=q,
+        agent_id=agent_id,
+        db=db,
+        current_uid=str(current_user.uid),
+        limit=limit,
+        offset=offset,
     )
 
 
@@ -739,7 +321,7 @@ async def delete_thread(
     thread_id: str, db: AsyncSession = Depends(get_db), current_user: User = Depends(get_required_user)
 ):
     """删除对话线程 (使用新存储系统)"""
-    return await delete_thread_view(thread_id=thread_id, db=db, current_user_id=str(current_user.id))
+    return await delete_thread_view(thread_id=thread_id, db=db, current_uid=str(current_user.uid))
 
 
 class ThreadUpdate(BaseModel):
@@ -760,13 +342,50 @@ async def update_thread(
         title=thread_update.title,
         is_pinned=thread_update.is_pinned,
         db=db,
-        current_user_id=str(current_user.id),
+        current_uid=str(current_user.uid),
     )
 
 
 # ================================
 # > === 附件管理分组 ===
 # ================================
+
+
+@chat.post("/attachments/tmp", response_model=TmpAttachmentResponse)
+async def upload_tmp_attachment(file: UploadFile = File(...), current_user: User = Depends(get_required_user)):
+    """上传附件到 MinIO tmp，暂不关联线程。"""
+    return await upload_tmp_attachment_view(file=file, current_uid=str(current_user.uid))
+
+
+@chat.post("/attachments/tmp/parse", response_model=TmpAttachmentParseResponse)
+async def parse_tmp_attachment(
+    request: TmpAttachmentParseRequest,
+    current_user: User = Depends(get_required_user),
+):
+    """解析 tmp 附件并返回解析后的 tmp URL。"""
+    return await parse_tmp_attachment_view(
+        object_name=request.object_name,
+        file_name=request.file_name,
+        parse_method=request.parse_method,
+        bucket_name=request.bucket_name,
+        current_uid=str(current_user.uid),
+    )
+
+
+@chat.post("/thread/{thread_id}/attachments/confirm", response_model=TmpAttachmentConfirmResponse)
+async def confirm_tmp_thread_attachments(
+    thread_id: str,
+    request: TmpAttachmentConfirmRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_required_user),
+):
+    """将 tmp 附件正式加入线程附件列表。"""
+    return await confirm_tmp_thread_attachments_view(
+        thread_id=thread_id,
+        attachments=[item.model_dump() for item in request.attachments],
+        db=db,
+        current_uid=str(current_user.uid),
+    )
 
 
 @chat.post("/thread/{thread_id}/attachments", response_model=AttachmentResponse)
@@ -781,7 +400,7 @@ async def upload_thread_attachment(
         thread_id=thread_id,
         file=file,
         db=db,
-        current_user_id=str(current_user.id),
+        current_uid=str(current_user.uid),
     )
 
 
@@ -795,7 +414,7 @@ async def list_thread_attachments(
     return await list_thread_attachments_view(
         thread_id=thread_id,
         db=db,
-        current_user_id=str(current_user.id),
+        current_uid=str(current_user.uid),
     )
 
 
@@ -811,7 +430,7 @@ async def delete_thread_attachment(
         thread_id=thread_id,
         file_id=file_id,
         db=db,
-        current_user_id=str(current_user.id),
+        current_uid=str(current_user.uid),
     )
 
 
@@ -826,7 +445,7 @@ async def list_thread_files(
     """列出线程文件目录。"""
     return await list_thread_files_view(
         thread_id=thread_id,
-        current_user_id=str(current_user.id),
+        current_uid=str(current_user.uid),
         db=db,
         path=path,
         recursive=recursive,
@@ -845,7 +464,7 @@ async def read_thread_file_content(
     """读取线程文本文件（按行分页）。"""
     return await read_thread_file_content_view(
         thread_id=thread_id,
-        current_user_id=str(current_user.id),
+        current_uid=str(current_user.uid),
         db=db,
         path=path,
         offset=offset,
@@ -864,12 +483,12 @@ async def get_thread_artifact(
     """下载或预览线程文件。"""
     file_path = await resolve_thread_artifact_view(
         thread_id=thread_id,
-        current_user_id=str(current_user.id),
+        current_uid=str(current_user.uid),
         db=db,
         path=path,
     )
 
-    media_type = guess_type(file_path.name)[0] or "application/octet-stream"
+    media_type = detect_media_type(file_path.name, file_path.read_bytes())
     headers = {"Content-Disposition": f'attachment; filename="{file_path.name}"'} if download else None
     return FileResponse(path=file_path, media_type=media_type, headers=headers)
 
@@ -884,7 +503,7 @@ async def save_thread_artifact_to_workspace(
     """保存交付物到共享 workspace/saved_artifacts 目录。"""
     return await save_thread_artifact_to_workspace_view(
         thread_id=thread_id,
-        current_user_id=str(current_user.id),
+        current_uid=str(current_user.uid),
         db=db,
         path=request.path,
     )
@@ -921,7 +540,7 @@ async def submit_message_feedback(
         rating=feedback_data.rating,
         reason=feedback_data.reason,
         db=db,
-        current_user_id=str(current_user.id),
+        current_uid=str(current_user.uid),
     )
     return MessageFeedbackResponse(**result)
 
@@ -936,7 +555,7 @@ async def get_message_feedback(
     return await get_message_feedback_view(
         message_id=message_id,
         db=db,
-        current_user_id=str(current_user.id),
+        current_uid=str(current_user.uid),
     )
 
 
