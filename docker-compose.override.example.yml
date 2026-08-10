@@ -1,0 +1,19 @@
+# Copy to docker-compose.override.yml for machine-local Compose tweaks.
+# Docker Compose auto-loads docker-compose.override.yml; keep that file gitignored.
+#
+# Prefer putting LANG/LC_ALL/PYTHONUTF8 in .env when possible.
+# Use this file only for bind ports, extra mounts, or service-specific overrides.
+
+services:
+  api:
+    environment:
+      LANG: C.UTF-8
+      LC_ALL: C.UTF-8
+      PYTHONIOENCODING: utf-8
+      PYTHONUTF8: "1"
+  worker:
+    environment:
+      LANG: C.UTF-8
+      LC_ALL: C.UTF-8
+      PYTHONIOENCODING: utf-8
+      PYTHONUTF8: "1"
