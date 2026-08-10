@@ -91,6 +91,27 @@ class AgentRunRepository:
         )
         return result.scalar_one_or_none()
 
+    async def get_latest_chat_or_resume_run(
+        self,
+        *,
+        uid: str,
+        agent_slug: str,
+        conversation_thread_id: str,
+    ) -> AgentRun | None:
+        """读取队列作用域内最新的顶层 chat/resume run。"""
+        result = await self.db.execute(
+            select(AgentRun)
+            .where(
+                AgentRun.uid == str(uid),
+                AgentRun.agent_slug == agent_slug,
+                AgentRun.conversation_thread_id == conversation_thread_id,
+                AgentRun.run_type.in_(["chat", "resume"]),
+            )
+            .order_by(AgentRun.created_at.desc(), AgentRun.id.desc())
+            .limit(1)
+        )
+        return result.scalar_one_or_none()
+
     async def list_child_runs_for_user(self, created_by_run_id: str, uid: str) -> list[AgentRun]:
         """列出由指定 run 创建的所有子 run。"""
         result = await self.db.execute(
@@ -146,6 +167,10 @@ class AgentRunRepository:
         uid: str,
         request_id: str,
         input_payload: dict,
+        source: str = "chat",
+        channel: str = "web",
+        external_id: str | None = None,
+        origin_metadata: dict | None = None,
         conversation_id: int | None = None,
         created_by_run_id: str | None = None,
         subagent_thread_relation_id: int | None = None,
@@ -159,6 +184,10 @@ class AgentRunRepository:
             agent_slug=agent_slug,
             uid=str(uid),
             request_id=request_id,
+            source=source,
+            channel=channel,
+            external_id=external_id,
+            origin_metadata=origin_metadata or {},
             conversation_id=conversation_id,
             created_by_run_id=created_by_run_id,
             subagent_thread_relation_id=subagent_thread_relation_id,
@@ -211,19 +240,19 @@ class AgentRunRepository:
         status: str,
         error_type: str | None = None,
         error_message: str | None = None,
-    ) -> AgentRun | None:
+    ) -> tuple[AgentRun | None, bool]:
         run = await self._lock_run(run_id)
         if not run:
-            return None
+            return None, False
         if run.status in TERMINAL_RUN_STATUSES:
-            return run
+            return run, False
         run.status = status
         run.error_type = error_type
         run.error_message = error_message
         run.finished_at = utc_now_naive()
         run.updated_at = run.finished_at
         await self.db.flush()
-        return run
+        return run, True
 
     async def _lock_run(self, run_id: str) -> AgentRun | None:
         result = await self.db.execute(select(AgentRun).where(AgentRun.id == run_id).with_for_update())

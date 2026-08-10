@@ -2,13 +2,15 @@
 
 ## 概述
 
-系统统一通过 **系统设置 → 模型配置** 页面管理所有模型（对话模型、嵌入模型、重排模型），无需修改配置文件。
+系统统一通过 **智能体管理 → 模型供应商** 页面管理所有模型（对话模型、嵌入模型、重排模型），无需修改配置文件。
 
 ## 配置路径
 
 ```
-系统设置 → 模型配置
+智能体管理 → 模型供应商
 ```
+
+模型供应商页签仅管理员可见。如果当前账号不是管理员，只能看到普通的智能体管理和个人设置入口。
 
 ## API 凭证配置
 
@@ -50,6 +52,7 @@
 | OpenRouter | `openrouter` | chat, embedding | `OPENROUTER_API_KEY` |
 | ModelScope | `modelscope` | chat | `MODELSCOPE_ACCESS_TOKEN` |
 | OpenCode | `opencode` | chat | 无默认环境变量 |
+| OpenCode Go | `opencode-go` | chat | 无默认环境变量 |
 | SiliconFlow | `siliconflow-cn` | chat, embedding, rerank | `SILICONFLOW_API_KEY` |
 | SiliconFlow International | `siliconflow` | chat, embedding, rerank | `SILICONFLOW_GLOBAL_API_KEY` |
 
@@ -78,6 +81,37 @@
 
 嵌入模型（embedding）需配置向量维度，请参考模型提供商的规格说明。
 
+OpenAI 兼容供应商的对话模型可在「模型请求参数 JSON」中配置思考模式。这里填写的 JSON 会作为 OpenAI SDK 的 `extra_body` 传入；SDK 会将其中字段合并到最终 HTTP 请求体顶层。
+
+出于安全考虑，该配置采用白名单机制，仅允许以下顶层字段：
+
+| 字段 | 常见供应商或用途 |
+|------|------------------|
+| `enable_thinking` | DashScope、SiliconFlow 等供应商的思考开关 |
+| `thinking_budget` | DashScope、SiliconFlow 等供应商的思考 Token 预算 |
+| `thinking` | DeepSeek、智谱、Kimi、火山方舟等供应商的思考配置对象 |
+| `reasoning` | OpenRouter 等供应商的推理配置对象 |
+| `reasoning_effort` | OpenAI 风格的推理强度 |
+
+白名单只校验顶层字段，`thinking`、`reasoning` 等对象的内部结构由对应供应商校验。不同模型支持的取值和预算范围可能不同，应以供应商的当前文档为准。项目维护者如需支持新的顶层字段，可修改 `backend/package/yuxi/models/providers/service.py` 中的 `ALLOWED_EXTRA_BODY_FIELDS`，并补充相应测试和本文档。
+
+例如，关闭思考：
+
+```json
+{
+  "enable_thinking": false
+}
+```
+
+限制思考预算：
+
+```json
+{
+  "enable_thinking": true,
+  "thinking_budget": 1024
+}
+```
+
 ### 移除模型
 
 在供应商详情的已启用模型列表中移除不需要的模型。
@@ -91,9 +125,3 @@
 ## Ollama 支持
 
 当前版本不再内置 Ollama provider type，也不再提供 Ollama embedding 运行时适配。已有 Ollama embedding 知识库需要管理员选择新的 embedding 模型并重建索引，避免不同向量空间混用。
-
-## 常见问题
-
-**凭证缺失警告**：检查 API Key 是否正确配置，或确认环境变量是否已设置。
-
-**模型配置未生效**：确认模型已添加至供应商的已启用列表中。

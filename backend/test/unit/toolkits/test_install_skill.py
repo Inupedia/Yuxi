@@ -10,6 +10,7 @@ from yuxi.agents.skills import service as skill_service
 from yuxi.agents.toolkits.buildin import install_skill as exported_install_skill
 
 install_skill_module = importlib.import_module("yuxi.agents.toolkits.buildin.install_skill")
+sandbox_backend_module = importlib.import_module("yuxi.agents.backends.sandbox")
 
 
 class _AsyncSessionContext:
@@ -42,18 +43,26 @@ async def test_install_skill_from_sandbox_installs_as_current_user_private_skill
             "uid": uid,
             "staging_root": staging_root,
         }
-        return source_dir, "demo-skill"
+        return source_dir
 
-    async def import_skill_dir(db_arg, **kwargs):
-        calls["import"] = {"db": db_arg, **kwargs}
-        return SimpleNamespace(slug="demo-skill")
+    async def install_personal_skill_dir(uid, source_dir_arg, **kwargs):
+        calls["install"] = {"uid": uid, "source_dir": source_dir_arg, **kwargs}
+        return SimpleNamespace(
+            slug="demo-skill",
+            name="Demo Skill",
+            description="demo description",
+            source_scope="personal",
+            tool_dependencies=[],
+            mcp_dependencies=[],
+            skill_dependencies=[],
+        )
 
     async def enable_skills(db_arg, thread_id, uid, skill_slugs):
         calls["enable"] = {"db": db_arg, "thread_id": thread_id, "uid": uid, "skill_slugs": skill_slugs}
         return True
 
-    def sync_thread_readable_skills(thread_id, skills):
-        calls["sync"] = {"thread_id": thread_id, "skills": skills}
+    async def sync_thread_readable_skills_async(thread_id, skills, sources):
+        calls["sync"] = {"thread_id": thread_id, "skills": skills, "sources": sources}
 
     monkeypatch.setattr(
         install_skill_module,
@@ -70,24 +79,30 @@ async def test_install_skill_from_sandbox_installs_as_current_user_private_skill
         "get_async_session_context",
         lambda: _AsyncSessionContext(db),
     )
-    monkeypatch.setattr(skill_service, "import_skill_dir", import_skill_dir)
-    monkeypatch.setattr(skill_service, "sync_thread_readable_skills", sync_thread_readable_skills)
+    monkeypatch.setattr(skill_service, "install_personal_skill_dir", install_personal_skill_dir)
+    monkeypatch.setattr(skill_service, "sync_thread_readable_skills_async", sync_thread_readable_skills_async)
 
+    runtime = _runtime(
+        uid="normal-user",
+        thread_id="thread-1",
+        skills=["existing-skill"],
+        _readable_skills=["existing-skill", "demo-skill"],
+        _prompt_skills=["existing-skill", "demo-skill"],
+        _runtime_skill_sources={
+            "existing-skill": "/tmp/shared/existing-skill",
+            "demo-skill": "/tmp/shared/demo-skill",
+        },
+    )
     result = await install_skill_module._run_install_task(
         " /home/gem/user-data/workspace/demo-skill ",
-        _runtime(uid="normal-user", thread_id="thread-1", skills=["existing-skill"]),
+        runtime,
         "tool-1",
     )
 
     assert result.update["activated_skills"] == ["demo-skill"]
     assert "成功安装并激活技能" in result.update["messages"][0].content
     assert calls["prepare"]["uid"] == "normal-user"
-    assert calls["import"]["created_by"] == "normal-user"
-    assert calls["import"]["share_config"] == {
-        "access_level": "user",
-        "department_ids": [],
-        "user_uids": ["normal-user"],
-    }
+    assert calls["install"] == {"uid": "normal-user", "source_dir": source_dir}
     assert calls["prepare"]["source"] == "/home/gem/user-data/workspace/demo-skill"
     assert calls["enable"] == {
         "db": db,
@@ -95,7 +110,27 @@ async def test_install_skill_from_sandbox_installs_as_current_user_private_skill
         "uid": "normal-user",
         "skill_slugs": ["demo-skill"],
     }
-    assert calls["sync"] == {"thread_id": "thread-1", "skills": ["existing-skill", "demo-skill"]}
+    assert result.update["messages"][0].content.splitlines() == [
+        "✅ 成功安装并激活技能: demo-skill",
+        "📁 安装位置: /home/gem/user-data/workspace/agents/skills/demo-skill",
+    ]
+    assert runtime.context.skills == ["existing-skill", "demo-skill"]
+    assert runtime.context._readable_skills == ["existing-skill", "demo-skill"]
+    assert runtime.context._prompt_skills == ["existing-skill", "demo-skill"]
+    assert runtime.context._runtime_skill_sources == {"existing-skill": "/tmp/shared/existing-skill"}
+    assert runtime.context._runtime_skill_metadata == {
+        "demo-skill": {
+            "name": "Demo Skill",
+            "description": "demo description",
+            "path": "/home/gem/user-data/workspace/agents/skills/demo-skill/SKILL.md",
+        }
+    }
+    assert runtime.context._runtime_skill_dependency_map == {"demo-skill": {"tools": [], "mcps": [], "skills": []}}
+    assert calls["sync"] == {
+        "thread_id": "thread-1",
+        "skills": ["existing-skill"],
+        "sources": {"existing-skill": "/tmp/shared/existing-skill"},
+    }
 
 
 @pytest.mark.asyncio
@@ -269,14 +304,8 @@ def test_prepare_skill_invalid_virtual_path_does_not_fallback_to_sandbox(monkeyp
         def __init__(self, *_args, **_kwargs):
             calls["fallback"] = True
 
-    monkeypatch.setattr(
-        "yuxi.agents.backends.sandbox.resolve_virtual_path",
-        resolve_virtual_path,
-    )
-    monkeypatch.setattr(
-        "yuxi.agents.backends.sandbox.ProvisionerSandboxBackend",
-        FakeProvisionerSandboxBackend,
-    )
+    monkeypatch.setattr(sandbox_backend_module, "resolve_virtual_path", resolve_virtual_path)
+    monkeypatch.setattr(sandbox_backend_module, "ProvisionerSandboxBackend", FakeProvisionerSandboxBackend)
     monkeypatch.setattr(skill_service, "is_valid_skill_slug", lambda _slug: True)
 
     with pytest.raises(ValueError, match="path traversal detected"):

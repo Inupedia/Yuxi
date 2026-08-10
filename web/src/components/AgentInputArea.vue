@@ -10,6 +10,7 @@
     :mention="mention"
     :thread-id="threadId"
     :file-upload-enabled="supportsFileUpload"
+    :show-options-left="showInputOptions"
     @send="handleSend"
     @keydown="handleKeyDown"
     @paste-image="handlePastedImage"
@@ -51,11 +52,13 @@
     </template>
     <template #options-left>
       <AttachmentOptionsComponent
-        v-if="supportsFileUpload"
         :disabled="disabled"
+        :file-upload-enabled="supportsFileUpload"
+        :mention="mention"
         @upload="handleAttachmentUpload"
         @upload-image="handleImageUpload"
         @upload-image-success="handleImageUploadSuccess"
+        @select-mention="handleMentionSelect"
       />
     </template>
     <template #actions-left>
@@ -108,6 +111,12 @@ const currentImage = ref(null)
 const placeholder = '问点什么？使用 @ 可以提及哦~'
 
 const previewAttachments = computed(() => normalizeAttachmentPreviews(props.attachments))
+const showInputOptions = computed(
+  () =>
+    props.supportsFileUpload ||
+    Boolean(props.mention?.knowledgeBases?.length) ||
+    Boolean(props.mention?.skills?.length)
+)
 
 const updateValue = (val) => {
   emit('update:modelValue', val)
@@ -145,8 +154,19 @@ const handleImageUploadSuccess = () => {
   }
 }
 
+const handleMentionSelect = (item) => {
+  inputRef.value?.insertMention(item)
+  inputRef.value?.closeOptions()
+}
+
 const handleImageRemoved = () => {
   currentImage.value = null
+}
+
+// 发送被后端拒绝时把旧图片恢复到输入区，覆盖等待期间可能新选的图片，
+// 避免旧图片被悄悄丢弃；用户可重新选择新图片。
+const restoreImage = (image) => {
+  currentImage.value = image || null
 }
 
 const handleAttachmentRemoved = (attachment) => {
@@ -173,7 +193,8 @@ const handleKeyDown = (e) => {
 
 defineExpose({
   focus: () => inputRef.value?.focus(),
-  closeOptions: () => inputRef.value?.closeOptions()
+  closeOptions: () => inputRef.value?.closeOptions(),
+  restoreImage
 })
 </script>
 

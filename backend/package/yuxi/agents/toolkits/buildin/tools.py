@@ -3,8 +3,10 @@ import re
 from pathlib import Path
 from typing import Annotated
 
+import httpx
 from langchain.tools import InjectedToolCallId
 from langchain_core.messages import ToolMessage
+from langchain_core.tools import tool as langchain_tool
 from langgraph.prebuilt.tool_node import ToolRuntime
 from langgraph.types import Command, interrupt
 from pydantic import BaseModel, Field
@@ -21,9 +23,6 @@ from yuxi.utils.paths import (
 )
 from yuxi.utils.question_utils import normalize_questions
 
-# Lazy initialization for TavilySearch (only when API key is available)
-_tavily_search_instance = None
-
 _PRESENT_ARTIFACTS_INTERNAL_DIR_NAMES = frozenset(
     {CONVERSATION_HISTORY_DIR_NAME, LARGE_TOOL_RESULTS_DIR_NAME, "large_tool_history"}
 )
@@ -33,45 +32,191 @@ _OCR_PREVIEW_LIMIT = 1200
 _SAFE_OUTPUT_STEM_RE = re.compile(r"[^A-Za-z0-9._\-\u4e00-\u9fff]+")
 
 
-def _create_tavily_search():
-    """Create TavilySearch; supports optional TAVILY_API_BASE (e.g. third-party compatible endpoint)."""
-    global _tavily_search_instance
-    if _tavily_search_instance is None:
-        from langchain_tavily import TavilySearch
+_DOUBAO_SEARCH_URL = "https://open.feedcoopapi.com/search_api/web_search"
 
-        key = (os.environ.get("TAVILY_API_KEY") or "").strip()
-        base = (os.environ.get("TAVILY_API_BASE") or "").strip()
-        # 自定义 base 时必须显式传入 key，否则部分运行环境不会把密钥传给 wrapper
-        if base:
-            if not key:
-                raise ValueError("TAVILY_API_BASE is set but TAVILY_API_KEY is empty")
-            _tavily_search_instance = TavilySearch(tavily_api_key=key, api_base_url=base.rstrip("/"))
-        else:
-            _tavily_search_instance = TavilySearch()
+DOUBAO_SEARCH_DESCRIPTION = """执行网络网页搜索，通过豆包联网搜索获取实时高质量互联网网页内容、新闻和站点资料。
 
-    return _tavily_search_instance
+适用场景：
+1. 获取最新的时事新闻、即时信息或最新科技动态
+2. 检索特定网站的内容（通过 sites 参数指定）
+3. 查找指定时间范围内发布的新闻或文章（通过 time_range 参数过滤）
+
+参数使用建议：
+- query: 输入简短清晰的搜索关键词或简短提问
+- count: 默认 10 条，深度调研可适当调大（最多 50 条）
+- time_range: 需要最新消息或时效性强的资讯时建议传入 'OneDay'、'OneWeek' 或 'OneMonth'
+- sites: 仅需特定站点（如官媒、平台）时传入站点域名
+"""
 
 
-# 注册 TavilySearch 工具（延迟初始化）
-def _register_tavily_tool():
-    """Register TavilySearch tool with extra metadata."""
-    tavily_instance = _create_tavily_search()
-    # 手动注册到全局注册表
-    _extra_registry["tavily_search"] = ToolExtraMetadata(
-        category="buildin",
-        tags=["搜索"],
-        display_name="Tavily 网页搜索",
+class DoubaoSearchInput(BaseModel):
+    query: str = Field(description="搜索查询词，1-100字符，必须精准描述检索需求")
+    count: int = Field(default=10, ge=1, le=50, description="返回搜索结果数量，支持 1-50 条，默认 10 条")
+    time_range: str | None = Field(
+        default=None,
+        description=(
+            "按发文时间筛选结果。可选枚举值:\n"
+            "- 'OneDay': 近24小时内\n"
+            "- 'OneWeek': 近1周内\n"
+            "- 'OneMonth': 近1个月内\n"
+            "- 'OneYear': 近1年内\n"
+            "- 'YYYY-MM-DD..YYYY-MM-DD': 自定义日期范围区间 (如 '2025-01-01..2025-12-31')"
+        ),
     )
-    # 添加到工具实例列表
-    _all_tool_instances.append(tavily_instance)
+    sites: list[str] | None = Field(
+        default=None, description="指定限定搜索的完整域名列表 (如 ['sohu.com', '163.com'])，最多支持 20 个站点"
+    )
+    block_hosts: list[str] | None = Field(
+        default=None, description="指定屏蔽的搜索域名列表 (如 ['example.com'])，最多支持 5 个站点"
+    )
+    content_format: str = Field(
+        default="text", description="正文返回格式，支持 'text' (纯文本) 或 'markdown' (Markdown 格式)，默认 'text'"
+    )
 
 
-# 模块加载时注册
-if os.getenv("TAVILY_API_KEY"):
+def _build_doubao_search_payload(
+    query: str,
+    count: int,
+    time_range: str | None,
+    sites: list[str] | None,
+    block_hosts: list[str] | None,
+    content_format: str,
+) -> dict:
+    filter_obj: dict[str, str | bool] = {"NeedUrl": True}
+    if sites:
+        filter_obj["Sites"] = "|".join(sites[:20])
+    if block_hosts:
+        filter_obj["BlockHosts"] = "|".join(block_hosts[:5])
+
+    payload = {
+        "Query": query[:100],
+        "SearchType": "web",
+        "Count": min(max(1, count), 50),
+        "Filter": filter_obj,
+        "ContentFormats": "markdown" if content_format.lower() == "markdown" else "text",
+    }
+    if time_range:
+        payload["TimeRange"] = time_range
+    return payload
+
+
+def _parse_doubao_search_response(query: str, data: dict) -> dict:
+    error_info = data.get("ResponseMetadata", {}).get("Error")
+    if error_info:
+        logger.error(f"Doubao search API returned error: {error_info}")
+        return {"query": query, "results": [], "error": error_info.get("Message", "Unknown error")}
+
+    result_data = data.get("Result") or {}
+    results = []
+    for item in result_data.get("WebResults") or []:
+        res_item = {
+            "title": item.get("Title") or "",
+            "url": item.get("Url") or "",
+            "content": item.get("Summary") or item.get("Snippet") or item.get("Content") or "",
+            "score": item.get("RankScore"),
+        }
+        if item.get("SiteName"):
+            res_item["site_name"] = item["SiteName"]
+        if item.get("PublishTime"):
+            res_item["publish_time"] = item["PublishTime"]
+        results.append(res_item)
+
+    return {
+        "query": query,
+        "results": results,
+        "response_time": result_data.get("TimeCost", 0) / 1000.0,
+    }
+
+
+@langchain_tool("web_search", args_schema=DoubaoSearchInput, description=DOUBAO_SEARCH_DESCRIPTION)
+def _doubao_search(
+    query: str,
+    count: int = 10,
+    time_range: str | None = None,
+    sites: list[str] | None = None,
+    block_hosts: list[str] | None = None,
+    content_format: str = "text",
+) -> dict:
+    api_key = os.getenv("DOUBAO_SEARCH_API_KEY")
+    if not api_key:
+        return {"query": query, "results": [], "error": "DOUBAO_SEARCH_API_KEY 未配置"}
+
+    payload = _build_doubao_search_payload(query, count, time_range, sites, block_hosts, content_format)
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+
     try:
-        _register_tavily_tool()
-    except Exception as e:
-        logger.warning(f"Failed to register TavilySearch tool: {e}")
+        with httpx.Client(timeout=15.0) as client:
+            resp = client.post(_DOUBAO_SEARCH_URL, headers=headers, json=payload)
+            resp.raise_for_status()
+            data = resp.json()
+    except Exception as exc:
+        logger.error(f"Doubao search failed: {exc}")
+        return {"query": query, "results": [], "error": str(exc)}
+
+    return _parse_doubao_search_response(query, data)
+
+
+def _create_doubao_search():
+    """Create the Doubao web search tool instance."""
+    return _doubao_search
+
+
+def _create_tavily_search():
+    """Create Tavily web_search; supports optional TAVILY_API_BASE (compatible proxy/self-hosted)."""
+    from langchain_tavily import TavilySearch
+
+    key = (os.environ.get("TAVILY_API_KEY") or "").strip()
+    base = (os.environ.get("TAVILY_API_BASE") or "").strip()
+    # 自定义 base 时必须显式传入 key，否则部分运行环境不会把密钥传给 wrapper
+    if base:
+        if not key:
+            raise ValueError("TAVILY_API_BASE is set but TAVILY_API_KEY is empty")
+        return TavilySearch(name="web_search", tavily_api_key=key, api_base_url=base.rstrip("/"))
+    return TavilySearch(name="web_search")
+
+
+# provider -> (required env var, factory, display name)
+_WEB_SEARCH_PROVIDERS = {
+    "doubao": ("DOUBAO_SEARCH_API_KEY", _create_doubao_search, "豆包 网页搜索"),
+    "tavily": ("TAVILY_API_KEY", _create_tavily_search, "Tavily 网页搜索"),
+}
+
+
+def _resolve_web_search_provider() -> str | None:
+    """Resolve the web search provider to use from WEB_SEARCH_PROVIDER, or auto-detect by API key."""
+    configured = os.getenv("WEB_SEARCH_PROVIDER", "").strip().lower()
+    if configured:
+        if configured not in _WEB_SEARCH_PROVIDERS:
+            logger.warning(f"Unknown WEB_SEARCH_PROVIDER '{configured}', ignoring.")
+            return None
+        env_key, _, _ = _WEB_SEARCH_PROVIDERS[configured]
+        if not os.getenv(env_key):
+            logger.warning(f"WEB_SEARCH_PROVIDER is set to '{configured}', but {env_key} is not configured.")
+            return None
+        return configured
+
+    return next(
+        (provider for provider, (env_key, _, _) in _WEB_SEARCH_PROVIDERS.items() if os.getenv(env_key)),
+        None,
+    )
+
+
+def _register_web_search_tool() -> None:
+    """Register the web search tool selected via WEB_SEARCH_PROVIDER (or auto-detection)."""
+    provider = _resolve_web_search_provider()
+    if provider is None:
+        return
+
+    _, create_tool, display_name = _WEB_SEARCH_PROVIDERS[provider]
+    _extra_registry["web_search"] = ToolExtraMetadata(category="buildin", tags=["搜索"], display_name=display_name)
+    _all_tool_instances.append(create_tool())
+
+
+# 模块加载时注册网络搜索工具
+try:
+    _register_web_search_tool()
+except Exception as e:
+    logger.warning(f"Failed to register web search tool: {e}")
 
 
 class PresentArtifactsInput(BaseModel):
@@ -178,10 +323,10 @@ class OcrParseFileInput(BaseModel):
 
 
 OCR_PARSE_FILE_DESCRIPTION = f"""
-将沙盒中的 PDF 或图片文件解析为 Markdown 文本，并把结果保存为文件。
+将沙盒中的 PDF、Office 文档或图片文件解析为 Markdown 文本，并把结果保存为文件。
 
 使用场景：
-1. 用户上传了 PDF/图片附件，需要提取其中的文字内容
+1. 用户上传了 PDF、Office 文档或图片附件，需要提取其中的文字内容
 2. 工作区、uploads 或 outputs 下已有文件，需要转成可读取的 Markdown
 3. 解析结果较长，后续应使用 read_file 读取保存后的 Markdown 文件
 
@@ -204,11 +349,11 @@ OCR_PARSE_FILE_DESCRIPTION = f"""
 async def ocr_parse_file(file_path: str, runtime: ToolRuntime, ocr_engine: str | None = None) -> dict:
     """Parse a sandbox file with OCR, persist Markdown output, and return only a short result summary."""
     from yuxi.agents.backends.sandbox.paths import virtual_path_for_thread_file
-    from yuxi.knowledge.parser import Parser
+    from yuxi.services.ocr_service import parse_document
 
     file_thread_id, uid, actual_path = _resolve_ocr_source_path(file_path, runtime)
     engine = _resolve_ocr_engine(ocr_engine)
-    markdown = await Parser.aparse(str(actual_path), params={"ocr_engine": engine})
+    markdown = await parse_document(str(actual_path), params={"ocr_engine": engine})
 
     output_path = _next_ocr_output_path(file_thread_id, actual_path)
     output_path.write_text(markdown, encoding="utf-8")
@@ -288,10 +433,10 @@ def _runtime_scope_value(runtime: ToolRuntime, key: str) -> str | None:
 
 def _resolve_ocr_engine(ocr_engine: str | None) -> str:
     """Validate the requested OCR engine, falling back to the system default when omitted."""
-    from yuxi import config
     from yuxi.knowledge.parser.factory import DocumentProcessorFactory
+    from yuxi.services.ocr_service import resolve_ocr_engine_id
 
-    engine = str(ocr_engine or config.default_ocr_engine).strip() or config.default_ocr_engine
+    engine = resolve_ocr_engine_id(ocr_engine)
     allowed = {"disable", *DocumentProcessorFactory.get_available_processors()}
     if engine not in allowed:
         raise ValueError(f"不支持的 OCR 引擎: {engine}")

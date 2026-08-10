@@ -1,14 +1,17 @@
 <template>
   <div
     class="info-card"
-    :class="{ 'info-card-disabled': disabled, 'info-card-mini': variant === 'mini' }"
+    :class="{
+      'info-card-disabled': disabled,
+      'info-card-mini': variant === 'mini'
+    }"
     @click="$emit('click')"
   >
     <template v-if="variant === 'mini'">
       <div class="info-card-mini-row">
         <div class="info-card-icon">
           <slot name="icon">
-            <component :is="defaultIcon" v-if="defaultIcon" :size="20" />
+            <component :is="defaultIcon" v-if="defaultIcon" :size="16" />
           </slot>
         </div>
         <div class="info-card-info">
@@ -29,6 +32,16 @@
             </button>
           </slot>
         </div>
+        <div v-if="$slots['card-more-action-corner']" class="card-more-action-corner" @click.stop>
+          <a-dropdown :trigger="['click']" placement="bottomRight">
+            <button type="button" class="card-more-action-trigger" aria-label="更多操作">
+              <MoreHorizontal :size="18" />
+            </button>
+            <template #overlay>
+              <slot name="card-more-action-corner" />
+            </template>
+          </a-dropdown>
+        </div>
       </div>
     </template>
 
@@ -36,16 +49,20 @@
       <div class="info-card-header">
         <div class="info-card-icon">
           <slot name="icon">
-            <component :is="defaultIcon" v-if="defaultIcon" :size="20" />
+            <component :is="defaultIcon" v-if="defaultIcon" :size="16" />
           </slot>
         </div>
         <div class="info-card-info">
           <span class="info-card-name" :title="title">{{ title }}</span>
           <span v-if="subtitle" class="info-card-subtitle" :title="subtitle">{{ subtitle }}</span>
         </div>
-        <div class="info-card-status">
+        <div
+          v-if="$slots.status || actionLabel || status || $slots.actions"
+          class="info-card-status"
+        >
           <slot name="status" />
-          <template v-if="!$slots.status">
+          <slot name="actions" />
+          <template v-if="!$slots.status && !$slots.actions">
             <button
               v-if="actionLabel"
               type="button"
@@ -62,9 +79,23 @@
                 :class="`card-status-tag--${status.level || 'info'}`"
                 >{{ status.label }}</span
               >
-              <span class="card-status-dot" :class="`card-status-dot--${statusDotColor}`"></span>
+              <span
+                v-if="status.showDot !== false"
+                class="card-status-dot"
+                :class="`card-status-dot--${statusDotColor}`"
+              ></span>
             </template>
           </template>
+        </div>
+        <div v-if="$slots['card-more-action-corner']" class="card-more-action-corner" @click.stop>
+          <a-dropdown :trigger="['click']" placement="bottomRight">
+            <button type="button" class="card-more-action-trigger" aria-label="更多操作">
+              <MoreHorizontal :size="18" />
+            </button>
+            <template #overlay>
+              <slot name="card-more-action-corner" />
+            </template>
+          </a-dropdown>
         </div>
       </div>
 
@@ -82,7 +113,7 @@
       </div>
 
       <div
-        v-if="$slots.tags || (normalizedTags && normalizedTags.length > 0)"
+        v-if="$slots.tags || $slots['tag-actions'] || (normalizedTags && normalizedTags.length > 0)"
         class="info-card-tags"
       >
         <slot name="tags">
@@ -95,6 +126,9 @@
             >{{ tag.name }}</span
           >
         </slot>
+        <div v-if="$slots['tag-actions']" class="info-card-tag-actions">
+          <slot name="tag-actions" />
+        </div>
       </div>
 
       <div v-if="$slots.footer" class="info-card-footer">
@@ -106,7 +140,7 @@
 
 <script setup>
 import { computed } from 'vue'
-import { Plug } from 'lucide-vue-next'
+import { MoreHorizontal, Plug } from 'lucide-vue-next'
 
 const props = defineProps({
   title: { type: String, required: true },
@@ -149,16 +183,16 @@ const normalizedTags = computed(() => {
   padding: 16px;
   border-radius: 8px;
   border: 1px solid var(--gray-150);
-  background: linear-gradient(45deg, var(--gray-0) 0%, var(--gray-25) 100%);
+  background: var(--gray-0);
   cursor: pointer;
   transition:
     border-color 0.2s ease,
-    box-shadow 0.2s ease;
+    background-color 0.2s ease;
   overflow: hidden;
 
   &:hover {
-    border-color: var(--main-100);
-    background: linear-gradient(45deg, var(--gray-0) 0%, var(--main-30) 100%);
+    border-color: var(--gray-300);
+    background: var(--gray-25);
   }
 
   &-disabled {
@@ -169,26 +203,26 @@ const normalizedTags = computed(() => {
   &-header {
     display: flex;
     align-items: center;
-    gap: 12px;
+    gap: 10px;
   }
 
   &-icon {
-    width: 40px;
-    height: 40px;
-    border-radius: 8px;
-    background: var(--main-30);
+    width: 32px;
+    height: 32px;
+    border-radius: 7px;
+    background: var(--gray-50);
     border: 1px solid var(--gray-150);
     display: flex;
     align-items: center;
     justify-content: center;
     flex-shrink: 0;
-    color: var(--main-color);
-    font-size: 18px;
+    color: var(--gray-600);
+    font-size: 16px;
     overflow: hidden;
 
     img {
-      width: 24px;
-      height: 24px;
+      width: 20px;
+      height: 20px;
       object-fit: contain;
     }
   }
@@ -271,6 +305,12 @@ const normalizedTags = computed(() => {
     flex-wrap: wrap;
   }
 
+  &-tag-actions {
+    display: flex;
+    align-items: center;
+    margin-left: auto;
+  }
+
   &-footer {
     display: flex;
     align-items: center;
@@ -311,6 +351,42 @@ const normalizedTags = computed(() => {
   }
 }
 
+.card-tag.tag-gray {
+  border: 0;
+  background: var(--gray-100);
+  color: var(--gray-600);
+}
+
+.card-more-action-corner {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+
+  .card-more-action-trigger {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    min-width: 28px;
+    height: 28px;
+    padding: 0;
+    border: 0;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--gray-500);
+    box-shadow: none;
+    cursor: pointer;
+  }
+
+  .card-more-action-trigger:hover,
+  .card-more-action-trigger:focus-visible {
+    border: 0;
+    background: var(--gray-100);
+    color: var(--gray-800);
+  }
+}
+
 .card-action-btn {
   display: inline-flex;
   align-items: center;
@@ -330,15 +406,15 @@ const normalizedTags = computed(() => {
     color 0.18s ease;
   cursor: pointer;
   appearance: none;
-  background: var(--main-50);
-  color: var(--main-700);
+  background: var(--gray-100);
+  color: var(--gray-700);
 
   &:hover,
   &:focus {
     outline: none;
-    border-color: var(--main-200);
-    background: var(--main-50);
-    color: var(--main-800);
+    border-color: var(--gray-300);
+    background: var(--gray-150);
+    color: var(--gray-900);
   }
 
   &--danger {

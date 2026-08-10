@@ -1,6 +1,6 @@
 # 文档处理与 OCR
 
-Yuxi 支持多种文档格式的智能解析，从简单的文本文件到复杂的 PDF 文档，都能自动提取内容并转换为可检索的格式。
+Yuxi 将上传文件先保存为原文件，再解析为 Markdown 并按知识库分块策略入库。管理员可在“设置 → OCR 配置”选择默认 OCR 方法，并维护确有需要的服务地址和云端凭证；知识库上传或临时附件解析仍可逐次选择方法，未显式选择时使用系统默认项。
 
 ## 支持的文件类型
 
@@ -17,7 +17,7 @@ Yuxi 支持多种文档格式的智能解析，从简单的文本文件到复杂
 
 ### 图片文件
 
-对于图片文件，需要启用 OCR 才能提取文字：
+图片文件必须选择 OCR 引擎才能提取文字：
 - .jpg, .jpeg, .png, .bmp, .tiff, .tif
 
 ### 压缩包
@@ -29,7 +29,7 @@ Yuxi 支持多种文档格式的智能解析，从简单的文本文件到复杂
 
 ### 网页内容
 
-支持通过 URL 直接抓取网页内容：
+知识库支持先从 URL 抓取页面内容，再作为文件进入现有上传、解析与入库链路：
 
 1. 配置 `YUXI_URL_WHITELIST` 环境变量启用白名单机制
 2. 系统自动将 HTML 转换为 Markdown
@@ -51,9 +51,11 @@ Yuxi 支持多种文档格式的智能解析，从简单的文本文件到复杂
 | MinerU | 复杂 PDF、表格 | GPU | 精度高，版面分析好 |
 | MinerU Official | 复杂文档 | 无 | 官方云服务，开箱即用 |
 | PP-Structure-V3 | 表格、票据 | GPU | 专业版面解析 |
-| DeepSeek OCR | 智能理解 | 无 | 云端服务，Markdown 输出 |
+| DeepSeek OCR | 智能理解 | 无 | 复用 SiliconFlow 模型供应商，Markdown 输出 |
 | PaddleOCR-VL-1.6 | 复杂文档、表格、图片 PDF | 无 | 百度 AI Studio 云端服务，输出 Markdown |
 | PP-OCRv6 | 基础文字识别 | 无 | 百度 AI Studio 云端 OCR，输出纯文本 |
+
+后端保存的引擎标识与界面名称对应如下：`rapid_ocr`、`mineru_ocr`、`mineru_official`、`pp_structure_v3_ocr`、`deepseek_ocr`、`paddleocr_vl_1_6`、`paddleocr_pp_ocrv6`。
 
 ### 选择建议
 
@@ -65,6 +67,17 @@ Yuxi 支持多种文档格式的智能解析，从简单的文本文件到复杂
 - **简单云服务**：选择 DeepSeek OCR 或 PaddleOCR API
 
 ## 快速配置
+
+管理员打开“设置 → OCR 配置”后，可以：
+
+- 选择全局默认 OCR 方法
+- 配置 MinerU、PP-Structure 等自托管服务端点
+- 每个服务使用独立卡片；非编辑状态以禁用输入框展示当前数据库值或环境变量来源，敏感字段只显示脱敏预览
+- 点击卡片右上角“编辑”后修改配置；取消不会修改，留空保存会清除数据库值并改为读取环境变量
+
+DeepSeek OCR 固定复用 `siliconflow-cn` 模型供应商的 API 密钥与 Base URL，不显示独立配置表单。其他服务配置保存在通用 `config_options` 表中：每次运行时读取都会查询数据库，数据库非空值优先，字段为空时读取对应环境变量。API Key / Token 允许明文写入数据库，这是明确的部署取舍；需要脱敏的字段由定义中的 `sensitive` 元数据显式标记。读取接口不会回显密钥原文：数据库值只返回真实首尾字符的脱敏预览，环境变量只返回配置来源，前端不会获得环境变量内容。
+
+附件添加和知识库解析统一使用 OCR Selector。Selector 每次展开都会刷新全部 OCR 方法的健康状态；可用方法直接显示标题和状态，不可用方法默认折叠，管理员可通过右上角“去配置”直接打开 OCR 配置页。后端系统配置仍允许将默认值设为 `disable`，但 Selector 默认不展示该选项；需要显示时必须由调用方显式开启。
 
 ### RapidOCR
 
@@ -104,11 +117,7 @@ docker compose up paddlex -d
 
 ### DeepSeek OCR（简单云服务）
 
-在 .env 配置（使用已有的 SiliconFlow 密钥）
-
-```env
-SILICONFLOW_API_KEY=your-api-key-here
-```
+在模型供应商配置中启用 `siliconflow-cn` 并配置 API 密钥。DeepSeek OCR 会复用该供应商的 Base URL 和凭证，不需要额外配置。
 
 ### PaddleOCR API（百度 AI Studio 云服务）
 
@@ -133,6 +142,12 @@ PADDLEOCR_API_URL=https://paddleocr.aistudio-app.com/api/v2/ocr/jobs
 - `PaddleOCR-VL-1.6`：对应 `paddleocr_vl_1_6`，用于文档版面解析，返回 Markdown
 - `PP-OCRv6`：对应 `paddleocr_pp_ocrv6`，用于基础 OCR，返回按行拼接的纯文本
 
+## 解析参数与分块快照
+
+知识库分块配置由两部分组成：`chunk_preset_id` 只表示策略（`general`、`qa`、`book`、`laws`、`semantic`、`separator`），具体参数统一放在 `chunk_parser_config` 中。不要再写入旧的根级 `chunk_size`、`chunk_overlap` 或 `qa_separator` 字段。
+
+文件级 `processing_params` 保存 `ocr_engine`、分块策略和 `chunk_parser_config`。OCR 的连接端点和凭证在执行时从通用配置或环境变量读取，不写入文件快照。
+
 ## 图片显示配置
 
 上传文档中的图片需要正确配置才能在外部显示：
@@ -147,6 +162,8 @@ HOST_IP=your_server_ip
 
 1. **图片文件必须启用 OCR**：否则无法提取内容
 2. **GPU 要求**：MinerU 和 PP-Structure-V3 需要 GPU 支持
-3. **API 密钥**：MinerU Official、DeepSeek OCR、PaddleOCR API 等云服务需要额外的 API 密钥或 Access Token 配置
+3. **API 密钥**：DeepSeek OCR 复用 `siliconflow-cn` 模型供应商凭证；MinerU Official 和 PaddleOCR API 需要各自的 API 密钥或 Access Token
 4. **超时处理**：复杂文档解析可能耗时较长，可通过 `MINERU_TIMEOUT` 环境变量调整超时时间
-5. **文件大小限制**：单个上传文件大小不超过 100 MB
+5. **文件大小限制**：知识库与工作区的单个上传文件大小均不超过 100 MB；工作区一次最多上传 50 个文件
+6. **解析配置**：文件只保存当次 `ocr_engine` 与分块参数快照；端点和凭证执行时使用最新通用配置或环境变量
+7. **Agent 读取非文本文件**：Agent 的 `read_file` 只直接读取 UTF-8 文本和图片；遇到 PDF、Office 或其他二进制文件时，应使用 `ocr_parse_file` 生成 Markdown 后再读取

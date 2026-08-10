@@ -9,6 +9,11 @@ import {
   Settings2,
   Trash2,
   CheckCircle2,
+  TextInitial,
+  Image,
+  Video,
+  AudioLines,
+  FileText,
   LayersPlus,
   LoaderCircle,
   Zap
@@ -16,7 +21,13 @@ import {
 
 import { modelProviderApi } from '@/apis/system_api'
 import { useConfigStore } from '@/stores/config'
-import { modelIcons } from '@/utils/modelIcon'
+import { modelAvatars } from '@/utils/modelIcon'
+import {
+  formatModelPriceDisplay,
+  loadModelMetadataCatalog,
+  resolveModelDisplayMetadata,
+  USD_TO_CNY_RATE
+} from '@/utils/modelMetadata'
 import PageShoulder from '@/components/shared/PageShoulder.vue'
 import InfoCard from '@/components/shared/InfoCard.vue'
 import ExtensionCardGrid from '@/components/extensions/ExtensionCardGrid.vue'
@@ -25,7 +36,6 @@ const configStore = useConfigStore()
 const loading = ref(false)
 const remoteLoading = ref(false)
 const saving = ref(false)
-const togglingProviderId = ref(null)
 const providers = ref([])
 const searchQuery = ref('')
 const modelTestLoadingBySpec = ref({})
@@ -36,9 +46,14 @@ const PROVIDER_TYPE_OPTIONS = [
   { value: 'anthropic', label: 'Anthropic Messages API' }
 ]
 
-const providerTypeLabelMap = Object.fromEntries(
-  PROVIDER_TYPE_OPTIONS.map((option) => [option.value, option.label])
-)
+const MODALITY_DISPLAY = {
+  text: { icon: TextInitial, label: '文本输入' },
+  image: { icon: Image, label: '图像输入' },
+  video: { icon: Video, label: '视频输入' },
+  audio: { icon: AudioLines, label: '音频输入' },
+  pdf: { icon: FileText, label: 'PDF 文档输入' }
+}
+const REQUEST_BODY_OVERRIDES_PLACEHOLDER = '{\n  "enable_thinking": false\n}'
 
 // Provider form state
 const showProviderModal = ref(false)
@@ -72,6 +87,8 @@ const editingModel = ref({
   source: 'remote',
   protocol_override: null,
   base_url_override: null,
+  request_body_overrides: {},
+  request_body_overrides_text: '{}',
   context_length: null,
   dimension: null,
   batch_size: null,
@@ -88,10 +105,12 @@ const remoteModelsMap = ref({})
 
 // Remote model loading state per provider
 const remoteModelsLoaded = ref({})
+const modelCatalogProviders = ref({})
 
 // Remote model search state per provider
 const remoteModelSearch = ref({})
 const remoteModelTypeFilter = ref({})
+const priceCurrency = ref('USD')
 const filteredProviders = computed(() => {
   const keyword = searchQuery.value.trim().toLowerCase()
   const filtered = keyword
@@ -102,13 +121,15 @@ const filteredProviders = computed(() => {
       )
     : providers.value
   return [...filtered].sort((a, b) => {
-    if (a.is_enabled !== b.is_enabled) return a.is_enabled ? -1 : 1
     if (a.is_enabled && b.is_enabled && a.credential_status !== b.credential_status) {
       return a.credential_status === 'warning' ? 1 : -1
     }
     return a.provider_id.localeCompare(b.provider_id)
   })
 })
+
+const enabledProviders = computed(() => filteredProviders.value.filter((p) => p.is_enabled))
+const disabledProviders = computed(() => filteredProviders.value.filter((p) => !p.is_enabled))
 
 const providerStats = computed(() => {
   let enabled = 0,
@@ -125,45 +146,10 @@ const providerStats = computed(() => {
 })
 
 // ============ Helpers ============
-const getProviderIcon = (provider) => {
+const getProviderAvatar = (provider) => {
   const providerId = provider?.provider_id?.toLowerCase()
   const providerType = provider?.provider_type?.toLowerCase()
-  return modelIcons[providerId] || modelIcons[providerType] || modelIcons.default
-}
-
-const getProviderTypeLabel = (providerType) =>
-  providerTypeLabelMap[providerType] || providerType || '-'
-
-const getIconUrl = (icon) => {
-  if (!icon) return modelIcons.default
-  if (typeof icon === 'string') return icon
-  if (icon instanceof URL || icon?.default) return icon.default || icon
-  return modelIcons.default
-}
-
-const formatContextLength = (len) => {
-  if (!len) return '-'
-  if (len >= 1000000) return `${(len / 1000000).toFixed(1)}M`
-  if (len >= 1000) return `${(len / 1000).toFixed(0)}K`
-  return len.toString()
-}
-
-const formatMtokenPrice = (pricing) => {
-  if (!pricing) return null
-  const prompt = parseFloat(pricing.prompt || pricing.prompt_price || 0)
-  const completion = parseFloat(pricing.completion || pricing.completion_price || 0)
-  if (prompt < 0 || completion < 0) return null
-  if (prompt === 0 && completion === 0) return null
-  return {
-    prompt: prompt * 100000,
-    completion: completion * 100000
-  }
-}
-
-const formatPriceDisplay = (pricing) => {
-  const p = formatMtokenPrice(pricing)
-  if (!p) return null
-  return `$${p.prompt.toFixed(2)} / $${p.completion.toFixed(2)}`
+  return modelAvatars[providerId] || modelAvatars[providerType] || modelAvatars.default
 }
 
 const getModelDisplayName = (model) => {
@@ -211,13 +197,27 @@ const getModelTestTitle = (providerId, model) => {
   return `${statusText}: ${result.message || '无详细信息'}`
 }
 
-const getInputModalities = (model) => {
-  if (!model) return []
-  if (model.input_modalities) return model.input_modalities
-  if (model.architecture?.input_modalities) return model.architecture.input_modalities
-  if (model.raw_metadata?.architecture?.input_modalities)
-    return model.raw_metadata.architecture.input_modalities
-  return []
+const getProviderModelInfo = (providerId, model) =>
+  resolveModelDisplayMetadata(modelCatalogProviders.value, providerId, model)
+
+const getRemoteModelPriceDisplay = (providerId, model) =>
+  formatModelPriceDisplay(getProviderModelInfo(providerId, model).price, priceCurrency.value)
+
+const togglePriceCurrency = () => {
+  priceCurrency.value = priceCurrency.value === 'CNY' ? 'USD' : 'CNY'
+}
+
+const getModalityDisplay = (modality) =>
+  MODALITY_DISPLAY[modality] || { icon: FileText, label: modality }
+
+const loadModelMetadata = async () => {
+  if (Object.keys(modelCatalogProviders.value).length) return
+  try {
+    const catalog = await loadModelMetadataCatalog()
+    modelCatalogProviders.value = catalog.providers
+  } catch (error) {
+    console.warn('Failed to load model metadata catalog:', error)
+  }
 }
 
 const remoteIdsMap = computed(() => {
@@ -259,9 +259,9 @@ const remoteModelTypeOptions = computed(() => {
   }, {})
   return [
     { label: `全部 ${models.length}`, value: 'all' },
-    { label: `Chat ${counts.chat || 0}`, value: 'chat' },
-    { label: `Embedding ${counts.embedding || 0}`, value: 'embedding' },
-    { label: `Rerank ${counts.rerank || 0}`, value: 'rerank' }
+    { label: `对话 ${counts.chat || 0}`, value: 'chat' },
+    { label: `向量 ${counts.embedding || 0}`, value: 'embedding' },
+    { label: `重排 ${counts.rerank || 0}`, value: 'rerank' }
   ]
 })
 
@@ -274,15 +274,18 @@ const editingModelTypeOptions = computed(() => {
 })
 
 const parseJsonObject = (text, label) => {
+  let parsed
   try {
-    const parsed = JSON.parse(text || '{}')
-    if (!parsed || Array.isArray(parsed) || typeof parsed !== 'object') {
-      throw new Error(`${label} 必须是 JSON 对象`)
-    }
-    return parsed
-  } catch {
-    throw new Error(`${label} 格式不正确`)
+    const source = typeof text === 'string' && text.trim() ? text : '{}'
+    parsed = JSON.parse(source)
+  } catch (error) {
+    const reason = error?.message ? `：${error.message}` : ''
+    throw new Error(`${label} 格式不正确${reason}`, { cause: error })
   }
+  if (!parsed || Array.isArray(parsed) || typeof parsed !== 'object') {
+    throw new Error(`${label} 必须是 JSON 对象`)
+  }
+  return parsed
 }
 
 const formatJsonText = (value) => JSON.stringify(value || {}, null, 2)
@@ -303,17 +306,14 @@ const loadProviders = async () => {
 
 function getProviderInfo(provider) {
   return [
-    { label: 'Provider Type', value: getProviderTypeLabel(provider.provider_type) },
     { label: 'Base URL', value: provider.base_url || '-' },
     { label: '能力', value: provider.capabilities?.join(', ') || 'chat' }
   ]
 }
 
 function getProviderStatus(provider) {
-  if (!provider.is_enabled) return { label: '未启用', level: 'info' }
   if (provider.credential_status === 'warning') return { label: '凭证缺失', level: 'warning' }
-  if (provider.is_enabled) return { label: '', level: 'success' }
-  return null
+  return { label: '', level: 'success' }
 }
 
 const openCreateProviderModal = () => {
@@ -418,6 +418,21 @@ const saveProvider = async () => {
   }
 }
 
+const saveProviderAndEnable = async () => {
+  saving.value = true
+  try {
+    const payload = { ...buildProviderPayload(), is_enabled: true }
+    await modelProviderApi.updateProvider(providerForm.provider_id, payload)
+    message.success('供应商已保存并启用')
+    showProviderModal.value = false
+    await loadProviders()
+  } catch (error) {
+    message.error(error.message || '保存失败')
+  } finally {
+    saving.value = false
+  }
+}
+
 const deleteProvider = async (provider) => {
   if (providerContainsDefaultModel(provider.provider_id)) {
     warnDefaultModelProtected()
@@ -457,25 +472,6 @@ const deleteProviderFromEdit = async () => {
   }
 }
 
-const toggleProviderEnabled = async (provider, checked) => {
-  if (!checked && providerContainsDefaultModel(provider.provider_id)) {
-    warnDefaultModelProtected()
-    return
-  }
-
-  togglingProviderId.value = provider.provider_id
-  try {
-    await modelProviderApi.updateProvider(provider.provider_id, { is_enabled: checked })
-    message.success(checked ? '已启用' : '已停用')
-    await loadProviders()
-  } catch (error) {
-    message.error(error.message || '操作失败')
-    await loadProviders()
-  } finally {
-    togglingProviderId.value = null
-  }
-}
-
 // ============ Models Modal Operations ============
 const openModelsModal = (provider) => {
   currentProviderForModels.value = provider
@@ -486,6 +482,7 @@ const openModelsModal = (provider) => {
     remoteModelSearch.value[provider.provider_id] || ''
   remoteModelTypeFilter.value[provider.provider_id] = 'all'
   showModelsModal.value = true
+  loadModelMetadata()
 }
 
 // ============ Remote Models Operations ============
@@ -514,6 +511,12 @@ const normalizeModel = (model = {}) => ({
   source: model.source || 'remote',
   protocol_override: model.protocol_override || null,
   base_url_override: model.base_url_override || null,
+  request_body_overrides:
+    model.request_body_overrides &&
+    typeof model.request_body_overrides === 'object' &&
+    !Array.isArray(model.request_body_overrides)
+      ? model.request_body_overrides
+      : {},
   context_length: model.context_length || null,
   dimension: model.dimension || null,
   batch_size: model.batch_size || null,
@@ -580,7 +583,9 @@ const addModelFromRemote = async (providerId, remoteModel) => {
 }
 
 const openModelConfigModal = (model) => {
-  Object.assign(editingModel.value, normalizeModel(model))
+  const normalized = normalizeModel(model)
+  normalized.request_body_overrides_text = formatJsonText(normalized.request_body_overrides)
+  Object.assign(editingModel.value, normalized)
   isCreating.value = false
   showModelModal.value = true
 }
@@ -597,6 +602,8 @@ const openCreateModal = (provider) => {
     source: 'manual',
     protocol_override: null,
     base_url_override: null,
+    request_body_overrides: {},
+    request_body_overrides_text: '{}',
     context_length: null,
     dimension: null,
     batch_size: null,
@@ -605,6 +612,19 @@ const openCreateModal = (provider) => {
   })
   isCreating.value = true
   showModelModal.value = true
+}
+
+const buildModelConfigPayload = () => {
+  const requestBodyOverrides = parseJsonObject(
+    editingModel.value.request_body_overrides_text,
+    '模型请求参数'
+  )
+  const modelPayload = { ...editingModel.value }
+  delete modelPayload.request_body_overrides_text
+  return {
+    ...modelPayload,
+    request_body_overrides: requestBodyOverrides
+  }
 }
 
 const saveModelConfig = async () => {
@@ -616,9 +636,10 @@ const saveModelConfig = async () => {
     )
     if (!provider) return
 
+    const modelPayload = buildModelConfigPayload()
     let enabledModels
     if (isCreating.value) {
-      const newId = (editingModel.value.id || '').trim()
+      const newId = (modelPayload.id || '').trim()
       if (!newId) {
         message.error('请填写模型 ID')
         return
@@ -627,11 +648,11 @@ const saveModelConfig = async () => {
         message.error('模型 ID 已存在')
         return
       }
-      const newModel = { ...editingModel.value, id: newId, source: 'manual', enabled: true }
+      const newModel = { ...modelPayload, id: newId, source: 'manual', enabled: true }
       enabledModels = [...(provider.enabled_models || []), newModel]
     } else {
       enabledModels = (provider.enabled_models || []).map((m) =>
-        m.id === editingModel.value.id ? { ...editingModel.value } : m
+        m.id === modelPayload.id ? { ...modelPayload } : m
       )
     }
 
@@ -707,43 +728,86 @@ defineExpose({
       </template>
     </PageShoulder>
 
-    <ExtensionCardGrid :min-width="320">
-      <InfoCard
-        v-for="provider in filteredProviders"
-        :key="provider.provider_id"
-        :title="provider.display_name"
-        :subtitle="provider.provider_id"
-        :default-icon="Globe"
-        :info="getProviderInfo(provider)"
-        :status="getProviderStatus(provider)"
-        @click="openEditProviderModal(provider)"
-      >
-        <template #icon>
-          <img
-            v-if="getProviderIcon(provider)"
-            :src="getIconUrl(getProviderIcon(provider))"
-            :alt="provider.display_name"
-          />
-        </template>
-        <template #footer>
-          <button class="view-models-btn" type="button" @click.stop="openModelsModal(provider)">
-            <Settings2 :size="14" />
-            管理模型
-            <span v-if="provider.enabled_models?.length" class="enabled-count"
-              >（已启用 {{ provider.enabled_models.length }} 个）</span
+    <div
+      v-if="!loading && enabledProviders.length === 0 && disabledProviders.length === 0"
+      class="provider-empty-state"
+    >
+      <a-empty
+        :image="false"
+        :description="searchQuery ? '无匹配供应商' : '暂无供应商，点击上方按钮新增'"
+      />
+    </div>
+
+    <template v-else>
+      <div v-if="enabledProviders.length" class="provider-section-header">
+        已启用（{{ enabledProviders.length }}）
+      </div>
+      <ExtensionCardGrid v-if="enabledProviders.length" :min-width="320">
+        <InfoCard
+          v-for="provider in enabledProviders"
+          :key="provider.provider_id"
+          :title="provider.display_name"
+          :subtitle="provider.provider_id"
+          :default-icon="Globe"
+          :info="getProviderInfo(provider)"
+          :status="getProviderStatus(provider)"
+          @click="openEditProviderModal(provider)"
+        >
+          <template #icon>
+            <span
+              class="provider-avatar"
+              role="img"
+              :aria-label="`${provider.display_name} 图标`"
+              :style="{
+                background: getProviderAvatar(provider).background,
+                '--provider-avatar-scale': getProviderAvatar(provider).scale,
+                '--provider-avatar-filter': getProviderAvatar(provider).filter
+              }"
             >
-          </button>
-          <span class="provider-enable-switch" @click.stop>
-            <a-switch
-              size="small"
-              :checked="provider.is_enabled"
-              :loading="togglingProviderId === provider.provider_id"
-              @change="(checked) => toggleProviderEnabled(provider, checked)"
-            />
-          </span>
-        </template>
-      </InfoCard>
-    </ExtensionCardGrid>
+              <img :src="getProviderAvatar(provider).icon" alt="" />
+            </span>
+          </template>
+          <template #footer>
+            <button class="view-models-btn" type="button" @click.stop="openModelsModal(provider)">
+              <Settings2 :size="14" />
+              管理模型
+              <span v-if="provider.enabled_models?.length" class="enabled-count"
+                >（已启用 {{ provider.enabled_models.length }} 个）</span
+              >
+            </button>
+          </template>
+        </InfoCard>
+      </ExtensionCardGrid>
+
+      <div v-if="disabledProviders.length" class="provider-section-header">
+        未启用（{{ disabledProviders.length }}）
+      </div>
+      <ExtensionCardGrid v-if="disabledProviders.length" :min-width="320">
+        <InfoCard
+          v-for="provider in disabledProviders"
+          :key="provider.provider_id"
+          variant="mini"
+          :title="provider.display_name"
+          :description="provider.provider_id"
+          @click="openEditProviderModal(provider)"
+        >
+          <template #icon>
+            <span
+              class="provider-avatar"
+              role="img"
+              :aria-label="`${provider.display_name} 图标`"
+              :style="{
+                background: getProviderAvatar(provider).background,
+                '--provider-avatar-scale': getProviderAvatar(provider).scale,
+                '--provider-avatar-filter': getProviderAvatar(provider).filter
+              }"
+            >
+              <img :src="getProviderAvatar(provider).icon" alt="" />
+            </span>
+          </template>
+        </InfoCard>
+      </ExtensionCardGrid>
+    </template>
 
     <!-- Provider Edit Modal -->
     <a-modal
@@ -766,7 +830,14 @@ defineExpose({
           <span v-else></span>
           <div class="provider-modal-footer-actions">
             <a-button @click="showProviderModal = false">取消</a-button>
+            <template v-if="editingProviderId && !providerForm.is_enabled">
+              <a-button :loading="saving" @click="saveProvider">仅保存</a-button>
+              <a-button type="primary" :loading="saving" @click="saveProviderAndEnable">
+                保存并启用
+              </a-button>
+            </template>
             <a-button
+              v-else
               type="primary"
               :loading="saving"
               @click="editingProviderId ? saveProvider() : createProvider()"
@@ -776,7 +847,7 @@ defineExpose({
           </div>
         </div>
       </template>
-      <div class="modal-form">
+      <div class="modal-form" autocomplete="off">
         <div class="form-row">
           <label class="form-label">
             <span>Provider ID</span>
@@ -784,11 +855,16 @@ defineExpose({
               v-model:value="providerForm.provider_id"
               :disabled="!!editingProviderId"
               placeholder="my-provider"
+              autocomplete="off"
             />
           </label>
           <label class="form-label">
             <span>展示名称</span>
-            <a-input v-model:value="providerForm.display_name" placeholder="My Provider" />
+            <a-input
+              v-model:value="providerForm.display_name"
+              placeholder="My Provider"
+              autocomplete="off"
+            />
           </label>
         </div>
 
@@ -798,6 +874,7 @@ defineExpose({
             <a-input
               v-model:value="providerForm.base_url"
               placeholder="https://api.example.com/v1"
+              autocomplete="off"
             />
           </label>
           <label class="form-label">
@@ -817,11 +894,21 @@ defineExpose({
         <div class="form-row">
           <label class="form-label">
             <span>API Key Env</span>
-            <a-input v-model:value="providerForm.api_key_env" placeholder="环境变量名" />
+            <a-input
+              v-model:value="providerForm.api_key_env"
+              placeholder="环境变量名"
+              autocomplete="off"
+            />
           </label>
           <label class="form-label">
             <span>API Key</span>
-            <a-input-password v-model:value="providerForm.api_key" />
+            <a-input-password
+              v-model:value="providerForm.api_key"
+              autocomplete="new-password"
+              autocapitalize="none"
+              autocorrect="off"
+              spellcheck="false"
+            />
           </label>
         </div>
 
@@ -970,7 +1057,12 @@ defineExpose({
                   <LayersPlus :size="12" />
                 </span>
               </span>
-              <span class="col-context">{{ formatContextLength(model.context_length) }}</span>
+              <span class="col-context">
+                {{
+                  getProviderModelInfo(currentProviderForModels.provider_id, model).contextLabel ||
+                  '-'
+                }}
+              </span>
               <span class="col-dim">
                 <span
                   v-if="model.type === 'embedding' && !model.dimension"
@@ -999,13 +1091,21 @@ defineExpose({
                   />
                   <Zap v-else :size="13" />
                 </a-button>
-                <a-button size="small" class="lucide-icon-btn" @click="openModelConfigModal(model)">
+                <a-button
+                  size="small"
+                  class="lucide-icon-btn"
+                  :title="`配置 ${getModelDisplayName(model)}`"
+                  :aria-label="`配置 ${getModelDisplayName(model)}`"
+                  @click="openModelConfigModal(model)"
+                >
                   <Settings2 :size="13" />
                 </a-button>
                 <a-button
                   size="small"
                   danger
                   class="lucide-icon-btn"
+                  :title="`移除 ${getModelDisplayName(model)}`"
+                  :aria-label="`移除 ${getModelDisplayName(model)}`"
                   @click="removeModel(currentProviderForModels.provider_id, model.id)"
                 >
                   <Trash2 :size="13" />
@@ -1020,21 +1120,41 @@ defineExpose({
         <div class="models-section">
           <div class="remote-header">
             <h4 class="models-section-title">远端候选模型 ({{ filteredRemoteModels.length }})</h4>
-            <a-input
+            <div
               v-if="remoteModelsMap[currentProviderForModels.provider_id]?.length"
-              v-model:value="remoteModelSearch[currentProviderForModels.provider_id]"
-              class="remote-search-input"
-              placeholder="搜索模型..."
-              allow-clear
+              class="remote-controls"
             >
-              <template #prefix><Search :size="12" /></template>
-            </a-input>
-            <a-segmented
-              v-if="remoteModelsMap[currentProviderForModels.provider_id]?.length"
-              v-model:value="remoteModelTypeFilter[currentProviderForModels.provider_id]"
-              :options="remoteModelTypeOptions"
-              class="remote-type-filter"
-            />
+              <a-input
+                v-model:value="remoteModelSearch[currentProviderForModels.provider_id]"
+                class="remote-search-input"
+                placeholder="搜索模型..."
+                allow-clear
+                autocomplete="off"
+                autocapitalize="none"
+                autocorrect="off"
+                spellcheck="false"
+              >
+                <template #prefix><Search :size="12" /></template>
+              </a-input>
+              <button
+                type="button"
+                class="currency-toggle"
+                :title="
+                  priceCurrency === 'CNY'
+                    ? `当前按人民币展示，点击切换美元（1 USD ≈ ¥${USD_TO_CNY_RATE}）`
+                    : `当前按美元展示，点击切换人民币（1 USD ≈ ¥${USD_TO_CNY_RATE}）`
+                "
+                :aria-label="priceCurrency === 'CNY' ? '切换为美元计费' : '切换为人民币计费'"
+                @click="togglePriceCurrency"
+              >
+                {{ priceCurrency === 'CNY' ? '¥' : '$' }}
+              </button>
+              <a-segmented
+                v-model:value="remoteModelTypeFilter[currentProviderForModels.provider_id]"
+                :options="remoteModelTypeOptions"
+                class="remote-type-filter"
+              />
+            </div>
           </div>
           <div
             class="remote-list"
@@ -1047,20 +1167,38 @@ defineExpose({
             >
               <span class="remote-name">{{ getModelDisplayName(remoteModel) }}</span>
               <div class="remote-tags">
+                <template
+                  v-for="mod in getProviderModelInfo(
+                    currentProviderForModels.provider_id,
+                    remoteModel
+                  ).inputModalities"
+                  :key="mod"
+                >
+                  <a-tooltip :title="getModalityDisplay(mod).label">
+                    <span
+                      class="modality-tag"
+                      role="img"
+                      :aria-label="getModalityDisplay(mod).label"
+                    >
+                      <component :is="getModalityDisplay(mod).icon" :size="13" />
+                    </span>
+                  </a-tooltip>
+                </template>
                 <span class="type-tag" :class="remoteModel.type || 'chat'">
                   {{ remoteModel.type || 'chat' }}
                 </span>
-                <template v-for="mod in getInputModalities(remoteModel) || []" :key="mod">
-                  <span class="modality-tag">{{ mod }}</span>
-                </template>
               </div>
               <span class="remote-context">{{
-                formatContextLength(remoteModel.context_length)
+                getProviderModelInfo(currentProviderForModels.provider_id, remoteModel)
+                  .contextLabel || '-'
               }}</span>
-              <span class="remote-price" v-if="formatMtokenPrice(remoteModel.pricing)">
-                {{ formatPriceDisplay(remoteModel.pricing) }}
+              <span
+                v-if="getRemoteModelPriceDisplay(currentProviderForModels.provider_id, remoteModel)"
+                class="remote-price"
+              >
+                {{ getRemoteModelPriceDisplay(currentProviderForModels.provider_id, remoteModel) }}
               </span>
-              <span class="remote-price placeholder" v-else>N/A</span>
+              <span v-else class="remote-price placeholder">N/A</span>
               <a-button
                 size="small"
                 :type="
@@ -1069,6 +1207,16 @@ defineExpose({
                     : 'default'
                 "
                 class="lucide-icon-btn"
+                :title="
+                  currentProviderForModels.enabled_models?.some((m) => m.id === remoteModel.id)
+                    ? `${getModelDisplayName(remoteModel)} 已启用`
+                    : `启用 ${getModelDisplayName(remoteModel)}`
+                "
+                :aria-label="
+                  currentProviderForModels.enabled_models?.some((m) => m.id === remoteModel.id)
+                    ? `${getModelDisplayName(remoteModel)} 已启用`
+                    : `启用 ${getModelDisplayName(remoteModel)}`
+                "
                 :disabled="
                   currentProviderForModels.enabled_models?.some((m) => m.id === remoteModel.id)
                 "
@@ -1083,6 +1231,12 @@ defineExpose({
                 <Plus :size="13" v-else />
               </a-button>
             </div>
+          </div>
+          <div v-if="Object.keys(modelCatalogProviders).length" class="model-metadata-source">
+            部分信息（价格、能力等）来自
+            <a href="https://models.dev" target="_blank" rel="noreferrer">models.dev</a>
+            填补。人民币价格按固定汇率 1 USD = ¥{{ USD_TO_CNY_RATE }}
+            换算。以上信息仅供参考，可能和官网或实时汇率有偏差。
           </div>
           <div class="remote-fetch-actions"></div>
         </div>
@@ -1134,6 +1288,19 @@ defineExpose({
           </label>
         </div>
 
+        <label class="form-label full-width">
+          <span>模型请求参数 JSON</span>
+          <a-textarea
+            v-model:value="editingModel.request_body_overrides_text"
+            :rows="6"
+            :placeholder="REQUEST_BODY_OVERRIDES_PLACEHOLDER"
+          />
+          <small class="form-help">
+            仅 OpenAI 兼容供应商（含 OpenRouter）的 chat 模型会通过 extra_body 透传；支持
+            enable_thinking、thinking_budget、thinking、reasoning 和 reasoning_effort。
+          </small>
+        </label>
+
         <div class="form-row">
           <label class="form-label" v-if="editingModel.type === 'embedding'">
             <span>维度</span>
@@ -1157,9 +1324,27 @@ defineExpose({
   height: 100%;
   min-height: 0;
 
-  :deep(.info-card-icon img) {
-    width: 30px;
-    height: 30px;
+  :deep(.info-card-icon) {
+    border: none;
+    background: transparent;
+  }
+}
+
+.provider-avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  overflow: hidden;
+  border: 1px solid rgb(0 0 0 / 6%);
+  border-radius: 8px;
+
+  img {
+    width: calc(100% * var(--provider-avatar-scale));
+    height: calc(100% * var(--provider-avatar-scale));
+    object-fit: contain;
+    filter: var(--provider-avatar-filter);
   }
 }
 
@@ -1183,9 +1368,20 @@ defineExpose({
   }
 }
 
-.provider-enable-switch {
-  display: inline-flex;
+.provider-section-header {
+  padding: 12px var(--page-padding) 0;
+  color: var(--gray-500);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.4px;
+}
+
+.provider-empty-state {
+  display: flex;
   align-items: center;
+  justify-content: center;
+  padding: 100px 20px;
+  text-align: center;
 }
 
 .enabled-count {
@@ -1377,7 +1573,6 @@ defineExpose({
 .remote-header {
   display: flex;
   align-items: center;
-  justify-content: space-between;
   gap: 12px;
 
   .models-section-title {
@@ -1386,8 +1581,43 @@ defineExpose({
   }
 }
 
+.remote-controls {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-left: auto;
+}
+
 .remote-search-input {
   width: 180px;
+}
+
+.currency-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  flex-shrink: 0;
+  border: 1px solid var(--gray-150);
+  border-radius: 8px;
+  background: var(--gray-0);
+  color: var(--gray-700);
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+
+  &:hover {
+    border-color: var(--gray-200);
+    background: var(--gray-25);
+    color: var(--gray-900);
+  }
+
+  &:focus-visible {
+    outline: 2px solid var(--main-200);
+    outline-offset: 1px;
+  }
 }
 
 .remote-type-filter {
@@ -1430,12 +1660,12 @@ defineExpose({
 .modality-tag {
   display: inline-flex;
   align-items: center;
-  padding: 2px 6px;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
   border-radius: 3px;
   background: var(--color-accent-50);
   color: var(--color-accent-700);
-  font-size: 10px;
-  font-weight: 500;
 }
 
 .dim-warning {
@@ -1466,6 +1696,16 @@ defineExpose({
   }
 }
 
+.model-metadata-source {
+  color: var(--gray-500);
+  font-size: 11px;
+  line-height: 1.5;
+
+  a {
+    color: var(--main-600);
+  }
+}
+
 .modal-form {
   display: flex;
   flex-direction: column;
@@ -1488,6 +1728,12 @@ defineExpose({
     font-size: 12px;
     font-weight: 500;
   }
+}
+
+.form-help {
+  color: var(--gray-500);
+  font-size: 11px;
+  line-height: 1.5;
 }
 
 .full-width {

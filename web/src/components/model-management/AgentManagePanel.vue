@@ -1,15 +1,7 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue'
 import { message, Modal } from 'ant-design-vue'
-import {
-  Plus,
-  RefreshCw,
-  Trash2,
-  SquarePen,
-  Bot,
-  MoreVertical,
-  MessageCirclePlus
-} from 'lucide-vue-next'
+import { Plus, RefreshCw, Trash2, SquarePen, Bot, ChevronRight } from 'lucide-vue-next'
 import { useRouter } from 'vue-router'
 
 import { agentApi } from '@/apis/agent_api'
@@ -20,6 +12,7 @@ import InfoCard from '@/components/shared/InfoCard.vue'
 import FallbackAvatar from '@/components/common/FallbackAvatar.vue'
 import ExtensionCardGrid from '@/components/extensions/ExtensionCardGrid.vue'
 import { generatePixelAvatar } from '@/utils/pixelAvatar'
+import { getShareConfigLabel } from '@/utils/shareConfig'
 
 const agentStore = useAgentStore()
 const router = useRouter()
@@ -73,11 +66,15 @@ const agentStats = computed(() => ({
   total: managedAgents.value.length,
   builtin: managedAgents.value.filter(isBuiltinAgent).length,
   manageable: managedAgents.value.filter((agent) => agent.can_manage).length,
-  global: managedAgents.value.filter((agent) => agent.share_config?.access_level === 'global')
-    .length
+  global: managedAgents.value.filter(
+    (agent) => (agent.share_config?.read_scope || agent.share_config)?.access_level === 'global'
+  ).length
 }))
 const canManageAgent = (agent) => !!agent?.can_manage
 const getAgentDefaultIconSrc = (agent) => (agent.id ? generatePixelAvatar(agent.id) : '')
+
+/** 返回智能体共享范围的简短展示文案。 */
+const getAgentShareLabel = (agent) => getShareConfigLabel(agent?.share_config)
 
 // ============ Agent Operations ============
 const loadAgentBackends = async () => {
@@ -187,7 +184,7 @@ defineExpose({
             :subtitle="agent.slug || agent.id"
             :description="agent.description || '暂无描述'"
             :default-icon="Bot"
-            :tags="[]"
+            :tags="[{ name: getAgentShareLabel(agent), color: 'gray' }]"
             class="config-card agent-card"
             @click="canManageAgent(agent) && openEditAgentModal(agent)"
           >
@@ -205,55 +202,38 @@ defineExpose({
               />
             </template>
 
-            <template #status>
-              <a-dropdown v-if="canManageAgent(agent)" :trigger="['click']" placement="bottomRight">
-                <template #overlay>
-                  <a-menu>
-                    <a-menu-item key="edit" @click.stop="openEditAgentModal(agent)">
-                      <span class="agent-card-menu-item">
-                        <SquarePen :size="14" />
-                        编辑智能体
-                      </span>
-                    </a-menu-item>
-                    <a-menu-item
-                      key="delete"
-                      :disabled="isBuiltinAgent(agent)"
-                      @click.stop="deleteAgent(agent)"
-                    >
-                      <span
-                        class="agent-card-menu-item"
-                        :class="{ danger: !isBuiltinAgent(agent) }"
-                      >
-                        <Trash2 :size="14" />
-                        删除智能体
-                      </span>
-                    </a-menu-item>
-                  </a-menu>
-                </template>
-                <a-button
-                  type="text"
-                  size="small"
-                  class="agent-card-menu-trigger"
-                  aria-label="智能体操作"
-                  @click.stop
+            <template v-if="canManageAgent(agent)" #card-more-action-corner>
+              <a-menu>
+                <a-menu-item key="edit" @click.stop="openEditAgentModal(agent)">
+                  <span class="lucide-menu-item">
+                    <SquarePen :size="14" />
+                    <span>编辑智能体</span>
+                  </span>
+                </a-menu-item>
+                <a-menu-item
+                  key="delete"
+                  :disabled="isBuiltinAgent(agent)"
+                  :danger="!isBuiltinAgent(agent)"
+                  @click.stop="deleteAgent(agent)"
                 >
-                  <MoreVertical :size="16" />
-                </a-button>
-              </a-dropdown>
+                  <span class="lucide-menu-item">
+                    <Trash2 :size="14" />
+                    <span>删除智能体</span>
+                  </span>
+                </a-menu-item>
+              </a-menu>
             </template>
 
-            <template v-if="group.key === 'agents'" #tags>
-              <div class="agent-card-actions">
-                <a-button
-                  type="primary"
-                  size="small"
-                  class="lucide-icon-btn agent-chat-entry"
-                  @click.stop="openAgentChat(agent)"
-                >
-                  <MessageCirclePlus :size="14" />
-                  去对话
-                </a-button>
-              </div>
+            <template v-if="group.key === 'agents'" #tag-actions>
+              <a-button
+                type="text"
+                size="small"
+                class="agent-chat-entry"
+                @click.stop="openAgentChat(agent)"
+              >
+                去对话
+                <ChevronRight :size="14" />
+              </a-button>
             </template>
           </InfoCard>
         </ExtensionCardGrid>
@@ -306,54 +286,38 @@ defineExpose({
 }
 
 .agent-card :deep(.info-card-tags) {
-  justify-content: flex-end;
-  margin-top: auto;
-}
-
-.agent-card-menu-trigger {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 28px;
-  height: 28px;
-  color: var(--gray-600);
-
-  &:hover,
-  &:focus {
-    color: var(--gray-700);
-    background: var(--gray-50);
-  }
-}
-
-.agent-card-menu-item {
-  display: flex;
-  align-items: center;
-  min-height: 22px;
-  gap: 8px;
-  line-height: 1;
-
-  &.danger {
-    color: var(--color-error-700);
-  }
-}
-
-.agent-card-actions {
-  display: flex;
-  justify-content: flex-end;
-  width: 100%;
+  justify-content: flex-start;
   margin-top: auto;
 }
 
 .agent-chat-entry {
-  min-width: 78px;
+  display: inline-flex;
+  align-items: center;
+  min-width: auto;
+  height: 24px;
+  padding: 0 2px;
   border: 0;
+  border-radius: 4px;
+  background: transparent;
   box-shadow: none;
+  color: var(--gray-600);
   font-size: 12px;
+  gap: 1px;
 
-  &:hover,
-  &:focus {
+  &:hover {
     border: 0;
+    background: transparent;
     box-shadow: none;
+    color: var(--main-700);
+  }
+
+  &:focus:not(:focus-visible) {
+    outline: none;
+  }
+
+  &:focus-visible {
+    outline: 2px solid var(--main-200);
+    outline-offset: 2px;
   }
 }
 

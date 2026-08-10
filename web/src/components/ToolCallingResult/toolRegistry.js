@@ -50,7 +50,9 @@ export const TOOL_ICON_MAP = {
   subagent_start: Bot,
   subagent_status: RefreshCw,
   task: Bot,
+  web_search: Globe,
   tavily_search: Globe,
+  doubao_search: Globe,
   text_to_img_qwen_image: Image,
   write_file: FileEdit,
   write_todos: CheckSquare

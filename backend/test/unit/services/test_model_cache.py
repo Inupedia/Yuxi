@@ -38,7 +38,7 @@ def test_model_cache_prefers_model_base_url_override(monkeypatch):
 
     class Provider:
         is_enabled = True
-        provider_id = "alibaba"
+        provider_id = "alibaba-cn"
         api_key = "sk-test"
         api_key_env = None
         provider_type = "openai"
@@ -61,7 +61,7 @@ def test_model_cache_prefers_model_base_url_override(monkeypatch):
 
     cache.rebuild([Provider()])
 
-    assert saved_cache["alibaba:qwen3-rerank"].base_url == "https://invalid.example/rerank"
+    assert saved_cache["alibaba-cn:qwen3-rerank"].base_url == "https://invalid.example/rerank"
 
 
 def test_model_cache_loads_from_redis_and_uses_local_ttl(monkeypatch: pytest.MonkeyPatch):
@@ -77,6 +77,7 @@ def test_model_cache_loads_from_redis_and_uses_local_ttl(monkeypatch: pytest.Mon
                 "api_key": "sk-test",
                 "base_url": "https://example.com/v1",
                 "provider_type": "openai",
+                "request_body_overrides": {"enable_thinking": False},
             }
         }
     )
@@ -88,6 +89,7 @@ def test_model_cache_loads_from_redis_and_uses_local_ttl(monkeypatch: pytest.Mon
     assert info is not None
     assert cached_info is info
     assert info.base_url == "https://example.com/v1"
+    assert info.request_body_overrides == {"enable_thinking": False}
     assert redis.get_calls == 1
 
 
@@ -103,9 +105,11 @@ def test_model_cache_save_writes_redis_json(monkeypatch: pytest.MonkeyPatch):
         api_key="sk-test",
         base_url="https://example.com/v1",
         provider_type="openai",
+        request_body_overrides={"enable_thinking": True},
     )
 
     cache._save_cache({info.spec: info})
 
     payload = json.loads(redis.data[REDIS_CACHE_KEY])
     assert payload[info.spec]["base_url"] == "https://example.com/v1"
+    assert payload[info.spec]["request_body_overrides"] == {"enable_thinking": True}

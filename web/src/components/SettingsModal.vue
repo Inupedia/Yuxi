@@ -30,12 +30,12 @@
           </div>
           <div
             class="sider-item"
-            :class="{ activesec: activeTab === 'userConfig' }"
-            @click="activeTab = 'userConfig'"
+            :class="{ activesec: activeTab === 'apiKeys' }"
+            @click="activeTab = 'apiKeys'"
             v-if="userStore.isLoggedIn"
           >
-            <SlidersHorizontal class="icon" :size="18" />
-            <span>用户配置</span>
+            <Key class="icon" :size="18" />
+            <span>API Keys</span>
           </div>
           <div
             class="sider-item"
@@ -45,6 +45,15 @@
           >
             <Settings class="icon" :size="18" />
             <span>基本设置</span>
+          </div>
+          <div
+            class="sider-item"
+            :class="{ activesec: activeTab === 'ocr' }"
+            @click="activeTab = 'ocr'"
+            v-if="userStore.isAdmin"
+          >
+            <ScanText class="icon" :size="18" />
+            <span>OCR 配置</span>
           </div>
           <div
             class="sider-item"
@@ -121,11 +130,11 @@
         </div>
         <div
           class="nav-item"
-          :class="{ active: activeTab === 'userConfig' }"
-          @click="activeTab = 'userConfig'"
+          :class="{ active: activeTab === 'apiKeys' }"
+          @click="activeTab = 'apiKeys'"
           v-if="userStore.isLoggedIn"
         >
-          用户配置
+          API Keys
         </div>
         <div
           class="nav-item"
@@ -142,6 +151,14 @@
           v-if="userStore.isAdmin"
         >
           基本设置
+        </div>
+        <div
+          class="nav-item"
+          :class="{ active: activeTab === 'ocr' }"
+          @click="activeTab = 'ocr'"
+          v-if="userStore.isAdmin"
+        >
+          OCR 配置
         </div>
         <div
           class="nav-item"
@@ -168,8 +185,8 @@
             <AccountSettingsComponent />
           </div>
 
-          <div v-if="activeTab === 'userConfig' && userStore.isLoggedIn">
-            <UserConfigSettingsCard />
+          <div v-if="activeTab === 'apiKeys' && userStore.isLoggedIn">
+            <ApiKeyManagementComponent />
           </div>
 
           <div v-if="activeTab === 'agentEnv' && userStore.isLoggedIn">
@@ -178,6 +195,10 @@
 
           <div v-show="activeTab === 'base'" v-if="userStore.isAdmin">
             <BasicSettingsSection />
+          </div>
+
+          <div v-show="activeTab === 'ocr'" v-if="userStore.isAdmin">
+            <OCRSettingsSection />
           </div>
 
           <div v-show="activeTab === 'user'" v-if="userStore.isAdmin">
@@ -200,7 +221,8 @@ import {
   CircleUser,
   ExternalLink,
   Settings,
-  SlidersHorizontal,
+  Key,
+  ScanText,
   Star,
   SquareTerminal,
   User,
@@ -210,7 +232,8 @@ import {
 import AccountSettingsComponent from '@/components/AccountSettingsComponent.vue'
 import AgentEnvSettingsCard from '@/components/AgentEnvSettingsCard.vue'
 import BasicSettingsSection from '@/components/BasicSettingsSection.vue'
-import UserConfigSettingsCard from '@/components/UserConfigSettingsCard.vue'
+import OCRSettingsSection from '@/components/OCRSettingsSection.vue'
+import ApiKeyManagementComponent from '@/components/ApiKeyManagementComponent.vue'
 import UserManagementComponent from '@/components/UserManagementComponent.vue'
 import DepartmentManagementComponent from '@/components/DepartmentManagementComponent.vue'
 
@@ -241,8 +264,8 @@ const visible = computed({
 
 const availableTabs = computed(() => {
   const tabs = []
-  if (userStore.isLoggedIn) tabs.push('account', 'userConfig', 'agentEnv')
-  if (userStore.isAdmin) tabs.push('base', 'user')
+  if (userStore.isLoggedIn) tabs.push('account', 'apiKeys', 'agentEnv')
+  if (userStore.isAdmin) tabs.push('base', 'ocr', 'user')
   if (userStore.isSuperAdmin) tabs.push('department')
   return tabs
 })

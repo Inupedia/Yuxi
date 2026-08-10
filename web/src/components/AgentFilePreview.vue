@@ -12,7 +12,7 @@
   >
     <div v-if="showHeader" class="preview-header">
       <div class="file-title">
-        <FileTypeIcon v-if="showFileIcon" :name="filePath" :size="18" />
+        <FileTypeIcon v-if="showFileIcon" :name="filePath" :size="16" />
         <span class="file-path-title">{{ filePath }}</span>
       </div>
       <div class="modal-actions">
@@ -23,7 +23,7 @@
           title="编辑"
           aria-label="编辑"
         >
-          <FilePen :size="18" />
+          <FilePen :size="16" />
         </button>
 
         <div v-if="isHtmlFile" class="preview-mode-switch">
@@ -50,7 +50,7 @@
           @click="$emit('download', file)"
           title="下载"
         >
-          <Download :size="18" />
+          <Download :size="16" />
         </button>
         <button
           v-if="showFullscreen && file"
@@ -58,7 +58,7 @@
           @click="openFullscreenPreview"
           title="全屏预览"
         >
-          <Maximize :size="18" />
+          <Maximize :size="16" />
         </button>
         <button
           v-if="showClose"
@@ -67,7 +67,7 @@
           :title="closeTitle"
           :aria-label="closeTitle"
         >
-          <component :is="closeIconComponent" :size="18" />
+          <component :is="closeIconComponent" :size="16" />
         </button>
       </div>
     </div>
@@ -204,14 +204,14 @@
             @click="$emit('download', file)"
             title="下载"
           >
-            <Download :size="18" />
+            <Download :size="16" />
           </button>
           <button
             class="modal-action-btn fullscreen-action-btn"
             @click="closeFullscreenPreview"
             title="关闭"
           >
-            <X :size="18" />
+            <X :size="16" />
           </button>
         </div>
         <div class="fullscreen-preview-content">
@@ -272,7 +272,7 @@ import {
   Download,
   Globe,
   Maximize,
-  PanelRightClose,
+  PanelRight,
   FilePen,
   Save,
   X
@@ -368,7 +368,7 @@ const closeTitle = computed(() =>
   props.closeVariant === 'collapse-right' ? '收起预览面板' : '关闭预览'
 )
 const closeIconComponent = computed(() =>
-  props.closeVariant === 'collapse-right' ? PanelRightClose : X
+  props.closeVariant === 'collapse-right' ? PanelRight : X
 )
 const htmlPreviewMode = ref('render')
 const editMode = ref('preview')
@@ -535,7 +535,7 @@ onUnmounted(() => {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 4px 12px;
+  padding: 4px calc(var(--page-padding) - 4px);
   border-bottom: 1px solid var(--gray-150);
   background: var(--gray-25);
 }
@@ -573,6 +573,7 @@ onUnmounted(() => {
 
 .file-path-title {
   font-weight: 400;
+  font-size: 14px;
   color: var(--gray-700);
   overflow: hidden;
   text-overflow: ellipsis;

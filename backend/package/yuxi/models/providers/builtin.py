@@ -32,7 +32,7 @@ BUILTIN_PROVIDERS: list[dict[str, Any]] = [
         "models_endpoint": "https://api.deepseek.com/models",
     },
     {
-        "provider_id": "alibaba",
+        "provider_id": "alibaba-cn",
         "display_name": "DashScope",
         "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
         "embedding_base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1/embeddings",
@@ -53,6 +53,13 @@ BUILTIN_PROVIDERS: list[dict[str, Any]] = [
                 "display_name": "qwen3-rerank",
             },
         ],
+    },
+    {
+        "provider_id": "alibaba",
+        "display_name": "DashScope (International)",
+        "base_url": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+        "api_key_env": "DASHSCOPE_API_KEY",
+        "models_endpoint": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/models",
     },
     {
         "provider_id": "alibaba-coding-plan-cn",
@@ -167,6 +174,12 @@ BUILTIN_PROVIDERS: list[dict[str, Any]] = [
         "display_name": "OpenCode",
         "base_url": "https://opencode.ai/zen/v1",
         "models_endpoint": "https://opencode.ai/zen/v1/models",
+    },
+    {
+        "provider_id": "opencode-go",
+        "display_name": "OpenCode Go",
+        "base_url": "https://opencode.ai/zen/go/v1",
+        "models_endpoint": "https://opencode.ai/zen/go/v1/models",
     },
     {
         "provider_id": "siliconflow-cn",

@@ -5,8 +5,10 @@ import uuid
 from dataclasses import MISSING, dataclass, field, fields
 from typing import Any, get_origin
 
-from yuxi.agents.backends.sandbox.paths import sandbox_workspace_agents_prompt_file
+from yuxi.agents.backends.sandbox.paths import sandbox_workspace_agent_context_file
+from yuxi.agents.tool_approval import DEFAULT_TOOL_APPROVAL_MODE
 from yuxi.utils.logging_config import logger
+from yuxi.utils.paths import WORKSPACE_AGENT_CONTEXT_FILES
 
 WORKSPACE_AGENTS_PROMPT_MAX_BYTES = 64 * 1024
 DEFAULT_SUMMARY_THRESHOLD_K = 100  # 100K tokens
@@ -58,26 +60,29 @@ def _role_can_access(auth: str | None, role: str | None) -> bool:
     return False
 
 
-def _load_workspace_agents_prompt(thread_id: str, uid: str) -> str:
-    prompt_file = sandbox_workspace_agents_prompt_file(thread_id, uid)
-    try:
-        with prompt_file.open("rb") as buffer:
-            content = buffer.read(WORKSPACE_AGENTS_PROMPT_MAX_BYTES + 1)
-    except FileNotFoundError:
-        return ""
-    except IsADirectoryError:
-        logger.warning("读取工作区 AGENTS.md 失败: 路径是目录")
-        return ""
-    except OSError as exc:
-        logger.warning(f"读取工作区 AGENTS.md 失败: {exc}")
-        return ""
+def _load_workspace_agent_context(thread_id: str, uid: str) -> str:
+    sections: list[str] = []
+    for filename in WORKSPACE_AGENT_CONTEXT_FILES:
+        context_file = sandbox_workspace_agent_context_file(thread_id, uid, filename)
+        try:
+            with context_file.open("rb") as buffer:
+                content = buffer.read(WORKSPACE_AGENTS_PROMPT_MAX_BYTES + 1)
+        except FileNotFoundError:
+            continue
+        except IsADirectoryError:
+            logger.warning(f"读取工作区 {filename} 失败: 路径是目录")
+            continue
+        except OSError as exc:
+            logger.warning(f"读取工作区 {filename} 失败: {exc}")
+            continue
 
-    prompt = content[:WORKSPACE_AGENTS_PROMPT_MAX_BYTES].decode("utf-8", errors="replace").strip()
-    if not prompt:
-        return ""
-    if len(content) > WORKSPACE_AGENTS_PROMPT_MAX_BYTES:
-        return f"{prompt}\n\n[AGENTS.md 内容已截断]"
-    return prompt
+        prompt = content[:WORKSPACE_AGENTS_PROMPT_MAX_BYTES].decode("utf-8", errors="replace").strip()
+        if not prompt:
+            continue
+        if len(content) > WORKSPACE_AGENTS_PROMPT_MAX_BYTES:
+            prompt = f"{prompt}\n\n[{filename} 内容已截断]"
+        sections.append(f"用户工作区 agents/{filename} 内容：\n{prompt}")
+    return "\n\n".join(sections)
 
 
 async def build_agent_input_context(
@@ -89,12 +94,11 @@ async def build_agent_input_context(
     request_id: str | None = None,
 ) -> dict:
     input_context = dict(agent_config or {})
-    agents_prompt = await asyncio.to_thread(_load_workspace_agents_prompt, thread_id, uid)
+    agent_context = await asyncio.to_thread(_load_workspace_agent_context, thread_id, uid)
 
-    if agents_prompt:
-        agents_section = f"用户工作区 agents/AGENTS.md 内容：\n{agents_prompt}"
+    if agent_context:
         base_prompt = str(input_context.get("system_prompt") or "").rstrip()
-        input_context["system_prompt"] = f"{base_prompt}\n\n{agents_section}" if base_prompt else agents_section
+        input_context["system_prompt"] = f"{base_prompt}\n\n{agent_context}" if base_prompt else agent_context
 
     input_context.update({"uid": uid, "thread_id": thread_id, "run_id": run_id, "request_id": request_id})
     return input_context
@@ -173,6 +177,20 @@ class BaseContext:
             "options": [],
             "description": "智能体的驱动模型，留空时使用系统默认模型。",
             "kind": "llm",
+        },
+    )
+
+    tool_approval_mode: str = field(
+        default=DEFAULT_TOOL_APPROVAL_MODE,
+        metadata={
+            "name": "工具审批模式",
+            "description": "默认审批会在写文件、编辑文件或执行命令前询问；完全信任会自动执行这些工具。",
+            "options": [
+                {"key": "default", "name": "默认审批", "description": "敏感工具执行前请求确认"},
+                {"key": "always_trust", "name": "完全信任", "description": "敏感工具无需确认，自动执行"},
+            ],
+            "type": "string",
+            "auth": "admin",
         },
     )
 
@@ -431,13 +449,11 @@ async def resolve_agent_resource_options(
             if tool.get("slug")
         ]
     if "knowledges" in fields_to_load:
-        from yuxi.knowledge import knowledge_base
+        from yuxi.knowledge.runtime import knowledge_base
 
-        databases = (await knowledge_base.get_databases_by_user(user)).get("databases", [])
+        databases = await knowledge_base.get_databases_by_user(user)
         options["knowledges"] = [
-            _resource_option(item.get("kb_id"), item.get("name"), item.get("description"))
-            for item in databases
-            if isinstance(item, dict) and item.get("kb_id")
+            _resource_option(item.kb_id, item.name, item.description) for item in databases if item.kb_id
         ]
     if "mcps" in fields_to_load:
         from yuxi.agents.mcp.service import get_all_mcp_servers
@@ -530,6 +546,7 @@ async def prepare_agent_runtime_context(
             setattr(context, "_readable_skills", [])
             setattr(context, "_runtime_skill_metadata", {})
             setattr(context, "_runtime_skill_dependency_map", {})
+            setattr(context, "_runtime_skill_sources", {})
             return context
 
         raw_resources = {
@@ -554,5 +571,6 @@ async def prepare_agent_runtime_context(
         setattr(context, "_readable_skills", skill_scope["readable_skills"])
         setattr(context, "_runtime_skill_metadata", skill_scope["runtime_skill_metadata"])
         setattr(context, "_runtime_skill_dependency_map", skill_scope["runtime_skill_dependency_map"])
+        setattr(context, "_runtime_skill_sources", skill_scope.get("runtime_skill_sources", {}))
 
     return context

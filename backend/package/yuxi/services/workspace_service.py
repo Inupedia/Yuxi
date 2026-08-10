@@ -26,7 +26,7 @@ from yuxi.services.file_preview import (
 from yuxi.services.mention_search_service import invalidate_workspace_mention_cache
 from yuxi.storage.postgres.models_business import User
 from yuxi.utils.datetime_utils import utc_isoformat_from_timestamp
-from yuxi.utils.paths import VIRTUAL_PATH_WORKSPACE, WORKSPACE_DIR_NAME
+from yuxi.utils.paths import VIRTUAL_PATH_WORKSPACE, WORKSPACE_DIR_NAME, ensure_within_root
 from yuxi.utils.upload_utils import MAX_UPLOAD_SIZE_BYTES, write_upload_to_buffer
 
 EDITABLE_WORKSPACE_SUFFIXES = {".md", ".markdown", ".mdx", ".txt"}
@@ -45,7 +45,7 @@ def _workspace_root(user: User) -> Path:
     root.mkdir(parents=True, exist_ok=True)
     resolved_root = root.resolve()
     try:
-        resolved_root.relative_to(user_data_root)
+        ensure_within_root(resolved_root, user_data_root, error_message="Access denied")
     except ValueError as exc:
         raise HTTPException(status_code=403, detail="Access denied") from exc
     ensure_workspace_default_files(resolved_root)
@@ -68,7 +68,7 @@ def _resolve_workspace_path(user: User, path: str | None) -> Path:
     relative_parts = [part for part in normalized.parts if part not in {"/", ""}]
     target = (root.joinpath(*relative_parts) if relative_parts else root).resolve()
     try:
-        target.relative_to(root)
+        ensure_within_root(target, root, error_message="Access denied")
     except ValueError as exc:
         raise HTTPException(status_code=403, detail="Access denied") from exc
     return target
@@ -119,7 +119,7 @@ def _resolve_parent_directory(user: User, parent_path: str) -> Path:
 def _resolve_new_child(root: Path, parent: Path, name: str) -> Path:
     target = parent / name
     try:
-        target.resolve(strict=False).relative_to(root)
+        ensure_within_root(target.resolve(strict=False), root, error_message="Access denied")
     except ValueError as exc:
         raise HTTPException(status_code=403, detail="Access denied") from exc
     if target.exists():

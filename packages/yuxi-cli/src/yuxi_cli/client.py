@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -108,6 +109,67 @@ class YuxiClient:
             json={"items": items, "params": params},
         )
 
+    def list_external_databases(self) -> dict:
+        return self._request("GET", "/knowledge/databases/external")
+
+    def list_external_files(
+        self,
+        kb_id: str,
+        *,
+        query: str | None = None,
+        offset: int = 0,
+        limit: int = 100,
+        status: str = "all",
+    ) -> dict:
+        params: dict[str, Any] = {"offset": offset, "limit": limit, "status": status}
+        if query:
+            params["query"] = query
+        return self._request("GET", f"/knowledge/databases/external/{kb_id}/files", params=params)
+
+    def retrieve_external(
+        self,
+        kb_id: str,
+        *,
+        query: str,
+        file_name: str | None = None,
+        options: dict | None = None,
+    ) -> dict:
+        return self._request(
+            "POST",
+            f"/knowledge/databases/external/{kb_id}/retrieve",
+            json={"query": query, "file_name": file_name, "options": options or {}},
+        )
+
+    def open_external_file(self, kb_id: str, file_id: str, *, offset: int = 0, limit: int = 200) -> dict:
+        return self._request(
+            "GET",
+            f"/knowledge/databases/external/{kb_id}/files/{file_id}/open",
+            params={"offset": offset, "limit": limit},
+        )
+
+    def find_external_file(
+        self,
+        kb_id: str,
+        file_id: str,
+        *,
+        patterns: list[str],
+        use_regex: bool = False,
+        case_sensitive: bool = False,
+        max_windows: int = 5,
+        window_size: int = 80,
+    ) -> dict:
+        return self._request(
+            "POST",
+            f"/knowledge/databases/external/{kb_id}/files/{file_id}/find",
+            json={
+                "patterns": patterns,
+                "use_regex": use_regex,
+                "case_sensitive": case_sensitive,
+                "max_windows": max_windows,
+                "window_size": window_size,
+            },
+        )
+
     def run_agent_eval(
         self,
         *,
@@ -128,6 +190,79 @@ class YuxiClient:
             "model_spec": model_spec,
         }
         return self._request("POST", "/agent-invocation/eval/runs", json=payload, timeout=timeout_seconds)
+
+    def create_agent_chat_run(
+        self,
+        *,
+        message: str,
+        agent_slug: str,
+        thread_id: str | None,
+        request_id: str,
+    ) -> dict:
+        """通过纯文本 Channel 入口发送 CLI Chat 消息。"""
+        return self._request(
+            "POST",
+            "/agent-invocation/channel/messages",
+            json={
+                "channel": "cli",
+                "account_id": self.remote.name,
+                "chat_id": "cli" if thread_id else request_id,
+                "agent_slug": agent_slug,
+                "thread_id": thread_id,
+                "message_id": request_id,
+                "request_id": request_id,
+                "message": {"type": "text", "text": message},
+            },
+        )
+
+    def stream_agent_run_events(self, run_id: str) -> Iterator[dict[str, str]]:
+        """读取 Agent Run SSE，并逐条返回解析后的事件。"""
+        yield from self._stream_events(f"/agent/runs/{run_id}/events", params={"verbose": "false"})
+
+    def stream_agent_request_events(self, request_events_url: str) -> Iterator[dict[str, str]]:
+        """读取 Agent Request SSE，直到请求派发或进入终态。"""
+        path = request_events_url.strip()
+        if not path:
+            raise ClientError("request_events_url 不能为空")
+        if path.startswith("http://") or path.startswith("https://"):
+            raise ClientError("request_events_url 必须是相对路径")
+        if path.startswith("/api/"):
+            path = path[4:]
+        yield from self._stream_events(path)
+
+    def _stream_events(
+        self,
+        path: str,
+        *,
+        params: dict[str, str] | None = None,
+    ) -> Iterator[dict[str, str]]:
+        """连接远端 SSE 接口并返回解析后的事件。"""
+        headers = {}
+        if self.remote.api_key:
+            headers["Authorization"] = f"Bearer {self.remote.api_key}"
+        url = f"{self.remote.api_base_url}{path if path.startswith('/') else f'/{path}'}"
+
+        try:
+            with self.client.stream(
+                "GET",
+                url,
+                headers=headers,
+                params=params,
+                timeout=None,
+            ) as response:
+                if response.status_code >= 400:
+                    response.read()
+                    error_code, error_message = _parse_http_error(response)
+                    raise ClientError(
+                        error_message,
+                        error_code=error_code,
+                        status_code=response.status_code,
+                    )
+                yield from _iter_sse_events(response.iter_lines())
+        except ClientError:
+            raise
+        except httpx.HTTPError as exc:
+            raise ClientError(f"运行事件流连接失败: {exc}") from exc
 
     def authorize_url(self, session: CLIAuthSession) -> str:
         return build_url(self.remote.url, session.authorize_path)
@@ -201,3 +336,34 @@ def _parse_http_error(response: httpx.Response) -> tuple[str | None, str]:
     if detail:
         return None, str(detail)
     return None, f"HTTP {response.status_code}"
+
+
+def _iter_sse_events(lines: Iterator[str]) -> Iterator[dict[str, str]]:
+    """解析 SSE 文本行，忽略 heartbeat，并保留 event、data 与 id。"""
+    event: dict[str, str] = {}
+    data_lines: list[str] = []
+
+    for line in lines:
+        if not line:
+            if data_lines:
+                event["data"] = "\n".join(data_lines)
+                yield event
+            event = {}
+            data_lines = []
+            continue
+        if line.startswith(":"):
+            continue
+
+        field, separator, value = line.partition(":")
+        if not separator:
+            value = ""
+        elif value.startswith(" "):
+            value = value[1:]
+        if field == "data":
+            data_lines.append(value)
+        elif field in {"event", "id"}:
+            event[field] = value
+
+    if data_lines:
+        event["data"] = "\n".join(data_lines)
+        yield event

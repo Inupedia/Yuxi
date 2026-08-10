@@ -8,7 +8,7 @@ import {
   LibraryBig,
   Box,
   FolderKanban,
-  PanelLeftClose,
+  PanelLeft,
   PanelLeftOpen,
   MessageCirclePlus,
   Search
@@ -125,7 +125,7 @@ const organizationName = computed(() => {
 const mainList = computed(() => {
   const items = [
     {
-      name: '创建新对话',
+      name: '新建对话',
       path: '/agent',
       icon: MessageCirclePlus,
       activeIcon: MessageCirclePlus,
@@ -135,6 +135,13 @@ const mainList = computed(() => {
   ]
 
   items.push({
+    name: '智能体',
+    path: '/agent-manage',
+    icon: Box,
+    activeIcon: Box
+  })
+
+  items.push({
     name: '工作区',
     path: '/workspace',
     icon: FolderKanban,
@@ -142,18 +149,11 @@ const mainList = computed(() => {
   })
 
   items.push({
-    name: '智能体扩展',
+    name: '知识库 · 技能',
     path: '/extensions',
     activePaths: ['/extensions'],
     icon: LibraryBig,
     activeIcon: LibraryBig
-  })
-
-  items.push({
-    name: '智能体管理',
-    path: '/model-manage',
-    icon: Box,
-    activeIcon: Box
   })
 
   if (userStore.isSuperAdmin) {
@@ -298,7 +298,7 @@ provide('settingsModal', {
           aria-label="折叠侧边栏"
           @click="toggleSidebar"
         >
-          <PanelLeftClose size="18" />
+          <PanelLeft size="18" />
         </button>
       </div>
       <div class="nav">
@@ -330,10 +330,10 @@ provide('settingsModal', {
           @click.stop="openConversationSearch"
         >
           <a-tooltip placement="right" :open="sidebarCollapsed ? undefined : false">
-            <template #title>搜索对话</template>
+            <template #title>搜索</template>
             <Search class="icon" size="18" />
           </a-tooltip>
-          <span class="nav-text">搜索对话</span>
+          <span class="nav-text">搜索</span>
         </button>
 
         <RouterLink
@@ -518,7 +518,7 @@ div.header,
     justify-content: flex-start;
     align-items: stretch;
     position: relative;
-    gap: 4px;
+    gap: 0;
   }
 
   .sidebar-conversations {

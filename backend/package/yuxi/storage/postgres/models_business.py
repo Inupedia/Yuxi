@@ -15,11 +15,15 @@ from sqlalchemy import (
     String,
     Text,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship
+from yuxi.storage.minio.client import normalize_public_minio_url
 from yuxi.utils.datetime_utils import format_utc_datetime, utc_now_naive
 
 Base = declarative_base()
+
+JSON_VALUE = JSON().with_variant(JSONB, "postgresql")
 
 MAX_LOGIN_FAILED_ATTEMPTS = 5
 LOGIN_LOCK_DURATION_SECONDS = 300
@@ -91,7 +95,7 @@ class User(Base):
             "username": self.username,
             "uid": self.uid,
             "phone_number": self.phone_number,
-            "avatar": self.avatar,
+            "avatar": normalize_public_minio_url(self.avatar),
             "role": self.role,
             "department_id": self.department_id,
             "created_at": format_utc_datetime(self.created_at),
@@ -192,7 +196,7 @@ class Agent(Base):
 
     pics = Column(JSON, nullable=False, default=list)
     config_json = Column(JSON, nullable=False, default=dict)
-    share_config = Column(JSON, nullable=False, default=dict)
+    share_config = Column(JSON_VALUE, nullable=False)
 
     is_default = Column(Boolean, nullable=False, default=False, index=True)
     is_subagent = Column(Boolean, nullable=False, default=False, index=True)
@@ -212,8 +216,8 @@ class Agent(Base):
             "backend_id": self.backend_id,
             "name": self.name,
             "description": self.description,
-            "icon": self.icon,
-            "pics": self.pics or [],
+            "icon": normalize_public_minio_url(self.icon),
+            "pics": [normalize_public_minio_url(pic) for pic in (self.pics or [])],
             "config_json": self.config_json or {},
             "share_config": self.share_config or {},
             "is_default": bool(self.is_default),
@@ -243,7 +247,7 @@ class Skill(Base):
     dir_path = Column(String(512), nullable=False, comment="技能目录路径（相对 save_dir）")
     version = Column(String(64), nullable=True, comment="技能版本（内置 skill 使用语义化版本）")
     content_hash = Column(String(128), nullable=True, comment="技能目录内容哈希（内置 skill 安装时计算）")
-    share_config = Column(JSON, nullable=False, default=dict, comment="共享权限配置")
+    share_config = Column(JSON_VALUE, nullable=False, comment="共享权限配置")
     enabled = Column(Boolean, nullable=False, default=True, comment="是否启用")
     created_by = Column(String(64), nullable=True)
     updated_by = Column(String(64), nullable=True)
@@ -681,6 +685,23 @@ class ModelProvider(Base):
         }
 
 
+class ConfigOption(Base):
+    """系统定义、管理员维护值的通用配置项。"""
+
+    __tablename__ = "config_options"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    key = Column(String(100), nullable=False, unique=True, index=True)
+    name = Column(String(100), nullable=False)
+    description = Column(Text, nullable=False, default="")
+    params = Column(JSON, nullable=False, default=dict)
+    value = Column(JSON, nullable=False, default=dict)
+    created_by = Column(String(100), nullable=True)
+    updated_by = Column(String(100), nullable=True)
+    created_at = Column(DateTime, default=utc_now_naive)
+    updated_at = Column(DateTime, default=utc_now_naive, onupdate=utc_now_naive)
+
+
 class TaskRecord(Base):
     __tablename__ = "tasks"
 
@@ -825,6 +846,10 @@ class AgentRun(Base):
         comment="Run status: pending/running/completed/failed/cancel_requested/cancelled/interrupted",
     )
     request_id = Column(String(64), unique=True, index=True, nullable=False, comment="Idempotency request ID")
+    source = Column(String(32), nullable=False, default="chat", comment="Run source snapshot")
+    channel = Column(String(32), nullable=False, default="web", comment="Run channel snapshot")
+    external_id = Column(String(128), nullable=True, index=True, comment="Source-specific external ID snapshot")
+    origin_metadata = Column(JSON, nullable=False, default=dict, comment="Immutable origin metadata snapshot")
     conversation_id = Column(
         Integer, ForeignKey("conversations.id"), nullable=True, index=True, comment="Conversation ID"
     )
@@ -861,6 +886,10 @@ class AgentRun(Base):
             "uid": self.uid,
             "status": self.status,
             "request_id": self.request_id,
+            "source": self.source,
+            "channel": self.channel,
+            "external_id": self.external_id,
+            "origin_metadata": self.origin_metadata or {},
             "conversation_id": self.conversation_id,
             "created_by_run_id": self.created_by_run_id,
             "subagent_thread_relation_id": self.subagent_thread_relation_id,
@@ -886,4 +915,84 @@ Index(
     unique=True,
     postgresql_where=AgentRun.status.notin_(AGENT_RUN_TERMINAL_STATUSES),
     sqlite_where=AgentRun.status.notin_(AGENT_RUN_TERMINAL_STATUSES),
+)
+
+
+class AgentRunRequest(Base):
+    """AgentRunRequest table - 智能体线程请求队列表。
+
+    表示一次用户/外部请求；派发后由对应 AgentRun 表达执行状态。
+    外部统一以 request_id 作为幂等键引用；id 为自增主键，仅用于 FIFO 排序。
+    """
+
+    __tablename__ = "agent_run_requests"
+
+    id = Column(Integer, primary_key=True, autoincrement=True, comment="Primary key")
+    request_id = Column(String(64), unique=True, index=True, nullable=False, comment="幂等请求 ID")
+    uid = Column(String(64), nullable=False, comment="UID")
+    agent_slug = Column(String(64), nullable=False, comment="Agent slug")
+    conversation_thread_id = Column(String(64), nullable=False, comment="Conversation thread ID")
+    source = Column(String(32), nullable=False, default="chat", comment="请求来源: chat/agent_call/eval")
+    channel = Column(String(32), nullable=False, default="web", comment="请求通道: web/api/im/internal")
+    external_id = Column(String(128), nullable=True, index=True, comment="来源侧消息或调用 ID")
+    origin_metadata = Column(JSON, nullable=False, default=dict, comment="来源 metadata 快照")
+    queue_policy = Column(
+        String(16),
+        nullable=False,
+        default="enqueue",
+        comment="排队策略: enqueue/reject/steer",
+    )
+    status = Column(
+        String(32),
+        nullable=False,
+        default="queued",
+        comment="请求状态: queued/dispatched/cancelled/rejected/failed",
+    )
+    input_message_id = Column(Integer, ForeignKey("messages.id"), nullable=False, comment="关联输入消息 ID")
+    dispatched_run_id = Column(String(64), ForeignKey("agent_runs.id"), nullable=True, comment="已派发的 AgentRun ID")
+    input_payload = Column(JSON, nullable=False, default=dict, comment="原始输入载荷快照")
+    error_message = Column(Text, nullable=True, comment="rejected/failed 时的错误信息")
+    created_at = Column(DateTime, nullable=False, default=utc_now_naive, comment="创建时间")
+    dispatched_at = Column(DateTime, nullable=True, comment="派发时间")
+    updated_at = Column(
+        DateTime,
+        nullable=False,
+        default=utc_now_naive,
+        onupdate=utc_now_naive,
+        comment="更新时间",
+    )
+
+    # Relationships
+    input_message = relationship("Message", foreign_keys=[input_message_id])
+    dispatched_run = relationship("AgentRun", foreign_keys=[dispatched_run_id])
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "request_id": self.request_id,
+            "uid": self.uid,
+            "agent_slug": self.agent_slug,
+            "thread_id": self.conversation_thread_id,
+            "source": self.source,
+            "channel": self.channel,
+            "external_id": self.external_id,
+            "origin_metadata": self.origin_metadata or {},
+            "queue_policy": self.queue_policy,
+            "status": self.status,
+            "input_message_id": self.input_message_id,
+            "dispatched_run_id": self.dispatched_run_id,
+            "error_message": self.error_message,
+            "created_at": format_utc_datetime(self.created_at),
+            "dispatched_at": format_utc_datetime(self.dispatched_at),
+            "updated_at": format_utc_datetime(self.updated_at),
+        }
+
+
+Index(
+    "ix_agent_run_requests_queue",
+    AgentRunRequest.uid,
+    AgentRunRequest.agent_slug,
+    AgentRunRequest.conversation_thread_id,
+    AgentRunRequest.status,
+    AgentRunRequest.created_at,
+    AgentRunRequest.id,
 )

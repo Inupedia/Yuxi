@@ -7,7 +7,7 @@ extracts UI-facing agent state.
 
 Do not put run creation, request id idempotency, queueing or external
 invocation response formatting here. Those responsibilities belong to
-``agent_run_service`` and ``agent_invocation_service`` respectively. Keeping
+``agent_run_service`` and the Invocation HTTP adapters respectively. Keeping
 this file focused on execution makes normal chat, resume runs and subagent runs
 share the same runtime behavior once they reach the worker.
 """
@@ -22,6 +22,7 @@ from typing import Any, Literal
 from langchain.messages import AIMessage, AIMessageChunk
 from langgraph.types import Command
 from yuxi import config as conf
+from yuxi.agents.base import _json_safe
 from yuxi.agents.buildin import agent_manager
 from yuxi.agents.context import build_agent_input_context, normalize_agent_context_config
 from yuxi.agents.state import AgentStatePayload
@@ -189,24 +190,19 @@ def _metadata_namespace(metadata: dict | None) -> list[str]:
     return []
 
 
-def _json_safe(value: Any) -> Any:
-    if value is None or isinstance(value, str | int | float | bool):
-        return value
-    if isinstance(value, dict):
-        return {str(key): _json_safe(child) for key, child in value.items()}
-    if isinstance(value, list | tuple):
-        return [_json_safe(child) for child in value]
-    if hasattr(value, "model_dump"):
-        return _json_safe(value.model_dump())
-    return str(value)
-
-
 def _apply_model_override(input_context: dict, meta: dict | None) -> None:
     """对话级模型覆盖：meta.model_spec 优先于智能体配置的 model。值已在创建 run 时校验。"""
     model_spec = (meta or {}).get("model_spec")
     model_spec = model_spec.strip() if isinstance(model_spec, str) else model_spec
     if model_spec:
         input_context["model"] = model_spec
+
+
+def _apply_input_context_field(input_context: dict, meta: dict | None, key: str) -> None:
+    """把 meta[key] 快照注入运行上下文，值已在 run 创建时校验。"""
+    value = (meta or {}).get(key)
+    if value:
+        input_context[key] = value
 
 
 def _apply_subagent_runtime_context(input_context: dict, meta: dict | None) -> None:
@@ -594,9 +590,8 @@ def _coerce_interrupt_payload(info: Any) -> dict:
     return result
 
 
-def _build_ask_user_question_payload(info: Any, thread_id: str) -> dict[str, Any]:
-    """将 interrupt 信息标准化为 ask_user_question_required 载荷。"""
-    payload = _coerce_interrupt_payload(info)
+def _build_ask_user_question_payload(payload: dict, thread_id: str) -> dict[str, Any]:
+    """将已标准化的 interrupt payload 转换为 ask_user_question_required 载荷。"""
 
     questions = _normalize_interrupt_questions(payload.get("questions"))
 
@@ -618,6 +613,34 @@ def _build_ask_user_question_payload(info: Any, thread_id: str) -> dict[str, Any
         "source": source,
         "thread_id": thread_id,
     }
+
+
+def _build_tool_approval_payload(payload: dict, thread_id: str) -> dict[str, Any] | None:
+    """将已标准化的 interrupt payload 转换为 tool_approval_required 载荷。"""
+    action_requests = payload.get("action_requests")
+    review_configs = payload.get("review_configs")
+    if not isinstance(action_requests, list) or not isinstance(review_configs, list):
+        return None
+    if not action_requests or len(action_requests) != len(review_configs):
+        return None
+    return {
+        "approval": {
+            "action_requests": _json_safe(action_requests),
+            "review_configs": _json_safe(review_configs),
+        },
+        "thread_id": thread_id,
+    }
+
+
+def _build_pending_interrupt_payload(info: Any, thread_id: str) -> dict[str, Any]:
+    """将 checkpoint 中断信息转换为前端可恢复的统一载荷。"""
+    coerced = _coerce_interrupt_payload(info)
+    approval_payload = _build_tool_approval_payload(coerced, thread_id)
+    if approval_payload:
+        return {"status": "human_approval_required", **approval_payload}
+
+    question_payload = _build_ask_user_question_payload(coerced, thread_id)
+    return {"status": "ask_user_question_required", **question_payload}
 
 
 def _ensure_full_msg(full_msg: AIMessage | None, accumulated_content: list[str]) -> AIMessage | None:
@@ -704,9 +727,10 @@ async def check_and_handle_interrupts(
 
         interrupt_info = _extract_interrupt_info(state)
         if interrupt_info:
-            question_payload = _build_ask_user_question_payload(interrupt_info, thread_id)
-            meta["interrupt"] = question_payload
-            yield make_chunk(status="ask_user_question_required", meta=meta, **question_payload)
+            pending_interrupt = _build_pending_interrupt_payload(interrupt_info, thread_id)
+            status = pending_interrupt.pop("status")
+            meta["interrupt"] = pending_interrupt
+            yield make_chunk(status=status, meta=meta, **pending_interrupt)
 
     except Exception as e:
         logger.exception(f"Error checking interrupts: {e}")
@@ -843,6 +867,7 @@ async def stream_agent_chat(
         request_id=meta.get("request_id"),
     )
     _apply_model_override(input_context, meta)
+    _apply_input_context_field(input_context, meta, "tool_approval_mode")
     _apply_subagent_runtime_context(input_context, meta)
     context = _build_agent_context(agent, input_context)
     langfuse_run = _build_langfuse_run_context(
@@ -906,6 +931,9 @@ async def stream_agent_chat(
                 )
             except Exception as e:
                 logger.error(f"Error saving user message: {e}")
+
+        # 智能体流式执行期间不访问业务数据库，先结束预处理事务并归还连接池。
+        await db.commit()
 
         # 先构建 langgraph_config
         langgraph_config = {"configurable": {"thread_id": thread_id, "uid": uid}}
@@ -1138,6 +1166,9 @@ async def stream_agent_resume(
         yield make_resume_chunk(status="error", error_type="invalid_agent", error_message=str(e), meta=meta)
         return
 
+    # 恢复流执行期间不访问业务数据库，先结束运行时解析事务并归还连接池。
+    await db.commit()
+
     meta["agent_slug"] = agent_item.slug
     meta["backend_id"] = agent_item.backend_id
     input_context = await build_agent_input_context(
@@ -1148,6 +1179,7 @@ async def stream_agent_resume(
         request_id=meta.get("request_id"),
     )
     _apply_model_override(input_context, meta)
+    _apply_input_context_field(input_context, meta, "tool_approval_mode")
     context = _build_agent_context(agent, input_context)
     langfuse_run = _build_langfuse_run_context(
         current_user=current_user,
@@ -1371,10 +1403,19 @@ async def get_agent_state_view(
             model_spec = latest_run.input_payload.get("model_spec")
             if isinstance(model_spec, str) and model_spec.strip():
                 input_context["model"] = model_spec.strip()
+            tool_approval_mode = latest_run.input_payload.get("tool_approval_mode")
+            if tool_approval_mode:
+                input_context["tool_approval_mode"] = tool_approval_mode
         context = _build_agent_context(agent, input_context)
         state = await _read_checkpoint_state(agent, uid=current_uid, thread_id=thread_id, context=context)
         values = getattr(state, "values", {}) if state else {}
         response = {"agent_state": extract_agent_state(values)}
+        interrupt_info = _extract_interrupt_info(state) if state else None
+        if latest_run and latest_run.status == "interrupted" and interrupt_info:
+            response["interrupt"] = {
+                **_build_pending_interrupt_payload(interrupt_info, thread_id),
+                "run_id": latest_run.id,
+            }
         relation = await SubagentThreadRepository(db).get_by_child_conversation_for_user(
             conversation.id,
             str(current_uid),

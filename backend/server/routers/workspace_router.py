@@ -8,8 +8,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from server.utils.auth_middleware import get_required_user
-from yuxi import knowledge_base
-from yuxi.knowledge.factory import KnowledgeBaseFactory
+from yuxi.knowledge.runtime import knowledge_base
 from yuxi.services.workspace_service import (
     create_workspace_directory,
     delete_workspace_path,
@@ -48,13 +47,11 @@ async def _ensure_knowledge_read_access(current_user: User, kb_id: str) -> None:
 
 
 async def _ensure_knowledge_supports_documents(kb_id: str) -> None:
-    db_info = await knowledge_base.get_database_info(kb_id)
+    db_info, supports_documents = await knowledge_base.get_database_document_support(kb_id)
     if not db_info:
         raise HTTPException(status_code=404, detail=f"知识库 {kb_id} 不存在")
-    kb_type = (db_info.get("kb_type") or "").lower()
-    kb_class = KnowledgeBaseFactory.get_kb_class(kb_type)
-    if not kb_class.supports_documents:
-        raise HTTPException(status_code=501, detail=f"{db_info.get('name') or kb_type} 不支持文件浏览")
+    if not supports_documents:
+        raise HTTPException(status_code=501, detail=f"{db_info.name or db_info.kb_type} 不支持文件浏览")
 
 
 def _raise_knowledge_read_error(error: ValueError) -> None:

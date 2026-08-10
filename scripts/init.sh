@@ -14,31 +14,94 @@ generate_hex() {
     fi
 }
 
-ensure_jwt_env() {
-    if grep -Eq '^JWT_SECRET_KEY=.+' .env && grep -Eq '^YUXI_INSTANCE_ID=.+' .env; then
+set_env_value() {
+    local name="$1"
+    local value="$2"
+
+    if grep -Eq "^${name}=" .env; then
+        ENV_VALUE="$value" awk -v name="$name" '
+            $0 ~ "^" name "=" {
+                if (!updated) {
+                    print name "=" ENVIRON["ENV_VALUE"]
+                    updated = 1
+                }
+                next
+            }
+            { print }
+        ' .env > .env.tmp
+        mv .env.tmp .env
+    else
+        printf '\n%s=%s\n' "$name" "$value" >> .env
+    fi
+}
+
+ensure_required_api_env() {
+    if grep -Eq '^SILICONFLOW_API_KEY=.+' .env; then
         return
     fi
 
-    echo "JWT security settings are missing in .env."
-    read -s -p "Please enter your JWT_SECRET_KEY (press Enter to auto-generate): " JWT_SECRET_KEY
+    echo "SILICONFLOW_API_KEY is missing in .env."
+    while true; do
+        read -s -p "Please enter your SILICONFLOW_API_KEY: " SILICONFLOW_API_KEY
+        echo ""
+        if [ -n "$SILICONFLOW_API_KEY" ]; then
+            break
+        fi
+        echo "❌ API Key cannot be empty. Please try again."
+    done
+    set_env_value "SILICONFLOW_API_KEY" "$SILICONFLOW_API_KEY"
+}
+
+ensure_jwt_env() {
+    if ! grep -Eq '^JWT_SECRET_KEY=.+' .env; then
+        echo "JWT_SECRET_KEY is missing in .env."
+        read -s -p "Please enter your JWT_SECRET_KEY (press Enter to auto-generate): " JWT_SECRET_KEY
+        echo ""
+        if [ -z "$JWT_SECRET_KEY" ]; then
+            JWT_SECRET_KEY=$(generate_hex 32)
+            echo "Generated JWT_SECRET_KEY and saved it to .env."
+        fi
+
+        set_env_value "JWT_SECRET_KEY" "$JWT_SECRET_KEY"
+    fi
+
+    if ! grep -Eq '^YUXI_INSTANCE_ID=.+' .env; then
+        echo "YUXI_INSTANCE_ID is missing in .env."
+        read -p "Please enter your YUXI_INSTANCE_ID (press Enter to auto-generate): " YUXI_INSTANCE_ID
+        if [ -z "$YUXI_INSTANCE_ID" ]; then
+            YUXI_INSTANCE_ID="instance-$(generate_hex 8)"
+            echo "Generated YUXI_INSTANCE_ID and saved it to .env."
+        fi
+
+        set_env_value "YUXI_INSTANCE_ID" "$YUXI_INSTANCE_ID"
+    fi
+}
+
+ensure_sandbox_env() {
+    if grep -Eq '^SANDBOX_PROVISIONER_TOKEN=.+' .env; then
+        return
+    fi
+
+    echo "SANDBOX_PROVISIONER_TOKEN is missing in .env."
+    read -s -p "Please enter your SANDBOX_PROVISIONER_TOKEN (press Enter to auto-generate): " SANDBOX_PROVISIONER_TOKEN
     echo ""
-    if [ -z "$JWT_SECRET_KEY" ]; then
-        JWT_SECRET_KEY=$(generate_hex 32)
-        echo "Generated JWT_SECRET_KEY and saved it to .env."
+    if [ -z "$SANDBOX_PROVISIONER_TOKEN" ]; then
+        SANDBOX_PROVISIONER_TOKEN=$(generate_hex 32)
+        echo "Generated SANDBOX_PROVISIONER_TOKEN and saved it to .env."
     fi
 
-    read -p "Please enter your YUXI_INSTANCE_ID (press Enter to auto-generate): " YUXI_INSTANCE_ID
-    if [ -z "$YUXI_INSTANCE_ID" ]; then
-        YUXI_INSTANCE_ID="instance-$(generate_hex 8)"
-        echo "Generated YUXI_INSTANCE_ID and saved it to .env."
+    set_env_value "SANDBOX_PROVISIONER_TOKEN" "$SANDBOX_PROVISIONER_TOKEN"
+}
+
+skip_existing_image() {
+    local image="$1"
+
+    if ! docker image inspect "$image" >/dev/null 2>&1; then
+        return 1
     fi
 
-    cat >> .env << EOF
-
-# JWT security settings
-JWT_SECRET_KEY=${JWT_SECRET_KEY}
-YUXI_INSTANCE_ID=${YUXI_INSTANCE_ID}
-EOF
+    echo "⏭️  ${image} already exists. Skipping pull."
+    return 0
 }
 
 echo "🚀 Initializing Yuxi project..."
@@ -46,8 +109,10 @@ echo "=================================="
 
 # Check if .env file exists
 if [ -f ".env" ]; then
-    echo "✅ .env file already exists. Skipping environment setup."
+    echo "✅ .env file already exists. Checking required settings."
+    ensure_required_api_env
     ensure_jwt_env
+    ensure_sandbox_env
 else
     echo "📝 .env file not found. Let's set up your environment variables."
     echo ""
@@ -65,11 +130,28 @@ else
         fi
     done
 
-    # Get TAVILY_API_KEY (optional)
+    # Get Web Search Provider and API Key (optional)
     echo ""
-    echo "🔍 Tavily API Key (optional) - for search service"
-    echo "Get your API key from: https://app.tavily.com/"
-    read -p "Please enter your TAVILY_API_KEY (press Enter to skip): " TAVILY_API_KEY
+    echo "🔍 Web Search Provider (optional)"
+    echo "1) doubao (Doubao Custom Search)"
+    echo "2) tavily (Tavily Search)"
+    read -p "Please select web search provider (1 for doubao, 2 for tavily, press Enter to skip): " SEARCH_CHOICE
+
+    WEB_SEARCH_PROVIDER=""
+    DOUBAO_SEARCH_API_KEY=""
+    TAVILY_API_KEY=""
+
+    if [ "$SEARCH_CHOICE" = "1" ] || [ "$SEARCH_CHOICE" = "doubao" ]; then
+        WEB_SEARCH_PROVIDER="doubao"
+        echo "Get your Doubao API Key from Volcengine Console https://console.volcengine.com/search-infinity/api-key"
+        read -s -p "Please enter your DOUBAO_SEARCH_API_KEY: " DOUBAO_SEARCH_API_KEY
+        echo ""
+    elif [ "$SEARCH_CHOICE" = "2" ] || [ "$SEARCH_CHOICE" = "tavily" ]; then
+        WEB_SEARCH_PROVIDER="tavily"
+        echo "Get your Tavily API key from: https://app.tavily.com/"
+        read -s -p "Please enter your TAVILY_API_KEY: " TAVILY_API_KEY
+        echo ""
+    fi
 
     echo ""
     echo "JWT security settings"
@@ -86,14 +168,27 @@ else
         echo "Generated YUXI_INSTANCE_ID and saved it to .env."
     fi
 
+    read -s -p "Please enter your SANDBOX_PROVISIONER_TOKEN (press Enter to auto-generate): " SANDBOX_PROVISIONER_TOKEN
+    echo ""
+    if [ -z "$SANDBOX_PROVISIONER_TOKEN" ]; then
+        SANDBOX_PROVISIONER_TOKEN=$(generate_hex 32)
+        echo "Generated SANDBOX_PROVISIONER_TOKEN and saved it to .env."
+    fi
+
     # Create .env file
     cat > .env << EOF
 # SiliconFlow API Key (required)
 SILICONFLOW_API_KEY=${SILICONFLOW_API_KEY}
 
-# Tavily API Key (optional - for search service)
+# Web Search Provider settings
 EOF
 
+    if [ -n "$WEB_SEARCH_PROVIDER" ]; then
+        echo "WEB_SEARCH_PROVIDER=${WEB_SEARCH_PROVIDER}" >> .env
+    fi
+    if [ -n "$DOUBAO_SEARCH_API_KEY" ]; then
+        echo "DOUBAO_SEARCH_API_KEY=${DOUBAO_SEARCH_API_KEY}" >> .env
+    fi
     if [ -n "$TAVILY_API_KEY" ]; then
         echo "TAVILY_API_KEY=${TAVILY_API_KEY}" >> .env
     fi
@@ -103,6 +198,7 @@ EOF
 # JWT security settings
 JWT_SECRET_KEY=${JWT_SECRET_KEY}
 YUXI_INSTANCE_ID=${YUXI_INSTANCE_ID}
+SANDBOX_PROVISIONER_TOKEN=${SANDBOX_PROVISIONER_TOKEN}
 EOF
 
     echo "✅ .env file created successfully!"
@@ -129,6 +225,10 @@ images=(
 
 # Pull each image
 for image in "${images[@]}"; do
+    if skip_existing_image "$image"; then
+        continue
+    fi
+
     echo "🔄 Pulling ${image}..."
     if bash scripts/pull_image.sh "$image"; then
         echo "✅ Successfully pulled ${image}"
@@ -138,9 +238,12 @@ for image in "${images[@]}"; do
     fi
 done
 
-echo "🔄 Pulling enterprise-public-cn-beijing.cr.volces.com/vefaas-public/all-in-one-sandbox:latest..."
-docker pull enterprise-public-cn-beijing.cr.volces.com/vefaas-public/all-in-one-sandbox:latest
-echo "✅ Successfully pulled enterprise-public-cn-beijing.cr.volces.com/vefaas-public/all-in-one-sandbox:latest"
+sandbox_image="enterprise-public-cn-beijing.cr.volces.com/vefaas-public/all-in-one-sandbox:latest"
+if ! skip_existing_image "$sandbox_image"; then
+    echo "🔄 Pulling ${sandbox_image}..."
+    docker pull "$sandbox_image"
+    echo "✅ Successfully pulled ${sandbox_image}"
+fi
 
 echo ""
 echo "🎉 Initialization complete!"

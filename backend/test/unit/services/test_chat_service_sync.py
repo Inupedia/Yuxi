@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -7,10 +8,11 @@ from fastapi import HTTPException
 from langchain.messages import AIMessage, HumanMessage
 
 from yuxi.agents import context as agent_context
+from yuxi.agents.backends.sandbox import paths as workspace_paths
 from yuxi.services import chat_service as svc
 
 
-def _empty_agents_prompt(_thread_id: str, _uid: str) -> str:
+def _empty_agent_context(_thread_id: str, _uid: str) -> str:
     return ""
 
 
@@ -271,11 +273,35 @@ async def test_save_messages_from_langgraph_state_backfills_run_output_message(m
 
 
 @pytest.mark.asyncio
-async def test_build_agent_input_context_merges_workspace_agents_prompt(monkeypatch: pytest.MonkeyPatch):
-    def fake_agents_prompt(_thread_id: str, _uid: str) -> str:
-        return "回答前先读取 AGENTS.md"
+async def test_build_agent_input_context_loads_all_workspace_agent_context_files(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(workspace_paths.conf, "save_dir", str(tmp_path))
+    workspace_paths.ensure_thread_dirs("thread-1", "user-1")
+    agents_dir = tmp_path / "threads" / "shared" / "user-1" / "workspace" / "agents"
+    (agents_dir / "AGENTS.md").write_text("行为约束", encoding="utf-8")
+    (agents_dir / "USER.md").write_text("用户信息", encoding="utf-8")
+    (agents_dir / "MEMORY.md").write_text("长期记忆", encoding="utf-8")
 
-    monkeypatch.setattr(agent_context, "_load_workspace_agents_prompt", fake_agents_prompt)
+    context = await agent_context.build_agent_input_context({}, thread_id="thread-1", uid="user-1")
+
+    assert context["system_prompt"] == (
+        "用户工作区 agents/AGENTS.md 内容：\n行为约束\n\n"
+        "用户工作区 agents/USER.md 内容：\n用户信息\n\n"
+        "用户工作区 agents/MEMORY.md 内容：\n长期记忆"
+    )
+
+
+@pytest.mark.asyncio
+async def test_build_agent_input_context_merges_workspace_agent_context(monkeypatch: pytest.MonkeyPatch):
+    def fake_agent_context(_thread_id: str, _uid: str) -> str:
+        return (
+            "用户工作区 agents/AGENTS.md 内容：\n回答前先读取 AGENTS.md\n\n"
+            "用户工作区 agents/USER.md 内容：\n用户偏好中文"
+        )
+
+    monkeypatch.setattr(agent_context, "_load_workspace_agent_context", fake_agent_context)
 
     context = await agent_context.build_agent_input_context(
         {"system_prompt": "原始系统提示词", "temperature": 0.1},
@@ -283,7 +309,11 @@ async def test_build_agent_input_context_merges_workspace_agents_prompt(monkeypa
         uid="user-1",
     )
 
-    assert context["system_prompt"] == "原始系统提示词\n\n用户工作区 agents/AGENTS.md 内容：\n回答前先读取 AGENTS.md"
+    assert context["system_prompt"] == (
+        "原始系统提示词\n\n"
+        "用户工作区 agents/AGENTS.md 内容：\n回答前先读取 AGENTS.md\n\n"
+        "用户工作区 agents/USER.md 内容：\n用户偏好中文"
+    )
     assert context["temperature"] == 0.1
     assert context["thread_id"] == "thread-1"
     assert context["uid"] == "user-1"
@@ -336,6 +366,100 @@ async def test_get_agent_state_view_rejects_async_subagent_without_child_convers
         )
 
     assert exc.value.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_get_agent_state_view_returns_interrupted_checkpoint_payload(monkeypatch: pytest.MonkeyPatch):
+    thread_id = "thread-1"
+
+    class ConvRepo:
+        def __init__(self, _db):
+            pass
+
+        async def get_conversation_by_thread_id(self, requested_thread_id: str):
+            assert requested_thread_id == thread_id
+            return SimpleNamespace(id=20, uid="user-1", agent_id="main", status="active")
+
+    class AgentRepo:
+        def __init__(self, _db):
+            pass
+
+        async def get_by_slug(self, slug: str):
+            assert slug == "main"
+            return SimpleNamespace(backend_id="ChatBot", config_json={"context": {}})
+
+    class ThreadRepo:
+        def __init__(self, _db):
+            pass
+
+        async def get_by_child_conversation_for_user(self, conversation_id: int, uid: str):
+            assert conversation_id == 20
+            assert uid == "user-1"
+            return None
+
+    class RunRepo:
+        def __init__(self, _db):
+            pass
+
+        async def get_latest_run_by_thread_for_user(self, requested_thread_id: str, uid: str):
+            assert requested_thread_id == thread_id
+            assert uid == "user-1"
+            return SimpleNamespace(id="run-1", status="interrupted", input_payload={})
+
+    class Context:
+        def __init__(self, *, thread_id="", uid=""):
+            self.thread_id = thread_id
+            self.uid = uid
+
+        def update(self, data: dict):
+            for key, value in data.items():
+                setattr(self, key, value)
+
+    class Agent:
+        context_schema = Context
+
+        async def get_graph(self, *, context):
+            assert context.thread_id == thread_id
+            return SimpleNamespace(
+                aget_state=lambda _config: None,
+            )
+
+    checkpoint_state = SimpleNamespace(
+        values={},
+        tasks=[
+            SimpleNamespace(
+                interrupts=[
+                    SimpleNamespace(
+                        value={
+                            "action_requests": [{"name": "execute", "args": {"command": "pytest -q"}}],
+                            "review_configs": [{"action_name": "execute", "allowed_decisions": ["approve", "reject"]}],
+                        }
+                    )
+                ]
+            )
+        ],
+    )
+
+    async def read_checkpoint_state(*_args, **_kwargs):
+        return checkpoint_state
+
+    monkeypatch.setattr(svc, "ConversationRepository", ConvRepo)
+    monkeypatch.setattr(svc, "AgentRepository", AgentRepo)
+    monkeypatch.setattr(svc, "SubagentThreadRepository", ThreadRepo)
+    monkeypatch.setattr(svc, "AgentRunRepository", RunRepo)
+    monkeypatch.setattr(svc, "normalize_agent_context_config", _fake_normalize_agent_context_config)
+    monkeypatch.setattr(svc, "_read_checkpoint_state", read_checkpoint_state)
+    monkeypatch.setattr(svc.agent_manager, "get_agent", lambda backend_id: Agent())
+
+    result = await svc.get_agent_state_view(
+        thread_id=thread_id,
+        current_user=SimpleNamespace(uid="user-1"),
+        db=object(),
+    )
+
+    assert result["interrupt"]["status"] == "human_approval_required"
+    assert result["interrupt"]["run_id"] == "run-1"
+    assert result["interrupt"]["approval"]["action_requests"][0]["name"] == "execute"
 
 
 @pytest.mark.asyncio
@@ -395,7 +519,7 @@ async def test_get_agent_state_view_includes_subagent_thread_relation(monkeypatc
         async def get_latest_run_by_thread_for_user(self, thread_id: str, uid: str):
             assert thread_id == child_thread_id
             assert uid == "user-1"
-            return SimpleNamespace(input_payload={"model_spec": "provider:run-model"})
+            return SimpleNamespace(status="running", input_payload={"model_spec": "provider:run-model"})
 
         async def get_latest_subagent_run_by_thread_for_user(self, thread_id: str, uid: str):
             assert thread_id == child_thread_id
@@ -570,10 +694,10 @@ async def test_get_agent_state_view_reports_malformed_subagent_run_as_server_err
 
 
 @pytest.mark.asyncio
-async def test_build_agent_input_context_keeps_prompt_when_workspace_agents_prompt_empty(
+async def test_build_agent_input_context_keeps_prompt_when_workspace_agent_context_empty(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    monkeypatch.setattr(agent_context, "_load_workspace_agents_prompt", _empty_agents_prompt)
+    monkeypatch.setattr(agent_context, "_load_workspace_agent_context", _empty_agent_context)
 
     context = await agent_context.build_agent_input_context(
         {"system_prompt": "原始系统提示词"},
