@@ -1,8 +1,11 @@
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from yuxi.agents.toolkits.buildin.tools import (
     _all_tool_instances,
     _create_doubao_search,
+    _create_tavily_search,
     _extra_registry,
     _register_web_search_tool,
 )
@@ -69,6 +72,38 @@ def test_doubao_search_success_with_detailed_params(monkeypatch):
         assert payload["Filter"]["Sites"] == "python.org|github.com"
         assert payload["Filter"]["BlockHosts"] == "badsite.com"
         assert payload["ContentFormats"] == "markdown"
+
+
+def test_tavily_search_uses_default_configuration_without_custom_base(monkeypatch):
+    monkeypatch.delenv("TAVILY_API_KEY", raising=False)
+    monkeypatch.delenv("TAVILY_API_BASE", raising=False)
+
+    with patch("langchain_tavily.TavilySearch") as tavily_search:
+        _create_tavily_search()
+
+    tavily_search.assert_called_once_with(name="web_search")
+
+
+def test_tavily_search_passes_normalized_custom_base_and_key(monkeypatch):
+    monkeypatch.setenv("TAVILY_API_KEY", "  test-key  ")
+    monkeypatch.setenv("TAVILY_API_BASE", " https://tavily.example.com/ ")
+
+    with patch("langchain_tavily.TavilySearch") as tavily_search:
+        _create_tavily_search()
+
+    tavily_search.assert_called_once_with(
+        name="web_search",
+        tavily_api_key="test-key",
+        api_base_url="https://tavily.example.com",
+    )
+
+
+def test_tavily_search_rejects_custom_base_without_key(monkeypatch):
+    monkeypatch.delenv("TAVILY_API_KEY", raising=False)
+    monkeypatch.setenv("TAVILY_API_BASE", "https://tavily.example.com")
+
+    with pytest.raises(ValueError, match="TAVILY_API_KEY is empty"):
+        _create_tavily_search()
 
 
 def test_register_web_search_tool_provider_selection(monkeypatch):

@@ -163,9 +163,16 @@ def _create_doubao_search():
 
 
 def _create_tavily_search():
-    """Create the Tavily web search tool instance with tool name web_search."""
+    """Create Tavily web_search; supports optional TAVILY_API_BASE (compatible proxy/self-hosted)."""
     from langchain_tavily import TavilySearch
 
+    key = (os.environ.get("TAVILY_API_KEY") or "").strip()
+    base = (os.environ.get("TAVILY_API_BASE") or "").strip()
+    # 自定义 base 时必须显式传入 key，否则部分运行环境不会把密钥传给 wrapper
+    if base:
+        if not key:
+            raise ValueError("TAVILY_API_BASE is set but TAVILY_API_KEY is empty")
+        return TavilySearch(name="web_search", tavily_api_key=key, api_base_url=base.rstrip("/"))
     return TavilySearch(name="web_search")
 
 
