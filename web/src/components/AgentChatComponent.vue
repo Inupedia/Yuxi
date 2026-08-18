@@ -358,13 +358,9 @@
                   </span>
 
                   <span v-if="hasTokenUsageMetrics" class="token-usage-card-metrics">
-                    <span v-if="tokenUsageRunTotalLabel !== null">
-                      <small>当前 Run 累计</small>
-                      <strong>{{ tokenUsageRunTotalLabel }} Token</strong>
-                    </span>
                     <span v-if="tokenUsageThreadTotalLabel !== null">
-                      <small>当前 Thread 累计</small>
-                      <strong>{{ tokenUsageThreadTotalLabel }} Token</strong>
+                      <small>当前对话累计</small>
+                      <strong>{{ tokenUsageThreadTotalLabel }}</strong>
                     </span>
                     <span v-if="tokenUsageCacheHitLabel !== null">
                       <small>累计缓存命中率</small>
@@ -1265,9 +1261,14 @@ const toFiniteNumber = (value) => {
   return Number.isFinite(numeric) ? numeric : null
 }
 const TOKEN_COUNT_K_UNIT = 1024
+const TOKEN_COUNT_M_UNIT = TOKEN_COUNT_K_UNIT * 1000
 const formatTokenCount = (value) => {
   const numeric = toFiniteNumber(value)
   if (numeric === null) return '-'
+  if (numeric >= TOKEN_COUNT_M_UNIT) {
+    const digits = numeric >= TOKEN_COUNT_M_UNIT * 10 ? 1 : 2
+    return `${(numeric / TOKEN_COUNT_M_UNIT).toFixed(digits).replace(/\.0+$/, '')}M`
+  }
   if (numeric >= TOKEN_COUNT_K_UNIT) {
     const digits = numeric >= TOKEN_COUNT_K_UNIT * 10 ? 1 : 2
     return `${(numeric / TOKEN_COUNT_K_UNIT).toFixed(digits).replace(/\.0+$/, '')}k`
@@ -1421,24 +1422,16 @@ const tokenUsageContextTone = computed(() => {
 })
 const tokenUsageContextAriaLabel = computed(() => {
   if (tokenUsageContextRatio.value === null) {
-    return `上下文上限未知，当前估算 ${formatTokenCount(tokenUsageStackTotal.value)} Token`
+    return `上下文上限未知，当前估算 ${formatTokenCount(tokenUsageStackTotal.value)}`
   }
   return `上下文占用 ${tokenUsageHeaderPercentLabel.value}`
 })
 const tokenUsageStackHeadLabel = computed(() => {
   const summaryTriggerTokens = toFiniteNumber(currentTokenUsage.value?.summary_trigger_tokens)
   if (summaryTriggerTokens && summaryTriggerTokens > 0) {
-    return `${formatTokenCount(tokenUsageStackTotal.value)} / ${formatTokenCount(summaryTriggerTokens)} Token`
+    return `${formatTokenCount(tokenUsageStackTotal.value)} / ${formatTokenCount(summaryTriggerTokens)}`
   }
-  return `${formatTokenCount(tokenUsageStackTotal.value)} Token`
-})
-const tokenUsageRunTotal = computed(() => {
-  const total = toFiniteNumber(currentTokenUsage.value?.run?.total?.total_tokens)
-  return total === null ? null : Math.max(total, 0)
-})
-const tokenUsageRunTotalLabel = computed(() => {
-  if (tokenUsageRunTotal.value === null) return null
-  return formatTokenCount(tokenUsageRunTotal.value)
+  return formatTokenCount(tokenUsageStackTotal.value)
 })
 const tokenUsageThreadTotal = computed(() => {
   const total = toFiniteNumber(currentTokenUsage.value?.thread?.total?.total_tokens)
@@ -1463,10 +1456,9 @@ const tokenUsageCacheHitLabel = computed(() => {
   if (observedCalls <= 0 || observedInputTokens <= 0) return null
   return formatTokenRatio(cacheReadTokens / observedInputTokens)
 })
-// 旧会话没有累计统计，两个指标都为 null 时隐藏整个指标行
+// 旧会话没有累计统计，指标都为 null 时隐藏整个指标行
 const hasTokenUsageMetrics = computed(
   () =>
-    tokenUsageRunTotalLabel.value !== null ||
     tokenUsageThreadTotalLabel.value !== null ||
     tokenUsageCacheHitLabel.value !== null
 )
