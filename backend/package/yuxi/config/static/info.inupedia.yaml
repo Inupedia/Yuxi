@@ -1,0 +1,26 @@
+# 单位信息配置文件
+# 用于配置网站的基本信息、品牌信息等
+
+# 组织信息
+organization:
+  name: "四川省引大济岷水资源开发有限公司"  # 完整组织名称
+  logo: "/inupedia-logo.svg"       # Logo文件路径（放在 web/public 目录下）
+  avatar: "/inupedia-logo.svg"     # 头像文件路径（放在 web/public 目录下）
+  login_bg: "/brand-waterlines.svg"  # 登录背景图片路径（放在 web/public 目录下）
+
+# 项目信息
+branding:
+  name: "引大济岷"
+  title: "智能知识与工程协同平台"     # 系统标题
+  documentation_url: ""              # 暂无公司文档中心时不展示入口
+  subtitle: "贯通引大济岷工程知识、建设资料与协同工作流，让项目经验可沉淀、可检索、可复用"  # 副标题
+  subtitles:
+    - "贯通引大济岷工程知识、建设资料与协同工作流"
+    - "让项目经验可沉淀、可检索、可复用"
+    - "以可信知识支撑工程建设与项目协作"
+
+# 页脚信息
+footer:
+  copyright: "© 四川省引大济岷水资源开发有限公司 2026 · v{{YUXI_VERSION}}"
+  user_agreement_url: "/protocols/user-agreement.template.html"
+  privacy_policy_url: "/protocols/privacy-policy.template.html"

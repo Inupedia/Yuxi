@@ -12,6 +12,7 @@ organization:
 branding:
   name: "Yuxi"
   title: "让智能体可构建、可编排、可落地"     # 系统标题
+  documentation_url: "https://xerrors.github.io/Yuxi/"  # 文档中心地址，留空则隐藏入口
   subtitle: "开源智能体平台套件，融合 RAG 与知识图谱"          # 副标题（subtitles 为空时使用）
   subtitles:
     - "开源智能体平台套件，融合 RAG 与知识图谱"

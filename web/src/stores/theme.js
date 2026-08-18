@@ -1,6 +1,7 @@
 import { ref } from 'vue'
 import { defineStore } from 'pinia'
 import { theme } from 'ant-design-vue'
+import { inupediaAntTheme } from '@/custom/inupedia/antTheme'
 
 export const useThemeStore = defineStore('theme', () => {
   // 从 localStorage 读取保存的主题，默认为浅色
@@ -8,14 +9,12 @@ export const useThemeStore = defineStore('theme', () => {
 
   // 公共主题配置
   const commonTheme = {
+    ...inupediaAntTheme,
     token: {
-      fontFamily:
-        "'HarmonyOS Sans SC', Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Fira Sans', 'Droid Sans', 'Helvetica Neue', sans-serif;",
-      colorPrimary: '#24839b',
+      ...inupediaAntTheme.token,
       colorLink: 'var(--main-color)',
       colorLinkHover: 'var(--main-600)',
       colorLinkActive: 'var(--main-800)',
-      borderRadius: 8,
       wireframe: false
     }
   }

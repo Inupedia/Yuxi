@@ -1,0 +1,18 @@
+<svg width="1600" height="1000" viewBox="0 0 1600 1000" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <g opacity="0.5" stroke-linecap="round">
+    <path d="M-120 755C137 575 320 843 570 650C824 454 1052 614 1282 416C1424 294 1547 279 1718 340" stroke="#326B8C" stroke-width="2"/>
+    <path d="M-91 801C183 622 354 885 611 700C858 522 1091 671 1327 477C1465 364 1578 348 1716 390" stroke="#5F8A70" stroke-width="1.5"/>
+    <path d="M-145 694C93 528 285 781 529 590C777 396 1007 551 1227 359C1382 223 1518 220 1730 291" stroke="#326B8C" stroke-width="1" opacity="0.55"/>
+    <path d="M-116 858C166 681 384 930 658 755C911 594 1131 729 1376 552C1510 454 1617 437 1730 465" stroke="#5F8A70" stroke-width="1" opacity="0.55"/>
+  </g>
+  <g opacity="0.2" stroke="#326B8C">
+    <circle cx="1190" cy="260" r="210"/>
+    <circle cx="1190" cy="260" r="154"/>
+    <circle cx="1190" cy="260" r="98"/>
+    <path d="M980 260H1400M1190 50V470" stroke-dasharray="6 10"/>
+  </g>
+  <g opacity="0.18" stroke="#5F8A70" stroke-width="1">
+    <path d="M90 80V920M190 80V920M290 80V920M390 80V920"/>
+    <path d="M40 170H450M40 270H450M40 370H450M40 470H450"/>
+  </g>
+</svg>

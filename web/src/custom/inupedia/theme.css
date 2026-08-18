@@ -1,0 +1,308 @@
+/*
+ * 四川省引大济岷水资源开发有限公司品牌主题。
+ * 仅通过语义 Token 和稳定的框架级选择器影响上游页面，避免逐组件硬编码。
+ */
+
+html.inupedia-theme {
+  --brand-blue-original: #0a6caf;
+  --brand-green-original: #4db276;
+  --brand-green: #5f8a70;
+  --brand-green-soft: #e9f1ec;
+
+  --main-1000: #172f3d;
+  --main-900: #1e4054;
+  --main-800: #28566e;
+  --main-700: #326b8c;
+  --main-600: #447c99;
+  --main-500: #5b8ba3;
+  --main-400: #83a8ba;
+  --main-300: #a7c2cf;
+  --main-200: #c7d9e2;
+  --main-100: #dde9ee;
+  --main-50: #eaf2f5;
+  --main-40: #eff5f7;
+  --main-30: #f4f8fa;
+  --main-20: #f7fafb;
+  --main-10: #fafcfd;
+  --main-5: #fcfdfd;
+  --main-1: #fefefe;
+  --main-0: #ffffff;
+  --main-color: var(--main-700);
+  --main-bright: var(--brand-blue-original);
+
+  --gray-10000: #071015;
+  --gray-2000: #101a20;
+  --gray-1000: #17242c;
+  --gray-900: #24343d;
+  --gray-800: #34464f;
+  --gray-700: #50616a;
+  --gray-600: #687982;
+  --gray-500: #87959c;
+  --gray-400: #a8b3b8;
+  --gray-300: #c4cdd1;
+  --gray-200: #d8e0e3;
+  --gray-150: #e2e8eb;
+  --gray-100: #eaf0f2;
+  --gray-50: #f1f5f6;
+  --gray-25: #f5f8f9;
+  --gray-10: #f8fafb;
+  --gray-0: #ffffff;
+
+  --color-success-10: #f5f9f6;
+  --color-success-50: #e9f1ec;
+  --color-success-100: #cddfd3;
+  --color-success-500: #5f8a70;
+  --color-success-700: #466b55;
+  --color-success-900: #2c4938;
+  --color-info-10: var(--main-10);
+  --color-info-50: var(--main-50);
+  --color-info-100: var(--main-100);
+  --color-info-500: var(--main-600);
+  --color-info-700: var(--main-800);
+  --color-info-900: var(--main-1000);
+  --color-accent-10: #f5f9f6;
+  --color-accent-50: #e9f1ec;
+  --color-accent-100: #cddfd3;
+  --color-accent-500: #5f8a70;
+  --color-accent-700: #466b55;
+  --color-accent-900: #2c4938;
+
+  --chart-palette-1: #326b8c;
+  --chart-palette-2: #5f8a70;
+  --chart-palette-3: #9b8758;
+  --chart-palette-4: #8b6f78;
+  --chart-palette-5: #6f7896;
+  --chart-palette-6: #608ca0;
+  --chart-palette-7: #9a765e;
+  --chart-palette-8: #789064;
+  --chart-palette-9: #8f7186;
+  --chart-palette-10: #78858b;
+
+  --bg-sider: #f6f9fa;
+  --color-bg-container: #ffffff;
+  --color-bg-elevated: #ffffff;
+  --color-text: #17242c;
+  --color-text-secondary: #50616a;
+  --color-text-tertiary: #687982;
+  --page-padding: 24px;
+  color-scheme: light;
+}
+
+html.inupedia-theme.dark {
+  --brand-green: #7fa28b;
+  --brand-green-soft: #1b2c24;
+
+  --main-1000: #edf5f8;
+  --main-900: #d9e8ee;
+  --main-800: #c2d9e2;
+  --main-700: #a6c5d2;
+  --main-600: #8eb2c1;
+  --main-500: #78a0b2;
+  --main-400: #5f8799;
+  --main-300: #486e80;
+  --main-200: #365766;
+  --main-100: #294550;
+  --main-50: #203842;
+  --main-40: #1b3038;
+  --main-30: #17282f;
+  --main-20: #142329;
+  --main-10: #121f25;
+  --main-5: #101b20;
+  --main-1: #0f191e;
+  --main-0: #0e171c;
+  --main-color: #8eb2c1;
+  --main-bright: #a6c5d2;
+
+  --gray-10000: #f4f8fa;
+  --gray-2000: #edf3f5;
+  --gray-1000: #e6eef1;
+  --gray-900: #d8e2e6;
+  --gray-800: #c2cfd4;
+  --gray-700: #a9b8be;
+  --gray-600: #8d9da4;
+  --gray-500: #74858c;
+  --gray-400: #5e7078;
+  --gray-300: #485b64;
+  --gray-200: #374a53;
+  --gray-150: #2c3f48;
+  --gray-100: #24363e;
+  --gray-50: #1b2b32;
+  --gray-25: #17252b;
+  --gray-10: #131f25;
+  --gray-0: #10191f;
+
+  --color-success-10: #15221b;
+  --color-success-50: #1b2c24;
+  --color-success-100: #294438;
+  --color-success-500: #7fa28b;
+  --color-success-700: #a1bda9;
+  --color-success-900: #c7d8cc;
+  --color-accent-10: #15221b;
+  --color-accent-50: #1b2c24;
+  --color-accent-100: #294438;
+  --color-accent-500: #7fa28b;
+  --color-accent-700: #a1bda9;
+  --color-accent-900: #c7d8cc;
+
+  --bg-sider: #121f25;
+  --color-bg-container: #17252b;
+  --color-bg-elevated: #1b2b32;
+  --color-text: #e6eef1;
+  --color-text-secondary: #a9b8be;
+  --color-text-tertiary: #8d9da4;
+  color-scheme: dark;
+}
+
+html.inupedia-theme body {
+  background: var(--gray-25);
+  color: var(--color-text);
+  font-size: 15px;
+}
+
+html.inupedia-theme :where(button, a, input, textarea, select) {
+  -webkit-tap-highlight-color: transparent;
+}
+
+html.inupedia-theme :where(button, a, input, textarea, select):focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--main-color) 72%, white);
+  outline-offset: 2px;
+}
+
+/* 搜索框由完整输入行承载焦点，避免原生 input 在关闭按钮前形成半截描边。 */
+html.inupedia-theme .global-search-input:focus-visible {
+  outline: none;
+}
+
+html.inupedia-theme .global-search-input-row {
+  transition:
+    border-color 0.2s ease,
+    background-color 0.2s ease,
+    box-shadow 0.2s ease;
+}
+
+html.inupedia-theme .global-search-input-row:focus-within {
+  border-bottom-color: var(--main-300);
+  background: color-mix(in srgb, var(--main-30) 54%, var(--gray-0));
+  box-shadow: inset 0 -1px 0 var(--main-300);
+}
+
+/* 输入区底部说明融入工作区背景，避免出现独立的纯白色横条。 */
+html.inupedia-theme .bottom-actions {
+  min-height: 26px;
+  background: transparent !important;
+}
+
+html.inupedia-theme .bottom-actions .note {
+  max-width: 100%;
+  margin: 5px 12px 3px;
+  color: var(--gray-500);
+  font-size: 12px;
+  line-height: 18px;
+  text-align: center;
+}
+
+html.inupedia-theme .ant-btn,
+html.inupedia-theme .ant-input,
+html.inupedia-theme .ant-input-affix-wrapper,
+html.inupedia-theme .ant-select-selector {
+  transition:
+    border-color 0.2s ease,
+    background-color 0.2s ease,
+    box-shadow 0.2s ease,
+    color 0.2s ease;
+}
+
+html.inupedia-theme .ant-btn-primary {
+  box-shadow: 0 8px 20px rgba(50, 107, 140, 0.18);
+}
+
+html.inupedia-theme .ant-card,
+html.inupedia-theme .ant-modal-content,
+html.inupedia-theme .ant-drawer-content,
+html.inupedia-theme .ant-dropdown-menu {
+  border: 1px solid var(--gray-150);
+}
+
+html.inupedia-theme .ant-modal-content,
+html.inupedia-theme .ant-drawer-content,
+html.inupedia-theme .ant-dropdown-menu {
+  box-shadow: 0 18px 48px rgba(23, 36, 44, 0.12);
+}
+
+html.inupedia-theme .ant-table-wrapper .ant-table {
+  background: var(--gray-0);
+}
+
+html.inupedia-theme .ant-table-wrapper .ant-table-thead > tr > th {
+  background: var(--gray-25);
+  color: var(--gray-700);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+html.inupedia-theme .ant-table-wrapper .ant-table-tbody > tr > td {
+  border-bottom-color: var(--gray-100);
+}
+
+html.inupedia-theme .ant-tabs .ant-tabs-tab {
+  min-height: 44px;
+}
+
+html.inupedia-theme .app-layout #app-router-view {
+  background:
+    radial-gradient(
+      circle at 100% 0%,
+      color-mix(in srgb, var(--main-50) 54%, transparent),
+      transparent 30%
+    ),
+    var(--gray-25);
+}
+
+html.inupedia-theme .app-layout .header {
+  background: color-mix(in srgb, var(--bg-sider) 94%, transparent);
+  border-right-color: var(--gray-150);
+}
+
+html.inupedia-theme .app-layout .header .nav-item {
+  min-height: 36px;
+  border-radius: 10px;
+}
+
+html.inupedia-theme .app-layout .header .nav-item.active {
+  background: color-mix(in srgb, var(--main-color) 10%, var(--gray-0));
+}
+
+html.inupedia-theme .app-layout .header .nav-item.primary-action {
+  border-color: var(--gray-150);
+  box-shadow: 0 6px 16px rgba(23, 36, 44, 0.05);
+}
+
+html.inupedia-theme .app-layout .header .brand-avatar {
+  object-fit: contain;
+  border-radius: 9px;
+}
+
+/* 开源项目入口由公司品牌层统一隐藏，避免直接改动上游组件。 */
+html.inupedia-theme .app-layout .github,
+html.inupedia-theme .settings-star-card,
+html.inupedia-theme .help-link-btn,
+html.inupedia-theme .benchmark-help-text {
+  display: none !important;
+}
+
+@media (max-width: 767px) {
+  html.inupedia-theme {
+    --page-padding: 16px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html.inupedia-theme *,
+  html.inupedia-theme *::before,
+  html.inupedia-theme *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

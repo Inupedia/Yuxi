@@ -33,7 +33,7 @@
             </div>
           </a-menu-item>
           <a-menu-divider />
-          <a-menu-item key="docs" @click="openDocs">
+          <a-menu-item v-if="documentationUrl" key="docs" @click="openDocs">
             <template #icon><BookOpen :size="16" /></template>
             <span class="menu-text">文档中心</span>
           </a-menu-item>
@@ -77,12 +77,14 @@ import DebugComponent from '@/components/DebugComponent.vue'
 import { message } from 'ant-design-vue'
 import { BookOpen, Sun, Moon, LogOut, Settings, Terminal } from 'lucide-vue-next'
 import { useThemeStore } from '@/stores/theme'
+import { useInfoStore } from '@/stores/info'
 import { generatePixelAvatar } from '@/utils/pixelAvatar'
 import FallbackAvatar from '@/components/common/FallbackAvatar.vue'
 
 const router = useRouter()
 const userStore = useUserStore()
 const themeStore = useThemeStore()
+const infoStore = useInfoStore()
 const slots = useSlots()
 
 // 调试面板状态
@@ -92,6 +94,10 @@ const showDebug = ref(false)
 const { openSettingsModal } = inject('settingsModal', {})
 
 const avatarDefaultSrc = computed(() => (userStore.uid ? generatePixelAvatar(userStore.uid) : ''))
+const documentationUrl = computed(() => {
+  const configuredUrl = infoStore.branding?.documentation_url
+  return typeof configuredUrl === 'string' ? configuredUrl.trim() : ''
+})
 
 defineProps({
   showRole: {
@@ -132,7 +138,9 @@ const goToLogin = () => {
 }
 
 const openDocs = () => {
-  window.open('https://xerrors.github.io/Yuxi/', '_blank', 'noopener,noreferrer')
+  if (documentationUrl.value) {
+    window.open(documentationUrl.value, '_blank', 'noopener,noreferrer')
+  }
 }
 
 const toggleTheme = () => {

@@ -10,6 +10,10 @@
 1. 升级到 v0.7.2 后，管理员此前创建的 stdio MCP 会被禁用，也无法重新启用。请在详情页迁移为 SSE 或 Streamable HTTP，或直接删除；代码内置的系统 stdio MCP 不受影响。
 :::
 
+- 新增四川省引大济岷水资源开发有限公司品牌界面：以低饱和水蓝、水绿统一明暗主题，首页使用项目内泸定取水口工程场景，并融入 WaterThreeJS 的 Gerstner 波谱、解析法线、Fresnel 反射与程序化泡沫形成动态近景水面；按桌面、平板与手机视口自适应网格密度、波谱数量、岸线裁切、渲染质量和布局，并支持减少动态效果；通过固定的 Hero 语义色与半透明承载面提升图片背景上的文字对比度；重构门户、登录页与应用壳层，清理标题、知识库、设置、官方文档入口和授权流程中的旧品牌元素；定制 Token 与覆盖样式集中于独立层，降低同步上游时的冲突范围。
+
+- 修复开发环境运行前端单测后工作台动态模块加载失败：测试 Vite middleware 使用独立 `.vite-test` 缓存，不再改写 `web-dev` 的预构建依赖 hash。
+
 - 建立 Agent-first 工程信任系统：高风险主张在语义 Owner 处绑定负向 oracle、CI gate 与决策记录，审计视图从当前代码、测试、workflow 和决策派生；补齐 Web gate 和完整 unit inventory。API 分离 liveness/readiness；Run 输出只允许当前 lease owner 绑定同 conversation、Run 与 request 的 assistant Message，缺失或非法输出不能进入 completed；worker 以 attempt lease/heartbeat 识别失联并收敛为带 `worker_lease_expired` 原因的失败，PostgreSQL 取消事实与终态不再被 Redis 事件故障绕过。LITE startup 不创建或宣告知识能力，Web 从 runtime discovery 同步隐藏并停止请求不存在的能力；checkpoint 初始化不再静默改变持久化语义。
 - API Key 创建支持并发与响应丢失后的安全重放；删除用户、OIDC 恢复和旧库升级均保留不可复活 tombstone，API/CLI 创建与删除按 User 行锁串行化。三项安全密钥不可复用，Bash/PowerShell 均有原生负控。Web 错误对象不再携带任意服务端上下文。
 
