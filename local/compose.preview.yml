@@ -2,7 +2,7 @@
 services:
   frontend:
     ports: !override
-      - "127.0.0.1:${YUXI_FRONTEND_PORT:-18080}:80"
+      - "127.0.0.1:${YUXI_FRONTEND_PORT:-18180}:80"
     labels:
       traefik.enable: "${YUXI_PREVIEW_PUBLIC:-false}"
       traefik.http.routers.knowledge-next.rule: "Host(`knowledge-next.ai.swhisxy.cn`)"
