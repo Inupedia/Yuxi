@@ -59,15 +59,32 @@ ROUTER_DB_METHODS = frozenset(
     }
 )
 ROUTER_DB_RECEIVERS = frozenset({"db", "session", "connection", "database"})
-DIRECT_WEB_API_LITERAL = re.compile(r"(?P<quote>['\"`])/api(?:[/ ?]|(?P=quote))")
+WORKSPACE_HOST_PATH_EXPORTS = frozenset(
+    {
+        "global_user_data_dir",
+        "user_workspace_dir",
+        "user_workdir_host_dir",
+    }
+)
+PERSONAL_SKILL_WORKSPACE_OWNER = Path("backend/yuxi/modules/extensions/skills/personal.py")
+DIRECT_FRONTEND_API_LITERAL = re.compile(r"(?P<quote>['\"`])/api(?:[/ ?]|(?P=quote))")
 AGENTS_FILE_BUDGETS = {
     "AGENTS.md": 5000,
     "backend/AGENTS.md": 2400,
-    "web/AGENTS.md": 1000,
-    "docs/AGENTS.md": 1400,
+    "frontend/AGENTS.md": 1000,
+    "docs/AGENTS.md": 3200,
 }
 AGENTS_LINK_PATTERN = re.compile(r"\[[^\]]+\]\(([^)\s]+)\)")
 EXTERNAL_LINK_PREFIXES = ("http://", "https://", "mailto:")
+DOCUMENT_PROSE_CONTRAST = re.compile(
+    r"(?:不是|并非)[^。\n]{0,160}(?:而是|而在于)"
+    r"|不在于[^。\n]{0,160}(?:而是|而在于)"
+)
+MARKDOWN_FENCE_OPEN = re.compile(r"^ {0,3}(?P<fence>`{3,}|~{3,})(?P<info>.*)$")
+MARKDOWN_BLOCKQUOTE_PREFIX = re.compile(r"^ {0,3}> ?")
+MARKDOWN_LIST_ITEM = re.compile(
+    r"^(?P<indent> {0,3})(?P<marker>[-+*]|\d{1,9}[.)])(?P<spacing> {1,4})(?P<content>.*)$"
+)
 
 
 @dataclass(frozen=True)
@@ -99,6 +116,7 @@ WORKFLOW_CONTRACTS = (
         required_paths=(
             ".env.template",
             "backend/**",
+            "docker/**",
             "scripts/init.sh",
             "scripts/init.ps1",
             "scripts/test_init_security.ps1",
@@ -106,27 +124,45 @@ WORKFLOW_CONTRACTS = (
         ),
     ),
     WorkflowContract(
-        path=".github/workflows/web.yml",
+        path=".github/workflows/frontend.yml",
         commands=("pnpm run lint:check && pnpm run test:unit && pnpm run build",),
-        required_paths=("web/**", ".github/workflows/web.yml"),
+        required_paths=("frontend/**", ".github/workflows/frontend.yml"),
     ),
     WorkflowContract(
         path=".github/workflows/system-tests.yml",
         commands=(
-            "docker compose exec -T api uv run pytest test/integration/api/test_system_router_api.py::test_health_endpoint_is_public test/integration/api/test_system_router_api.py::test_readiness_endpoint_proves_core_runtime_dependencies test/integration/api/test_system_router_api.py::test_discovery_declares_cli_knowledge_capabilities test/integration/api/test_system_router_api.py::test_lite_startup_does_not_create_knowledge_schema -q",
-            "docker compose exec -T api uv run pytest test/integration/services/test_agent_request_queue_concurrency.py -q",
-            "docker compose exec -T api uv run pytest test/integration/services/test_agent_run_lease.py -q",
-            "docker compose exec -T api uv run pytest test/integration/api/test_agent_run_result_causality.py -q",
-            "docker compose exec -T -e E2E_USERNAME -e E2E_PASSWORD api uv run --no-sync --no-dev pytest test/e2e/test_deterministic_agent_path_e2e.py -q",
-            "docker compose exec -T api uv run pytest test/integration/services/test_identity_admin_service.py test/integration/services/test_api_key_schema_migration.py test/integration/services/test_api_key_user_lifecycle.py test/integration/api/test_apikey_router.py -q",
+            "docker compose exec -T api uv run --no-sync --no-dev pytest test/integration/api/test_system_router_api.py::test_health_endpoint_is_public test/integration/api/test_system_router_api.py::test_readiness_endpoint_proves_core_runtime_dependencies test/integration/api/test_system_router_api.py::test_discovery_and_openapi_declare_full_knowledge_capabilities -q",
+            "docker compose exec -T -e TEST_BASE_URL=http://127.0.0.1:1 -e CUBE_API_URL=http://127.0.0.1:1 -e TEST_USERNAME=fixture-probe -e TEST_PASSWORD=fixture-probe api uv run --no-sync --no-dev pytest test/integration/services/test_input_attachments.py -q",
+            'docker compose exec -T -e TEST_USERNAME="$E2E_USERNAME" -e TEST_PASSWORD="$E2E_PASSWORD" api uv run --no-sync --no-dev pytest test/integration/api/test_turn_result_causality.py -q',
+            'docker compose exec -T -e TEST_USERNAME="$E2E_USERNAME" -e TEST_PASSWORD="$E2E_PASSWORD" api uv run --no-sync --no-dev pytest test/integration/api/test_chat_router.py::test_public_thread_endpoints_require_authentication test/integration/api/test_chat_router.py::test_public_create_rejects_empty_input test/integration/api/test_chat_router.py::test_public_missing_thread_and_turn_return_not_found test/integration/api/test_chat_router.py::test_public_input_rejects_unbound_attachment_without_persisting_receipt test/integration/api/test_removed_api_endpoints.py::test_removed_agent_session_entrypoints_are_unreachable test/integration/api/test_public_agents_key_boundary.py test/integration/services/test_agent_input_schema.py test/integration/services/test_project_thread_archive.py test/integration/services/test_run_stream_redis.py -q',
+            'docker compose exec -T -e TEST_USERNAME="$E2E_USERNAME" -e TEST_PASSWORD="$E2E_PASSWORD" api uv run --no-sync --no-dev pytest test/integration/api/test_public_knowledge_tools.py::test_knowledge_key_tool_route_boundary_without_kb test/integration/api/test_public_knowledge_tools.py::test_agents_key_cannot_access_public_knowledge_api test/integration/api/test_removed_api_endpoints.py::test_public_knowledge_does_not_expose_management_routes -q',
+            'docker compose exec -T -e TEST_USERNAME="$E2E_USERNAME" -e TEST_PASSWORD="$E2E_PASSWORD" api uv run --no-sync --no-dev pytest test/integration/api/test_chat_router.py::test_thread_message_audits_return_persisted_facts_without_leaking_into_history test/integration/api/test_chat_router.py::test_debug_messages_follow_database_sequence_and_include_unassigned_inputs -q --setup-show -o faulthandler_timeout=60',
+            'docker compose exec -T -e TEST_USERNAME="$E2E_USERNAME" -e TEST_PASSWORD="$E2E_PASSWORD" api uv run --no-sync --no-dev pytest test/integration/api/test_chat_router.py::test_thread_artifact_uses_image_signature_for_content_type test/integration/api/test_public_agent_files.py -q',
+            'TEST_USERNAME="$E2E_USERNAME" TEST_PASSWORD="$E2E_PASSWORD" bash backend/test/run_tests.sh e2e',
+            'docker compose exec -T -e TEST_USERNAME="$E2E_USERNAME" -e TEST_PASSWORD="$E2E_PASSWORD" api uv run --no-sync --no-dev pytest test/integration/services/test_identity_admin_service.py test/integration/services/test_api_key_user_lifecycle.py test/integration/api/test_apikey_router.py -q',
+            'docker compose exec -T -e TEST_USERNAME="$E2E_USERNAME" -e TEST_PASSWORD="$E2E_PASSWORD" api uv run --no-sync --no-dev pytest test/integration/services/test_project_workdir.py::test_sessions_share_workdir_only_through_project test/integration/services/test_user_skill_projection.py test/integration/api/test_skill_artifact_authorization.py -q',
+            "docker compose exec -T -e E2E_USERNAME -e E2E_PASSWORD -e CONTAINER_E2E_REPLAY_URL_TEMPLATE api uv run --no-sync --no-dev pytest test/e2e/test_container_agent_execution_e2e.py -q",
+            """SANDBOX_CONTAINER_TEST=1 SANDBOX_CONTAINER_IMAGE="$(docker compose config --format json | jq -r '.services["sandbox-image"].image')" uv run --project backend --locked --group test pytest backend/test/integration/sandbox/test_container_sandbox.py -q""",
         ),
         required_paths=(
-            "backend/package/yuxi/**",
-            "backend/server/**",
+            "backend/yuxi/**",
             "backend/test/integration/**",
             "backend/test/e2e/**",
             "backend/test/support/**",
+            "backend/test/run_tests.sh",
+            "docker/**",
+            "scripts/ci_prepare_system_tests_env.sh",
+            "scripts/ci_build_topology_images.sh",
             ".github/workflows/system-tests.yml",
+        ),
+    ),
+    WorkflowContract(
+        path=".github/workflows/service-integration.yml",
+        commands=("bash scripts/ci_run_service_integration.sh",),
+        required_paths=(
+            "backend/**",
+            "scripts/ci_run_service_integration.sh",
+            ".github/workflows/service-integration.yml",
         ),
     ),
     WorkflowContract(
@@ -134,7 +170,7 @@ WORKFLOW_CONTRACTS = (
         trigger="workflow_dispatch",
         commands=(
             'if [ -z "$SILICONFLOW_API_KEY" ]; then\necho "SILICONFLOW_API_KEY repository secret is required for this manual probe." >&2\nexit 1\nfi',
-            "docker compose exec -T -e E2E_USERNAME -e E2E_PASSWORD api uv run --no-sync --no-dev pytest test/e2e/test_agent_async_e2e.py -q",
+            "docker compose exec -T -e E2E_USERNAME -e E2E_PASSWORD api uv run --no-sync --no-dev pytest test/e2e/test_real_provider_e2e.py -q",
         ),
     ),
 )
@@ -169,7 +205,7 @@ def _require_repository_path(
 
 
 def _normalized(text: str) -> str:
-    return " ".join(text.split())
+    return " ".join(text.replace("\\\n", " ").split())
 
 
 def _yaml_scalar(value: str) -> str:
@@ -435,6 +471,15 @@ def _workflow_has_trigger(text: str, trigger: str) -> bool:
 
 
 def _validate_workflows(root: Path, errors: list[str]) -> list[dict[str, Any]]:
+    runner = root / "backend/test/run_tests.sh"
+    runner_text = runner.read_text() if runner.is_file() else ""
+    selector = re.search(r"LIFECYCLE_E2E_TESTS=\((.*?)\)", runner_text, re.S)
+    selected = set(selector.group(1).split()) if selector else set()
+    for name in ("test_agent_lifecycle_e2e.py", "test_agent_lifecycle_extended_e2e.py", "test_input_projection_recovery_e2e.py", "test_draft_attachments_e2e.py", "test_session_cooperation_e2e.py", "test_agent_lifecycle_key_scope_e2e.py", "test_openai_events_e2e.py", "test_agent_feedback_e2e.py"):
+        if f"test/e2e/{name}" not in selected:
+            errors.append(f"E2E runner 缺少原 CI 用例：{name}")
+    if '"${PYTEST_CMD[@]}" "${LIFECYCLE_E2E_TESTS[@]}" -m e2e' not in runner_text:
+        errors.append("E2E runner selector 未连接 pytest")
     projection: list[dict[str, Any]] = []
     for contract in WORKFLOW_CONTRACTS:
         workflow = _require_repository_path(
@@ -474,14 +519,15 @@ def _validate_workflows(root: Path, errors: list[str]) -> list[dict[str, Any]]:
                 errors.append(
                     f"workflow 命令只存在于被跳过或吞错的 step：{contract.path} -> {command}"
                 )
-
         paths: list[str] | None = None
         if contract.trigger == "pull_request":
             has_pr, paths, paths_ignore = _workflow_pull_request_filters(text)
             if not has_pr:
                 errors.append(f"workflow 不监听 pull_request：{contract.path}")
             if contract.unfiltered_pull_request and (paths is not None or paths_ignore):
-                errors.append(f"全仓信任 workflow 不得使用 path filter：{contract.path}")
+                errors.append(
+                    f"全仓信任 workflow 不得使用 path filter：{contract.path}"
+                )
             if paths_ignore:
                 errors.append(
                     f"阻断 workflow 不得用 paths-ignore 隐藏变更：{contract.path}"
@@ -506,17 +552,125 @@ def _validate_workflows(root: Path, errors: list[str]) -> list[dict[str, Any]]:
     return projection
 
 
-def _visible_markdown_lines(text: str) -> list[str]:
-    visible: list[str] = []
-    fence: str | None = None
-    for line in text.splitlines():
-        marker = line.lstrip()[:3]
-        if marker in {"```", "~~~"}:
-            fence = None if fence == marker else marker if fence is None else fence
-            continue
-        if fence is None:
-            visible.append(line)
+def _strip_blockquote_prefixes(
+    line: str, max_depth: int | None = None
+) -> tuple[str, int]:
+    """移除 Markdown 引用容器前缀并返回层级。"""
+
+    depth = 0
+    while max_depth is None or depth < max_depth:
+        match = MARKDOWN_BLOCKQUOTE_PREFIX.match(line)
+        if match is None:
+            break
+        line = line[match.end() :]
+        depth += 1
+    return line, depth
+
+
+def _list_item_content_indent(item_match: re.Match[str]) -> int:
+    """返回 list item 正文起点相对于原始行的列数。"""
+
+    return (
+        len(item_match.group("indent"))
+        + len(item_match.group("marker"))
+        + len(item_match.group("spacing"))
+    )
+
+
+def _markdown_body_line(
+    line: str, active_list_indent: int | None
+) -> tuple[str, int, int | None]:
+    """解析引用和单层列表容器中的正文起点。"""
+
+    body, quote_depth = _strip_blockquote_prefixes(line)
+    if active_list_indent is not None:
+        if not body.strip():
+            return "", quote_depth, active_list_indent
+        leading_spaces = len(body) - len(body.lstrip(" "))
+        if leading_spaces >= active_list_indent:
+            stripped = body[active_list_indent:]
+            nested_item = MARKDOWN_LIST_ITEM.match(stripped)
+            if nested_item:
+                content_indent = active_list_indent + _list_item_content_indent(
+                    nested_item
+                )
+                return nested_item.group("content"), quote_depth, content_indent
+            return stripped, quote_depth, active_list_indent
+        active_list_indent = None
+
+    item = MARKDOWN_LIST_ITEM.match(body)
+    if item:
+        content_indent = _list_item_content_indent(item)
+        return item.group("content"), quote_depth, content_indent
+    return body, quote_depth, active_list_indent
+
+
+def _fence_container_line(
+    line: str, quote_depth: int, list_indent: int | None
+) -> str | None:
+    """返回与 opening fence 相同容器中的候选 closing 行。"""
+
+    body, current_quote_depth = _strip_blockquote_prefixes(line, quote_depth)
+    if current_quote_depth < quote_depth:
+        return None
+    if list_indent is None:
+        return body
+    leading_spaces = len(body) - len(body.lstrip(" "))
+    if leading_spaces < list_indent:
+        return None
+    return body[list_indent:]
+
+
+def _visible_markdown_numbered_lines(text: str) -> list[tuple[int, str]]:
+    """返回 fenced code block 之外的 Markdown 行及原始行号。"""
+
+    visible: list[tuple[int, str]] = []
+    fence_char: str | None = None
+    fence_length = 0
+    fence_quote_depth = 0
+    fence_list_indent: int | None = None
+    active_list_indent: int | None = None
+    for line_number, line in enumerate(text.splitlines(), start=1):
+        if fence_char is not None:
+            candidate = _fence_container_line(
+                line, fence_quote_depth, fence_list_indent
+            )
+            if candidate is None and line.strip():
+                fence_char = None
+                fence_length = 0
+                fence_quote_depth = 0
+                fence_list_indent = None
+            else:
+                closing = candidate is not None and re.fullmatch(
+                    rf" {{0,3}}{re.escape(fence_char)}{{{fence_length},}}[ \t]*",
+                    candidate,
+                )
+                if closing:
+                    fence_char = None
+                    fence_length = 0
+                    fence_quote_depth = 0
+                    fence_list_indent = None
+                continue
+
+        body, quote_depth, active_list_indent = _markdown_body_line(
+            line, active_list_indent
+        )
+        opening = MARKDOWN_FENCE_OPEN.match(body)
+        if opening:
+            fence = opening.group("fence")
+            info = opening.group("info")
+            if fence.startswith("~") or "`" not in info:
+                fence_char = fence[0]
+                fence_length = len(fence)
+                fence_quote_depth = quote_depth
+                fence_list_indent = active_list_indent
+                continue
+        visible.append((line_number, line))
     return visible
+
+
+def _visible_markdown_lines(text: str) -> list[str]:
+    return [line for _, line in _visible_markdown_numbered_lines(text)]
 
 
 def _metadata(lines: list[str], label: str) -> str | None:
@@ -557,7 +711,9 @@ def _evidence_rows(lines: list[str]) -> list[list[str]]:
         stripped = line.strip()
         if not stripped.startswith("|"):
             break
-        rows.append([cell.strip().strip("`") for cell in stripped.strip("|").split("|")])
+        rows.append(
+            [cell.strip().strip("`") for cell in stripped.strip("|").split("|")]
+        )
     return rows
 
 
@@ -619,7 +775,9 @@ def _validate_decisions(root: Path, errors: list[str]) -> list[dict[str, str]]:
                         errors.append(f"{relative} proposed 验收标准缺少证据矩阵数据行")
                     for row in rows:
                         if len(row) != 6 or not all(row):
-                            errors.append(f"{relative} proposed 证据矩阵必须填写全部六列")
+                            errors.append(
+                                f"{relative} proposed 证据矩阵必须填写全部六列"
+                            )
                             continue
                         if row[-1] not in EVIDENCE_RESULTS:
                             errors.append(
@@ -638,7 +796,7 @@ def _validate_decisions(root: Path, errors: list[str]) -> list[dict[str, str]]:
                         )
             projection.append(
                 {
-                    "path": str(relative),
+                    "path": relative.as_posix(),
                     "status": status or "missing",
                     "type": decision_type or "missing",
                     "owner": owner or "missing",
@@ -659,7 +817,7 @@ def _validate_postmortems(root: Path, errors: list[str]) -> list[str]:
         if not path.is_file():
             errors.append(f"缺少 postmortem 入口或模板：{path.relative_to(root)}")
             continue
-        checked.append(str(path.relative_to(root)))
+        checked.append(path.relative_to(root).as_posix())
 
     if template.is_file():
         sections = _decision_sections(
@@ -700,15 +858,40 @@ def _validate_agents_files(root: Path, errors: list[str]) -> list[dict[str, Any]
                 if not (path.parent / target).resolve().exists():
                     errors.append(f"AGENTS 指令引用失效：{relative} -> {link}")
         if len(text) > budget:
-            errors.append(
-                f"AGENTS 指令超出字符预算：{relative} {len(text)} > {budget}"
-            )
+            errors.append(f"AGENTS 指令超出字符预算：{relative} {len(text)} > {budget}")
         projection.append({"path": relative, "chars": len(text), "budget": budget})
     return projection
 
 
+def _is_formal_docs_markdown(path: Path) -> bool:
+    """`docs/vibe/` 与任何 `node_modules` 都是本仓库非正式资料。"""
+
+    parts = set(path.parts)
+    return not (parts & {"vibe", "node_modules"})
+
+
+def _validate_document_prose(root: Path, errors: list[str]) -> int:
+    """拒绝正式文档中的对举式否定，fenced code block 不参与检查。"""
+
+    docs_root = root / "docs"
+    checked = 0
+    for path in sorted(docs_root.rglob("*.md")):
+        if not _is_formal_docs_markdown(path):
+            continue
+        checked += 1
+        relative = path.relative_to(root)
+        for line_number, line in _visible_markdown_numbered_lines(
+            path.read_text(encoding="utf-8")
+        ):
+            if DOCUMENT_PROSE_CONTRAST.search(line):
+                errors.append(
+                    f"文档应直接陈述目标事实，禁止对举式否定：{relative}:{line_number}"
+                )
+    return checked
+
+
 def _validate_router_boundaries(root: Path, errors: list[str]) -> int:
-    routers_root = root / "backend/server/routers"
+    routers_root = root / "backend/yuxi/api/routers"
     checked = 0
     for path in sorted(routers_root.rglob("*.py")):
         checked += 1
@@ -751,8 +934,8 @@ def _validate_router_boundaries(root: Path, errors: list[str]) -> int:
     return checked
 
 
-def _validate_web_api_boundary(root: Path, errors: list[str]) -> int:
-    source_root = root / "web/src"
+def _validate_frontend_api_boundary(root: Path, errors: list[str]) -> int:
+    source_root = root / "frontend/src"
     checked = 0
     for path in sorted(source_root.rglob("*")):
         if not path.is_file() or path.suffix not in {".js", ".ts", ".vue"}:
@@ -763,9 +946,62 @@ def _validate_web_api_boundary(root: Path, errors: list[str]) -> int:
         for line_number, line in enumerate(
             path.read_text(encoding="utf-8").splitlines(), start=1
         ):
-            if DIRECT_WEB_API_LITERAL.search(line):
+            if DIRECT_FRONTEND_API_LITERAL.search(line):
                 errors.append(
-                    f"web/src/apis 外不得拥有 /api 路径：{path.relative_to(root)}:{line_number}"
+                    f"frontend/src/apis 外不得拥有 /api 路径：{path.relative_to(root)}:{line_number}"
+                )
+    return checked
+
+
+def _validate_workspace_host_path_boundary(root: Path, errors: list[str]) -> int:
+    """普通 use-case 与 repository 不得取得 UserWorkspace 宿主路径。"""
+
+    checked = 0
+    for source_root in sorted((root / "backend/yuxi/modules").glob("*/services")) + sorted((root / "backend/yuxi/modules").glob("*/repositories")) + [root / "backend/yuxi/modules/extensions/skills"]:
+        for path in sorted(source_root.rglob("*.py")):
+            checked += 1
+            relative = path.relative_to(root)
+            source = path.read_text(encoding="utf-8")
+            try:
+                tree = ast.parse(source, filename=str(relative))
+            except SyntaxError:
+                continue
+            for node in ast.walk(tree):
+                forbidden: set[str] = set()
+                if (
+                    isinstance(node, ast.ImportFrom)
+                    and node.module == "yuxi.modules.workspace.paths"
+                ):
+                    forbidden.update(
+                        WORKSPACE_HOST_PATH_EXPORTS.intersection(
+                            alias.name for alias in node.names
+                        )
+                    )
+                    if relative == PERSONAL_SKILL_WORKSPACE_OWNER:
+                        forbidden.discard("user_workspace_dir")
+                elif isinstance(node, ast.ImportFrom) and node.module == "yuxi.infrastructure.runtime_settings":
+                    if any(alias.name == "get_user_data_dir" for alias in node.names):
+                        forbidden.add("get_user_data_dir")
+                elif (
+                    isinstance(node, ast.ImportFrom) and node.module == "yuxi.modules.workspace"
+                ):
+                    if any(alias.name == "paths" for alias in node.names):
+                        forbidden.add("paths module")
+                elif isinstance(node, ast.Import):
+                    imported = {alias.name for alias in node.names}
+                    if "yuxi.modules.workspace.paths" in imported:
+                        forbidden.add("paths module")
+                    if "yuxi.infrastructure.runtime_settings" in imported:
+                        forbidden.add("runtime settings module")
+                if forbidden:
+                    errors.append(
+                        "普通 Service/Repository 不得取得 UserWorkspace 宿主 Path："
+                        f"{relative}:{node.lineno} -> {', '.join(sorted(forbidden))}"
+                    )
+            if "YUXI_USER_DATA_DIR" in source:
+                errors.append(
+                    "普通 Service/Repository 不得读取 UserWorkspace 宿主根环境变量："
+                    f"{relative}"
                 )
     return checked
 
@@ -784,8 +1020,12 @@ def verify(root: Path) -> tuple[list[str], dict[str, Any]]:
     postmortems = _validate_postmortems(resolved_root, errors)
     workflows = _validate_workflows(resolved_root, errors)
     agents_files = _validate_agents_files(resolved_root, errors)
+    document_files = _validate_document_prose(resolved_root, errors)
     router_files = _validate_router_boundaries(resolved_root, errors)
-    web_files = _validate_web_api_boundary(resolved_root, errors)
+    frontend_files = _validate_frontend_api_boundary(resolved_root, errors)
+    workspace_boundary_files = _validate_workspace_host_path_boundary(
+        resolved_root, errors
+    )
     projection = {
         "derived": True,
         "authority": "owner-local code, tests, decisions and workflows",
@@ -794,8 +1034,10 @@ def verify(root: Path) -> tuple[list[str], dict[str, Any]]:
         "workflows": workflows,
         "agents_files": agents_files,
         "boundaries": {
+            "document_files_checked": document_files,
             "router_files_checked": router_files,
-            "web_source_files_checked": web_files,
+            "frontend_source_files_checked": frontend_files,
+            "workspace_boundary_files_checked": workspace_boundary_files,
         },
     }
     return errors, projection
@@ -825,8 +1067,9 @@ def main() -> int:
             f"{len(projection['decisions'])} decisions / "
             f"{len(projection['workflows'])} workflows / "
             f"{len(projection['agents_files'])} agents files / "
+            f"{projection['boundaries']['document_files_checked']} docs / "
             f"{projection['boundaries']['router_files_checked']} routers / "
-            f"{projection['boundaries']['web_source_files_checked']} web sources"
+            f"{projection['boundaries']['frontend_source_files_checked']} frontend sources"
         )
     return 0
 

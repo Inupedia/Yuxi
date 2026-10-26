@@ -5,11 +5,13 @@ from __future__ import annotations
 import pytest
 import pytest_asyncio
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import async_sessionmaker
 
-from yuxi.repositories.department_repository import DepartmentRepository
-from yuxi.storage.postgres.models_business import APIKey, Base, Department, User
-from yuxi.utils.auth_utils import AuthUtils
+from test.support.sqlite import create_utc_sqlite_engine
+from yuxi.modules.identity.repositories.departments import DepartmentRepository
+from yuxi.modules.identity.models import APIKey, Department, User
+from yuxi.infrastructure.postgres.base import Base
+from yuxi.modules.identity.security import AuthUtils
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.unit]
 
@@ -17,7 +19,7 @@ pytestmark = [pytest.mark.asyncio, pytest.mark.unit]
 @pytest_asyncio.fixture()
 async def department_session():
     """创建包含默认部门和待删除部门的 SQLite 会话。"""
-    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    engine = create_utc_sqlite_engine()
     async with engine.begin() as connection:
         await connection.run_sync(Base.metadata.create_all)
     factory = async_sessionmaker(engine, expire_on_commit=False)
@@ -70,3 +72,16 @@ async def test_delete_department_migrates_users_and_revokes_department_keys(depa
     assert persisted_key.is_enabled is False
     assert persisted_key.revoked_at is not None
     assert persisted_key.department_id is None
+
+
+@pytest.mark.parametrize("operation", ["create", "update", "delete", "delete_and_migrate_users"])
+async def test_department_writes_require_callers_transaction(operation):
+    """写入不能以仓储私有会话提前提交调用方的部门事实。"""
+    repository = DepartmentRepository()
+    with pytest.raises(RuntimeError, match="部门写入需要调用方事务"):
+        if operation == "create":
+            await repository.create({"name": "unowned"})
+        elif operation == "update":
+            await repository.update(1, {"name": "unowned"})
+        else:
+            await getattr(repository, operation)(1)

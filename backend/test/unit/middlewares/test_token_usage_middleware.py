@@ -6,7 +6,7 @@ import pytest
 from langchain.agents.middleware.types import ExtendedModelResponse, ModelResponse
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 
-from yuxi.agents.middlewares.token_usage import TokenUsageMiddleware
+from yuxi.modules.agents.runtime.middlewares.token_usage import TokenUsageMiddleware
 
 
 def _request(*, run_id: str, model_spec: str, state: dict | None = None, model_name: str = "model-a"):
@@ -85,6 +85,8 @@ async def test_token_usage_middleware_records_context_and_run_usage() -> None:
     assert isinstance(result, ExtendedModelResponse)
     token_usage = result.command.update["token_usage"]
     assert token_usage["llm_input_tokens"] >= token_usage["llm_messages_tokens"]
+    assert token_usage["next_llm_input_tokens"] > token_usage["llm_input_tokens"]
+    assert token_usage["summary_pressure_ratio"] == round(token_usage["next_llm_input_tokens"] / 2048, 4)
     assert token_usage["context_window"] == 2000
     assert token_usage["current_run_id"] == "run-1"
     assert token_usage["latest"]["bucket_key"] == "provider-a:model-a"

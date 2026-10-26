@@ -1,0 +1,12 @@
+# 产品品牌配置
+branding:
+  name: "语析"               # 产品名称
+  logo: "/favicon.svg"       # 产品 Logo（放在 frontend/public 目录下）
+  title: "让知识，成为行动。"  # 首页口号
+  login_bg: "/login-bg.jpg"  # 登录背景图片（放在 frontend/public 目录下）
+
+# 页脚信息
+footer:
+  copyright: "© 语析 2026 v{{YUXI_VERSION}}"
+  user_agreement_url: "/protocols/user-agreement.template.html"
+  privacy_policy_url: "/protocols/privacy-policy.template.html"

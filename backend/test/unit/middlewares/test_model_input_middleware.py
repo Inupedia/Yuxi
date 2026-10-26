@@ -7,18 +7,19 @@ from langchain.agents.middleware.types import ModelRequest, ModelResponse
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_openai import ChatOpenAI
 
-from yuxi.agents.middlewares.model_input import ImageInputCompatibilityMiddleware
+from yuxi.modules.agents.runtime.middlewares.model_input import ImageInputCompatibilityMiddleware
+from yuxi.modules.extensions.tools.builtin.ocr_parse_file import ocr_parse_file
 
 
-def _request(model, messages) -> ModelRequest:
-    return ModelRequest(model=model, messages=messages)
+def _request(model, messages, *, tools=None) -> ModelRequest:
+    return ModelRequest(model=model, messages=messages, tools=tools or [])
 
 
 def _openai_model() -> ChatOpenAI:
     return ChatOpenAI(model="test-model", api_key="test-key", base_url="https://example.com/v1")
 
 
-def _read_file_image_message(path: str = "/home/gem/user-data/uploads/image.png") -> ToolMessage:
+def _read_file_image_message(path: str = "/home/user/workspace/uploads/image.png") -> ToolMessage:
     return ToolMessage(
         content_blocks=[{"type": "image", "base64": "abc", "mime_type": "image/png"}],
         tool_call_id="call_image",
@@ -84,8 +85,7 @@ def test_keeps_non_openai_tool_images_unchanged() -> None:
         ("This model does not support image input", 400),
         ("No endpoints found that support image input", 404),
         (
-            "Error code: 400 - {'code': 20041, 'message': "
-            "'The model is not a VLM (Vision Language Model). Please use text-only prompts.'}",
+            "Error code: 400 - {'code': 20041, 'message': 'The model is not a VLM (Vision Language Model). Please use text-only prompts.'}",
             400,
         ),
     ],
@@ -95,6 +95,7 @@ async def test_translates_provider_image_rejection_to_ocr_fallback(error_message
     request = _request(
         SimpleNamespace(),
         [_read_file_image_message()],
+        tools=[ocr_parse_file],
     )
     calls = 0
 
@@ -108,10 +109,9 @@ async def test_translates_provider_image_rejection_to_ocr_fallback(error_message
     response = await middleware.awrap_model_call(request, handler)
 
     assert calls == 1
-    assert [tool.name for tool in middleware.tools] == ["ocr_parse_file"]
     assert response.result[0].content == "当前模型不支持图片输入，正在改用 OCR 工具提取图片文字。"
     assert response.result[0].tool_calls[0]["name"] == "ocr_parse_file"
-    assert response.result[0].tool_calls[0]["args"] == {"file_path": "/home/gem/user-data/uploads/image.png"}
+    assert response.result[0].tool_calls[0]["args"] == {"file_path": "/home/user/workspace/uploads/image.png"}
 
 
 @pytest.mark.asyncio
@@ -137,6 +137,7 @@ async def test_translates_openrouter_missing_vision_endpoint() -> None:
     request = _request(
         SimpleNamespace(),
         [_read_file_image_message()],
+        tools=[ocr_parse_file],
     )
 
     async def handler(_request):
@@ -151,7 +152,7 @@ async def test_translates_openrouter_missing_vision_endpoint() -> None:
 
 def test_omits_historical_tool_image_after_ocr_fallback() -> None:
     middleware = ImageInputCompatibilityMiddleware()
-    path = "/home/gem/user-data/uploads/image.png"
+    path = "/home/user/workspace/uploads/image.png"
     messages = [
         _read_file_image_message(path),
         AIMessage(
@@ -193,3 +194,30 @@ async def test_does_not_report_malformed_image_as_unsupported_model() -> None:
 
     with pytest.raises(RuntimeError, match="not a valid image"):
         await middleware.awrap_model_call(request, handler)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize("enabled", [False, True])
+async def test_image_rejection_respects_configured_ocr_tool(asynchronous: bool, enabled: bool) -> None:
+    """同步与异步回退只调用本次已启用的工具，不由中间件注入。"""
+    middleware = ImageInputCompatibilityMiddleware()
+    assert getattr(middleware, "tools", []) == []
+    request = _request(SimpleNamespace(), [_read_file_image_message()], tools=[ocr_parse_file] if enabled else [])
+
+    def reject(_request):
+        error = RuntimeError("This model does not support image input")
+        error.status_code = 400
+        raise error
+
+    async def async_reject(request):
+        return reject(request)
+
+    response = await middleware.awrap_model_call(request, async_reject) if asynchronous else middleware.wrap_model_call(request, reject)
+    message = response.result[0]
+    if enabled:
+        assert [call["name"] for call in message.tool_calls] == ["ocr_parse_file"]
+        assert message.tool_calls[0]["args"]["file_path"] == "/home/user/workspace/uploads/image.png"
+    else:
+        assert message.tool_calls == []
+        assert "OCR 解析工具未启用" in message.content

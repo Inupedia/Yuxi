@@ -6,13 +6,31 @@ import markdownItTaskCheckbox from 'markdown-it-task-checkbox'
 export default defineConfig({
   lang: 'zh-CN',
   title: "Yuxi",
-  description: "语析",
+  description: "Yuxi 是一个可私有部署的知识智能体平台，支持文档检索、知识图谱、协作会话、MCP/Skills、持久执行环境与团队权限管理。",
   base: '/Yuxi/',
+  srcExclude: ['vibe/**'],
+  sitemap: {
+    hostname: 'https://xerrors.github.io/Yuxi/'
+  },
+  head: [
+    ['link', { rel: 'icon', href: '/Yuxi/favicon.svg' }],
+    ['link', { rel: 'alternate icon', href: '/Yuxi/favicon.ico' }],
+    ['meta', { name: 'theme-color', content: '#F3BA32' }],
+    ['meta', { name: 'keywords', content: 'Yuxi, AI Agent, RAG, knowledge graph, LangGraph, MCP, self-hosted, multi-agent, knowledge base' }],
+    ['meta', { property: 'og:type', content: 'website' }],
+    ['meta', { property: 'og:site_name', content: 'Yuxi' }],
+    ['meta', { property: 'og:title', content: 'Yuxi · 让知识真正参与每一次行动' }],
+    ['meta', { property: 'og:description', content: '可私有部署的知识智能体平台，统一文档检索、工具执行、文件产物与团队权限。' }],
+    ['meta', { property: 'og:image', content: 'https://xerrors.oss-cn-shanghai.aliyuncs.com/github/yuxi/docs/home/yuxi-web-og-1200x630-v1.0.0.png' }],
+    ['meta', { property: 'og:image:width', content: '1200' }],
+    ['meta', { property: 'og:image:height', content: '630' }],
+    ['meta', { name: 'twitter:card', content: 'summary_large_image' }],
+    ['meta', { name: 'twitter:title', content: 'Yuxi · Self-hosted knowledge agent platform' }],
+    ['meta', { name: 'twitter:description', content: 'RAG, knowledge graphs, multi-agent execution, MCP/Skills, sandboxed artifacts, and access control in one workspace.' }],
+    ['meta', { name: 'twitter:image', content: 'https://xerrors.oss-cn-shanghai.aliyuncs.com/github/yuxi/docs/home/yuxi-web-og-1200x630-v1.0.0.png' }]
+  ],
   ignoreDeadLinks: [
-    /localhost/,
-    /CONTRIBUTING$/,
-    /docker-compose\.yml$/,
-    /^\.\/intro\//
+    /localhost/
   ],
   markdown: {
     config: (md) => {
@@ -23,66 +41,113 @@ export default defineConfig({
     // https://vitepress.dev/reference/default-theme-config
     logo: "/favicon.svg",
     nav: [
-      { text: '快速开始', link: '/intro/quick-start' },
-      { text: '智能体开发', link: '/agents/agents-config' }
+      { text: '项目介绍', link: '/intro/' },
+      { text: '智能体开发', link: '/agents/agents-config' },
+      { text: '机制详解', link: '/mechanisms/' }
     ],
 
     sidebar: [
       {
         text: '简介',
+        link: '/intro/',
         items: [
-          { text: '什么是 Yuxi？', link: '/intro/project-overview' },
+          { text: '认识 Yuxi', link: '/intro/project-overview' },
           { text: '快速开始', link: '/intro/quick-start' },
-          { text: '命令行工具', link: '/intro/cli' },
           { text: '模型配置', link: '/intro/model-config' },
-          { text: '知识库与知识图谱', link: '/intro/knowledge-base' },
-          { text: '知识库评估', link: '/intro/evaluation' }
+          { text: '知识库入门', link: '/intro/knowledge-base' },
+          { text: '知识库评估', link: '/intro/evaluation' },
+          { text: '命令行工具', link: '/intro/cli' },
+          { text: '公开 Agent API 接入', link: '/intro/agents-api-quickstart' }
         ]
       },
       {
         text: '智能体开发',
         items: [
           { text: '智能体配置', link: '/agents/agents-config' },
-          { text: 'Agent 请求队列', link: '/agents/agent-request-queue' },
+          { text: '开发智能体后端', link: '/agents/agent-backend-development' },
           { text: '工具系统', link: '/agents/tools-system' },
           { text: '中间件', link: '/agents/middleware' },
-          { text: '智能体评估', link: '/agents/agent-evaluation' },
-          { text: '沙盒架构与设计', link: '/agents/sandbox-architecture' },
-          { text: 'MCP 集成', link: '/agents/mcp-integration' },
           { text: 'Skills 管理', link: '/agents/skills-management' },
-          { text: '子智能体', link: '/agents/subagents-management' }
+          { text: 'MCP 集成', link: '/agents/mcp-integration' },
+          { text: '会话协作', link: '/agents/session-cooperation' },
+          { text: '智能体评估', link: '/agents/agent-evaluation' }
+        ]
+      },
+      {
+        text: '机制详解',
+        items: [
+          { text: '阅读路径', link: '/mechanisms/' },
+          { text: '角色与资源权限', link: '/mechanisms/resource-permissions' },
+          { text: 'Agent 运行时上下文', link: '/mechanisms/agent-runtime' },
+          { text: 'MCP 授权与运行身份', link: '/mechanisms/mcp' },
+          { text: 'Agent 请求队列与调度', link: '/mechanisms/agent-request-queue' },
+          { text: '沙盒与文件系统', link: '/mechanisms/sandbox' },
+          { text: '上下文压缩', link: '/mechanisms/context-compression' },
+          { text: '知识库', link: '/mechanisms/knowledge-base' }
         ]
       },
       {
         text: '高级配置',
         items: [
           { text: '配置系统详解', link: '/advanced/configuration' },
-          { text: 'Langfuse 集成', link: '/advanced/langfuse-integration' },
-          { text: '文档解析', link: '/advanced/document-processing' },
-          { text: '品牌自定义', link: '/advanced/branding' },
-          { text: '其他配置', link: '/advanced/misc' },
           { text: '生产部署', link: '/advanced/deployment' },
-          { text: 'API Key 外部集成', link: '/advanced/api-key-integration' }
+          { text: 'Agent 并发容量', link: '/advanced/agent-concurrency-capacity' },
+          { text: '沙盒配置与运维', link: '/advanced/sandbox-operations' },
+          { text: 'Container 沙盒', link: '/advanced/container-sandbox' },
+          { text: '文档解析与 OCR', link: '/advanced/document-processing' },
+          {
+            text: '知识库管理',
+            collapsed: false,
+            items: [
+              { text: '文档导入与查询 API', link: '/advanced/knowledge-base-api' },
+              { text: '知识库 MCP 接入', link: '/advanced/knowledge-mcp' },
+              { text: '知识导图与知识图谱', link: '/advanced/knowledge-base-graph' }
+            ]
+          },
+          { text: 'Langfuse 集成', link: '/advanced/langfuse-integration' },
+          { text: 'API Key 外部集成', link: '/advanced/api-key-integration' },
+          { text: 'Agents Public API', link: '/advanced/agents-public-api' },
+          { text: 'Web 反馈接口', link: '/advanced/agent-feedback' },
+          { text: 'OIDC 认证', link: '/advanced/third-party-auth' },
+          { text: '按用户统计模型用量', link: '/advanced/model-usage-tracking' },
+          { text: '品牌自定义', link: '/advanced/branding' }
         ]
       },
       {
         text: '开发指南',
         items: [
           { text: '参与贡献', link: '/develop-guides/contributing' },
-          { text: '开发路线图', link: '/develop-guides/roadmap' },
-          { text: '版本变更记录', link: '/develop-guides/changelog' },
-          { text: '界面设计规范', link: '/develop-guides/design' },
           { text: '测试规范', link: '/develop-guides/testing-guidelines' },
+          { text: 'Agents API 维护索引', link: '/develop-guides/agents-api-alignment-plan' },
           { text: 'Yuxi Spec Loop', link: '/develop-guides/spec-loop' },
           { text: '工程信任系统', link: '/develop-guides/engineering-trust' },
-          { text: '工程决策记录', link: '/develop-guides/decisions/README' },
-          { text: '工程事故复盘', link: '/develop-guides/postmortems/README' },
+          { text: '并行 worktree 环境', link: '/develop-guides/parallel-worktree-environments' },
+          {
+            text: '文档与版本',
+            collapsed: false,
+            items: [
+              { text: '文档编写与维护', link: '/develop-guides/documentation-guidelines' },
+              { text: '界面设计规范', link: '/develop-guides/design' },
+              { text: '版本变更记录', link: '/develop-guides/changelog' },
+              { text: '0.8.0 更新说明', link: '/develop-guides/releases/0.8.0' },
+              { text: '开发路线图', link: '/develop-guides/roadmap' }
+            ]
+          },
+          {
+            text: '治理',
+            collapsed: false,
+            items: [
+              { text: '工程决策记录', link: '/develop-guides/decisions/README' },
+              { text: '工程事故复盘', link: '/develop-guides/postmortems/README' }
+            ]
+          },
         ]
       }
     ],
 
     socialLinks: [
-      { icon: 'github', link: 'https://github.com/xerrors/Yuxi' }
+      { icon: 'github', link: 'https://github.com/xerrors/Yuxi' },
+      { icon: { svg: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10zM2 12h20"/></svg>' }, link: 'https://github.com/xerrors/Yuxi/blob/main/README.en.md', ariaLabel: 'English' }
     ],
 
     footer: {

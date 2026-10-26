@@ -1,86 +1,82 @@
-# 品牌自定义
+# 自定义品牌信息
 
-Yuxi 支持完整的品牌自定义，包括 Logo、组织名称、版权信息、登录协议等，方便企业用户进行品牌定制。
+Yuxi 的品牌配置分为两部分：后端读取的站点信息，以及前端源码中的主题样式。前者可以通过 YAML 文件替换名称、Logo 和协议链接；后者需要修改前端资源。
 
-## 品牌信息配置
+## 配置站点信息
 
-### 步骤 1：复制模板文件
+### 1. 创建本地配置
+
+复制模板。`info.local.yaml` 通常是本地未跟踪文件；如果目标文件已经存在，不要覆盖它，直接编辑或先备份：
 
 ```bash
-cp backend/package/yuxi/config/static/info.template.yaml backend/package/yuxi/config/static/info.local.yaml
+cp -n backend/yuxi/modules/system/static/info.template.yaml \
+  backend/yuxi/modules/system/static/info.local.yaml
 ```
 
-### 步骤 2：编辑品牌信息
-
-在 `backend/package/yuxi/config/static/info.local.yaml` 中配置你的品牌信息：
-
-- 应用名称
-- 组织名称
-- Logo
-- 版权信息
-- 登录页用户协议/隐私协议链接
-
-### 步骤 3：指定配置文件
-
-在 `.env` 中指定配置文件路径：
-
-```env
-YUXI_BRAND_FILE_PATH=backend/package/yuxi/config/static/info.local.yaml
-```
-
-::: tip 配置优先级
-`info.local.yaml` > `info.template.yaml`（默认）
-:::
-
-## 登录协议配置
-
-登录页支持从品牌配置中读取用户协议与隐私协议链接。
-
-### 配置项
-
-在 `backend/package/yuxi/config/static/info.local.yaml` 的 `footer` 下新增以下字段：
+在 `info.local.yaml` 中修改：
 
 ```yaml
+branding:
+  name: "Example App"
+  logo: "/logo.svg"
+  title: "让团队知识更容易被使用"
+  login_bg: "/login-bg.jpg"
+
 footer:
-  copyright: "© your org 2026"
+  copyright: "© Example App"
   user_agreement_url: "/protocols/user-agreement.template.html"
   privacy_policy_url: "/protocols/privacy-policy.template.html"
 ```
 
-### 显示规则
+产品名称和 Logo 统一由 `branding.name`、`branding.logo` 拥有，首页、登录页和侧栏共用这两个字段。`title` 用于首页主标题，`login_bg` 用于登录背景。页面直接读取 `branding`，名称填写最终产品名称；`organization`、`avatar`、`subtitle` 和 `subtitles` 不属于当前品牌字段。
 
-- 当 `user_agreement_url` 和 `privacy_policy_url` 都有值时，登录页会显示协议勾选项。
-- 任一字段为空时，登录页不显示协议勾选项。
-- 未勾选协议时，提交登录/初始化会通过消息提示用户先同意协议。
+图片和协议页面放在 `frontend/public` 下，路径从网站根目录开始写，例如 `/logo.svg`。Compose 中 API 的工作目录是 `/app`，因此默认配置路径可以写成：
 
-### 协议模板文件
-
-系统默认提供两个 HTML 模板文件：
-
-- `web/public/protocols/user-agreement.template.html`
-- `web/public/protocols/privacy-policy.template.html`
-
-你可以直接编辑这两个文件中的协议内容，并替换占位符（如 `{{ORG_NAME}}`、`{{PRODUCT_NAME}}`、`{{EFFECTIVE_DATE}}`）。
-
-如果你有自己的协议页面，也可以将 `user_agreement_url` 和 `privacy_policy_url` 指向自定义路径或外部链接。
-
-### Icon 定制
-
-系统预设了多种 Icon，如需更多图标，可以从 `lucide-vue-next` 中引入。
-
-## 样式定制
-
-系统支持完整的主题色定制。配置文件位于 `web/src/assets/css/base.css`，以及 `web/src/assets/css/base.dark.css`：
-
-```css
-:root {
-  --main-color: #1890ff;        /* 主色调 */
-  --main-1000: #f0f2f5;          /* 色板 */
-  --main-900: #e6f7ff;           /* 色板 */
-  /* ... 其他色板 */
-}
+```bash
+YUXI_BRAND_FILE_PATH=yuxi/modules/system/static/info.local.yaml
 ```
 
-修改配色变量后，界面会实时更新，无需重启服务。
+也可以在环境文件中指定 API 容器内的绝对路径，并通过 Compose 只读挂载该文件。路径不存在时读取 `info.template.yaml`，两个 YAML 文件不合并；YAML 读取或解析失败时接口返回空配置。修改后既要核对 `/api/system/info` 的实际字段，也要刷新页面检查名称、图片和协议链接。
 
-此外，`web/src/stores/theme.js` 中的 `colorPrimary` 也需要同步修改。
+### 2. 重新加载
+
+品牌接口每次请求读取 YAML。开发环境的 API 直接挂载 `backend/yuxi`，修改 YAML 后刷新浏览器页面即可读取新配置；前端在同一个页面会话内缓存已成功读取的品牌信息。
+
+生产 Compose 不挂载仓库源码，品牌 YAML 会在构建 API 镜像时复制进去。修改 `backend/yuxi/modules/system/static/info.local.yaml` 后，需要重新构建并创建 API/worker 容器：
+
+```bash
+docker compose --env-file .env.prod -f docker-compose.prod.yml \
+  up -d --build --force-recreate api worker
+```
+
+如果使用仓库之外的品牌文件，需要在 Compose 覆盖配置中把它只读挂载到 API 容器，并让 `YUXI_BRAND_FILE_PATH` 指向容器内路径；修改该环境变量后同样要重新创建容器。页面会通过公开的 `/api/system/info` 读取站点信息，版本占位符 `{{YUXI_VERSION}}` 由 API 替换为当前版本。
+
+## 登录协议
+
+当 `footer.user_agreement_url` 和 `footer.privacy_policy_url` 同时有值时，登录和初始化页面显示协议勾选项；任一链接为空时，不显示勾选项。用户未勾选时，登录或初始化会被页面拦截并提示先同意协议。
+
+仓库提供了两个模板：
+
+- `frontend/public/protocols/user-agreement.template.html`
+- `frontend/public/protocols/privacy-policy.template.html`
+
+可以直接替换模板内容和其中的 `{{ORG_NAME}}`、`{{PRODUCT_NAME}}`、`{{EFFECTIVE_DATE}}` 等占位符，也可以把配置指向自定义的站内或外部页面。正式上线前请让法务审核协议文本。
+
+## 修改主题样式
+
+主题色变量位于：
+
+- `frontend/src/assets/css/base.css`：浅色模式；
+- `frontend/src/assets/css/base.dark.css`：暗色模式；
+- `frontend/src/shared/model/theme.js`：主题选择器的默认配置。
+
+优先修改已有 CSS 变量，不要在组件中散落新的硬编码颜色。当前主题的主要变量包括 `--main-1000`、`--main-900` 和 `--main-color`；`frontend/src/shared/model/theme.js` 的 `colorPrimary` 在运行时读取 `--main-color`，因此调整 `base.css` 与 `base.dark.css` 中的 `--main-color` 与 `--main-*` 色阶即可，不需要再修改 `theme.js`。`--main-color` 在浅色模式下引用 `--main-700`，暗色模式单独定义该值；hover、active、link 和 focus 等 token 还使用 `--main-600`、`--main-800`、`--main-900` 和 `--main-100`，需要一起保持一致。新增颜色时，同时检查浅色、暗色、hover、focus、禁用和错误状态的对比度。
+
+开发环境会通过 Vite 热更新样式；生产环境需要重新构建 Web 镜像：
+
+```bash
+docker compose -f docker-compose.prod.yml --env-file .env.prod \
+  up -d --build frontend
+```
+
+品牌 YAML、主题颜色和图标属于不同配置面：YAML 影响站点信息接口，CSS 和 `theme.js` 影响前端资源。修改其中一项不会自动改动另一项。

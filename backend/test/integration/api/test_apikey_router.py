@@ -7,13 +7,15 @@ from __future__ import annotations
 import asyncio
 import os
 import uuid
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from yuxi.services.oidc_service import restore_deleted_oidc_user
-from yuxi.storage.postgres.models_business import APIKey, User
+from yuxi.modules.identity.models import APIKey, OIDCIdentity, User
+from yuxi.modules.identity.repositories.oidc import OIDCRepository
+from yuxi.shared.errors import PermissionDeniedError
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.integration]
 
@@ -180,8 +182,8 @@ async def test_revoked_api_key_cannot_be_resurrected_by_replaying_creation_reque
     assert auth_response.status_code == 401, auth_response.text
 
 
-async def test_user_delete_oidc_restore_cannot_republish_or_enable_old_api_key(test_client, admin_headers):
-    """用户恢复不能清除删除事务写入的凭据 tombstone。"""
+async def test_user_delete_blocks_oidc_login_and_old_api_key(test_client, admin_headers):
+    """删除用户阻断已绑定 OIDC 登录，已撤销 Key 不能重发或启用。"""
 
     suffix = uuid.uuid4().hex[:12]
     user_response = await test_client.post(
@@ -201,6 +203,9 @@ async def test_user_delete_oidc_restore_cannot_republish_or_enable_old_api_key(t
     factory = async_sessionmaker(engine, expire_on_commit=False)
 
     try:
+        async with factory() as db:
+            db.add(OIDCIdentity(issuer="https://identity.example.test", subject=f"test:{suffix}", user_id=user_id))
+            await db.commit()
         delete_response = await test_client.delete(f"/api/auth/users/{user_id}", headers=admin_headers)
         assert delete_response.status_code == 200, delete_response.text
 
@@ -210,18 +215,19 @@ async def test_user_delete_oidc_restore_cannot_republish_or_enable_old_api_key(t
             assert deleted_user is not None and deleted_user.is_deleted == 1
             assert persisted_key is not None and persisted_key.is_enabled is False
             assert persisted_key.revoked_at is not None
-            await restore_deleted_oidc_user(
-                db,
-                deleted_user,
-                {"name": f"restored_{suffix}", "username": f"restored_{suffix}", "sub": f"test:{suffix}"},
-            )
+            with pytest.raises(PermissionDeniedError):
+                await OIDCRepository(db).resolve_user(
+                    SimpleNamespace(issuer_url="https://identity.example.test"),
+                    {"sub": f"test:{suffix}"},
+                    {},
+                )
 
         list_response = await test_client.get(API_KEYS_PATH, headers=admin_headers)
         assert list_response.status_code == 200, list_response.text
         assert api_key_id not in {item["id"] for item in list_response.json()["api_keys"]}
 
         replay_response = await test_client.post(API_KEYS_PATH, json=payload, headers=admin_headers)
-        assert replay_response.status_code == 409, replay_response.text
+        assert replay_response.status_code == 404, replay_response.text
         assert "secret" not in replay_response.json()
 
         enable_response = await test_client.put(
@@ -244,11 +250,6 @@ async def test_user_delete_oidc_restore_cannot_republish_or_enable_old_api_key(t
             await db.execute(delete(User).where(User.id == user_id))
             await db.commit()
         await engine.dispose()
-
-
-async def test_regenerate_api_key_endpoint_is_removed(test_client, admin_headers):
-    response = await test_client.post(f"{API_KEYS_PATH}1/regenerate", headers=admin_headers)
-    assert response.status_code == 404, response.text
 
 
 async def test_api_key_auth_protected_endpoint(test_client, admin_headers):
@@ -300,9 +301,13 @@ async def test_api_key_auth_requires_bearer_prefix(test_client, admin_headers):
         await test_client.delete(f"{API_KEYS_PATH}{created['id']}", headers=admin_headers)
 
 
+@pytest.mark.self_managed_resources
 async def test_api_key_auto_binds_to_current_user(test_client, admin_headers):
-    """Test that API Key created without user_id is auto-bound to creator."""
-    # Create API key as admin
+    """通过 HTTP 回读创建者归属，并在 finally 清理本例创建的 Key。"""
+    current_user = await test_client.get("/api/auth/me", headers=admin_headers)
+    assert current_user.status_code == 200, current_user.text
+    creator_id = current_user.json()["id"]
+
     create_response = await test_client.post(
         API_KEYS_PATH,
         json=_create_payload("Auto Bind Test"),
@@ -312,8 +317,11 @@ async def test_api_key_auto_binds_to_current_user(test_client, admin_headers):
     created = create_response.json()["api_key"]
 
     try:
-        # Verify user_id is set (auto-bound to admin)
-        assert created["user_id"] is not None, "API Key should be auto-bound to creator"
+        assert created["user_id"] == creator_id
+        response = await test_client.get(API_KEYS_PATH, headers=admin_headers)
+        assert response.status_code == 200, response.text
+        saved = next(key for key in response.json()["api_keys"] if key["id"] == created["id"])
+        assert saved["user_id"] == creator_id
     finally:
-        # Cleanup: delete the test API key
-        await test_client.delete(f"{API_KEYS_PATH}{created['id']}", headers=admin_headers)
+        deleted = await test_client.delete(f"{API_KEYS_PATH}{created['id']}", headers=admin_headers)
+        assert deleted.status_code == 200, deleted.text

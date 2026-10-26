@@ -3,11 +3,12 @@ from __future__ import annotations
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from server.routers import workspace_router
-from server.routers.workspace_router import workspace_knowledge
-from server.utils.auth_middleware import get_required_user
-from yuxi.knowledge.read_models import KnowledgeBaseDetail
-from yuxi.storage.postgres.models_business import User
+import yuxi.api.routers.workspace.workspace as workspace_router
+from yuxi.api.routers.workspace.workspace import workspace_knowledge
+from yuxi.api.dependencies.auth import get_required_user
+from yuxi.modules.knowledge import preview
+from yuxi.modules.knowledge.read_models import KnowledgeBaseDetail
+from yuxi.modules.identity.models import User
 
 
 class FakeKnowledgeBase:
@@ -18,8 +19,8 @@ class FakeKnowledgeBase:
     async def check_accessible(self, _user, _kb_id):
         return True
 
-    async def get_database_document_support(self, kb_id):
-        database = KnowledgeBaseDetail(
+    async def get_knowledge_base_document_support(self, kb_id):
+        knowledge_base = KnowledgeBaseDetail(
             kb_id=kb_id,
             name="知识库",
             description=None,
@@ -32,20 +33,18 @@ class FakeKnowledgeBase:
             created_by=None,
             created_at=None,
         )
-        return database, self.supports
+        return knowledge_base, self.supports
 
     async def list_document_files(self, **kwargs):
         self.list_calls.append(kwargs)
         return {
             "items": [
                 {
-                    "file_id": "__virtual_folder__:root:资料/",
+                    "file_id": "folder_1",
                     "filename": "资料",
                     "status": "done",
                     "is_folder": True,
                     "parent_id": None,
-                    "is_virtual_folder": True,
-                    "path_prefix": "资料/",
                     "created_at": None,
                     "updated_at": None,
                     "file_size": 0,
@@ -56,8 +55,6 @@ class FakeKnowledgeBase:
                     "status": "indexed",
                     "is_folder": False,
                     "parent_id": None,
-                    "is_virtual_folder": False,
-                    "path_prefix": None,
                     "created_at": "2026-06-20T00:00:00Z",
                     "updated_at": "2026-06-20T01:00:00Z",
                     "file_size": 2048,
@@ -70,7 +67,6 @@ class FakeKnowledgeBase:
             "total": 2,
             "has_more": False,
             "parent_id": kwargs["parent_id"],
-            "path_prefix": kwargs["path_prefix"] or "",
         }
 
 
@@ -95,7 +91,6 @@ def test_workspace_knowledge_tree_uses_paginated_document_listing(monkeypatch):
         params={
             "kb_id": "kb_1",
             "parent_id": "folder_1",
-            "path_prefix": "资料/",
             "page": 2,
             "page_size": 100,
             "files_only": True,
@@ -107,7 +102,6 @@ def test_workspace_knowledge_tree_uses_paginated_document_listing(monkeypatch):
         {
             "kb_id": "kb_1",
             "parent_id": "folder_1",
-            "path_prefix": "资料/",
             "page": 2,
             "page_size": 100,
             "recursive": False,
@@ -118,8 +112,7 @@ def test_workspace_knowledge_tree_uses_paginated_document_listing(monkeypatch):
     payload = response.json()
     assert payload["page"] == 2
     assert payload["total"] == 2
-    assert payload["entries"][0]["is_virtual_folder"] is True
-    assert payload["entries"][0]["path"] == "/knowledge/kb_1/virtual/%E8%B5%84%E6%96%99%2F"
+    assert payload["entries"][0]["path"] == "/knowledge/kb_1/folder/folder_1/"
     assert payload["entries"][1]["path"] == "/knowledge/kb_1/file/file_1"
     assert payload["entries"][1]["size"] == 2048
     assert payload["entries"][1]["modified_at"] == "2026-06-20T01:00:00Z"
@@ -132,3 +125,30 @@ def test_workspace_knowledge_tree_rejects_non_document_kb(monkeypatch):
 
     assert response.status_code == 501
     assert "不支持文件浏览" in response.json()["detail"]
+
+
+def test_workspace_knowledge_file_calls_knowledge_preview_directly(monkeypatch):
+    client = _build_client(monkeypatch, FakeKnowledgeBase())
+    calls = []
+
+    async def read_preview(*, kb_id: str, file_id: str) -> dict:
+        calls.append((kb_id, file_id))
+        return {
+            "source": "knowledge",
+            "kb_id": kb_id,
+            "file_id": file_id,
+            "content": "preview",
+            "preview_type": "text",
+            "supported": True,
+        }
+
+    monkeypatch.setattr(preview, "read_knowledge_file_preview", read_preview)
+
+    response = client.get(
+        "/api/workspace/knowledge/file",
+        params={"kb_id": "kb_1", "file_id": "file_1"},
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["content"] == "preview"
+    assert calls == [("kb_1", "file_1")]

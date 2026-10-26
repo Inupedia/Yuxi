@@ -1,0 +1,14 @@
+# 与 docker-compose.prod.yml 一起使用；项目名、凭据和数据目录由独立 .env.prod 提供。
+services:
+  frontend:
+    ports: !override
+      - "127.0.0.1:${YUXI_FRONTEND_PORT:-18080}:80"
+    labels:
+      traefik.enable: "${YUXI_PREVIEW_PUBLIC:-false}"
+      traefik.http.routers.knowledge-next.rule: "Host(`knowledge-next.ai.swhisxy.cn`)"
+      traefik.http.routers.knowledge-next.service: knowledge-next
+      traefik.http.services.knowledge-next.loadbalancer.server.port: "80"
+  sandbox-image:
+    build:
+      context: .
+      dockerfile: docker/sandbox.Dockerfile

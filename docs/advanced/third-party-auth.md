@@ -1,103 +1,76 @@
-# 第三方登录认证
-Yuxi 支持以OIDC接入第三方登录认证，方便企业用户集成现有的身份认证系统。
-> 此功能默认关闭，需要在配置文件中启用并提供相关参数。
+# 接入 OIDC 登录
 
-## 配置步骤
-### 1. 前提条件
-在你的SSO系统中注册一个新的客户端应用，获取以下信息：
-- 客户端ID（Client ID）
-- 客户端密钥（Client Secret）
-- ISSUER URL
+本页供部署管理员配置单个企业 OIDC 认证中心，前提是已初始化 Yuxi 管理员、PostgreSQL 和 Redis。OIDC 默认关闭，本地密码登录始终保留。没有企业认证中心时，可以使用任意符合 OIDC 标准的测试 IdP 验证配置。
 
-填入回调地址（Redirect URI）：https://<your_yuxi_host>/api/auth/oidc/callback
+## 注册认证中心客户端
 
-### 2. 配置Yuxi
-在Yuxi的.env文件中添加以下配置项：
+创建 confidential OIDC 客户端，启用授权码流程和 PKCE S256，关闭隐式授权与密码直授。记录 Issuer URL、Client ID 和 Client Secret，并登记准确地址：
 
-```sh
-# 是否启用 OIDC 认证 (true/false)
-# OIDC_ENABLED=false
+| 设置 | 地址 |
+| --- | --- |
+| 登录 Redirect URI | `https://yuxi.example.com/api/auth/oidc/callback` |
+| Back-channel Logout URL | `https://yuxi.example.com/api/auth/oidc/backchannel-logout` |
 
-# 认证源名称（显示在登录按钮上的文字，建议简短且具有辨识度, 默认: OIDC登录）
-# OIDC_PROVIDER_NAME="OIDC登录"
+认证中心必须能访问 back-channel 地址，并发送带签名的标准 logout token；Keycloak 启用 Backchannel Logout Session Required。若不支持此协议，Yuxi 仍可主动撤销当前本地会话，无法接收认证中心会话结束通知。管理员停用员工时需同时结束其认证中心会话，或停用 Yuxi 账号。
 
-# OIDC Provider 的 Issuer URL (例如: https://auth.example.com)
-# OIDC_ISSUER_URL=
+Yuxi 要求 discovery 的 issuer 与配置精确一致，使用 JWKS 中的 RS256/384/512 或 ES256/384/512 公钥；ID token 的受众仅允许当前 client，若有 azp 也必须匹配。UserInfo 的 sub 必须与 ID token 一致。认证中心应提供 discovery、JWKS、授权、token 和 UserInfo 端点。
 
-# OIDC Client ID
-# OIDC_CLIENT_ID=
+## 配置与启停
 
-# OIDC Client Secret
-# OIDC_CLIENT_SECRET=
+通过受保护的 `.env` 或 env file 配置 API；密钥不得提交到仓库或输出到日志：
 
-# OIDC 回调 URL (可选，默认自动构建为 /api/auth/oidc/callback, 不建议自定义)
-# 填写完整的地址：https://<your_yuxi_host>/api/auth/oidc/callback
-# 需要确保此 URL 在 OIDC Provider 中已注册
-# OIDC_REDIRECT_URI=
-
-# 授权端点 (可选，自动从 discovery 获取)
-# OIDC_AUTHORIZATION_ENDPOINT=
-
-# Token 端点 (可选，自动从 discovery 获取)
-# OIDC_TOKEN_ENDPOINT=
-
-# UserInfo 端点 (可选，自动从 discovery 获取)
-# OIDC_USERINFO_ENDPOINT=
-
-# 登出端点 (可选，自动从 discovery 获取)
-# OIDC_END_SESSION_ENDPOINT=
-
-# 请求的 scope (默认: openid profile email)
-# OIDC_SCOPES=openid profile email
-
-# 是否自动创建用户 (true/false，默认: true)
-# OIDC_AUTO_CREATE_USER=true
-
-# OIDC 用户的默认角色 (user/admin，默认: user)
-# OIDC_DEFAULT_ROLE=user
-
-# OIDC 用户的默认部门名称 (默认: OIDC用户)
-# OIDC_DEFAULT_DEPARTMENT=OIDC用户
-
-# 用户名映射字段 (默认: preferred_username)
-# OIDC_USERNAME_CLAIM=preferred_username
-
-# 邮箱映射字段 (默认: email)
-# OIDC_EMAIL_CLAIM=email
-
-# 姓名映射字段 (默认: name)
-# OIDC_NAME_CLAIM=name
-
-# 是否使用原始用户名（不带 oidc: 前缀），允许映射到 Yuxi 已有的本地账号 (true/false，默认: false)
-# 开启后，OIDC 返回的 username 会直接作为业务登录标识 uid 登录，需要管理员提前创建好用户账号
-# OIDC_USE_RAW_USERNAME=false
-
-# 是否从OIDC userinfo 中获取部门信息并自动创建关联部门 (true/false，默认: false)
-# OIDC_FETCH_DEPARTMENT_INFO=false
-
-# 部门名称字段映射 (默认: department)
-# OIDC_DEPARTMENT_CLAIM=department
-
-# OIDC 登录时是否强制提示用户重新登录 (添加 prompt=login 参数，true/false，默认: true)
-# OIDC_FORCE_PROMPT_LOGIN=true
-
+```dotenv
+YUXI_ENV=production
+OIDC_ENABLED=true
+OIDC_PROVIDER_NAME=企业统一登录
+OIDC_ISSUER_URL=https://auth.example.com/realms/company
+OIDC_CLIENT_ID=yuxi
+OIDC_CLIENT_SECRET=<private-client-secret>
+OIDC_REDIRECT_URI=https://yuxi.example.com/api/auth/oidc/callback
 ```
-### 3. 重启Yuxi服务使配置生效
+
+生产模式拒绝 HTTP issuer、回调和协议端点。HTTPS 必须覆盖浏览器到 Yuxi、浏览器到认证中心及 API 到认证中心的访问；cookie 为 HttpOnly、SameSite=Lax，HTTPS 回调时附加 Secure。隔离开发模式允许 HTTP。公网只有 HTTP 时保持 `OIDC_ENABLED=false`，登录页自动隐藏第三方登录区域，个人空间只展示文件。
+
+| 变量 | 默认值 | 作用 |
+| --- | --- | --- |
+| `OIDC_SCOPES` | `openid profile email` | 必须包含 openid |
+| `OIDC_AUTO_CREATE_USER` | `true` | 已验证但无映射的外部身份自动开普通用户；关闭时拒绝未开通身份 |
+| `OIDC_DEFAULT_DEPARTMENT` | `OIDC用户` | 新用户默认部门，1–50 字符 |
+| `OIDC_NAME_CLAIM` | `name` | 展示名称来源 |
+| `OIDC_USERNAME_CLAIM` | `preferred_username` | 展示名称的备用来源，不用于绑定本地账号 |
+| `OIDC_FETCH_DEPARTMENT_INFO` | `false` | 仅开户时读取 UserInfo 的部门字符串 |
+| `OIDC_DEPARTMENT_CLAIM` | `department` | 部门字段，去空白并截为 50 字符 |
+| `OIDC_FORCE_PROMPT_LOGIN` | `false` | 为 true 时每次要求认证中心重新登录 |
+| `OIDC_AUTHORIZATION_ENDPOINT` / `OIDC_TOKEN_ENDPOINT` / `OIDC_USERINFO_ENDPOINT` | 空 | 可覆盖对应 discovery 端点，仍执行 discovery 与 issuer/JWKS 验证 |
+
+`OIDC_USE_RAW_USERNAME=true` 和非 `user` 的 `OIDC_DEFAULT_ROLE` 会阻止启动。保留空的端点覆盖项即可使用 discovery，不需要邮箱字段。配置由 API 进程启动时读取；所有 API 副本必须使用同一配置、JWT 密钥、PostgreSQL 和 Redis。
+
+更新 OIDC 配置后重建 API 使配置生效。保留部署本身使用的 env file 和全部 Compose 覆盖文件，例如生产部署：
+
 ```bash
-docker restart api-dev web-dev
+docker compose --env-file .env.prod -f docker-compose.prod.yml up -d --force-recreate api worker
 ```
 
-## 功能说明
+关闭 OIDC 后，现有 OIDC JWT 与登录结果立即拒绝使用；本地密码登录不受影响。反向代理应使用仓库 Nginx 配置中的回调日志脱敏、no-store 和 no-referrer 设置；自建网关也应隐藏回调查询参数和 Referer，并配置入口限流，禁止记录 token 请求正文。
 
-### 使用原始用户名（OIDC_USE_RAW_USERNAME=true）
-当你需要将 Yuxi 系统中已有的本地账号与 OIDC SSO 绑定，可以开启此选项。
+## 账号与会话边界
 
-**绑定原理**（无需修改数据库）：  
-系统会创建一个标记为删除的占位用户 `oidc:{sub}:{target_user_id}` 来记录 OIDC sub 与 Yuxi 用户的绑定关系，确保只有绑定过的 OIDC 身份才能登录对应的账号，**防止账号冒用**。其中 `target_user_id` 是数据库中的数值 `users.id`；用户登录标识仍使用字符串 `uid`。
+Yuxi 以已验证的 `issuer + sub` 唯一识别身份，首次登录默认自动创建普通用户，重复登录复用同一账号。显示名带随机后缀以避免名称碰撞；不会按用户名、邮箱自动合并现有账号，不恢复已注销用户，也不会自动授予管理员权限。现有账号的管理和权限仍由 Yuxi 拥有，部门声明仅在开户时使用。当前没有自助账号绑定功能。
 
-### 自动获取部门信息（OIDC_FETCH_DEPARTMENT_INFO=true）
-开启后，系统会从 OIDC userinfo 中读取部门名称和描述，自动在 Yuxi 中创建部门并将用户关联到该部门。
+OIDC 本地会话固定一小时；每次 API 访问和登录结果兑换都读取数据库中的账号及撤销状态。点击退出只撤销当前 Yuxi 会话、清除浏览器登录状态并返回 Yuxi 登录页，不访问认证中心 end_session 或结束共享 SSO。其他产品继续使用其认证中心会话；再次登录 Yuxi 可以复用仍有效的 SSO。Back-channel 通知只撤销匹配提供商及 sid/sub 的会话；合法通知重试不会重复产生副作用。
 
-- 对从 OIDC 获取的部门名称会自动做 `strip()` 去空格，并截断到 50 字符
-- 部门描述会自动截断到 255 字符
-- 如果部门名称处理后为空，会回退到使用 `OIDC_DEFAULT_DEPARTMENT` 默认部门
+认证中心仅修改 Enabled 不保证发出登出通知。没有通知时，已签发的 Yuxi 会话可使用到期；需要即时停用时，结束认证中心会话并核对通知结果，或停用 Yuxi 用户。已经开始执行的任务不由登录撤销自动取消。密码登录属于独立凭据，不随 IdP 会话结束而撤销；Yuxi 主动退出会持久撤销当前密码 JWT，旧令牌不可继续访问。
+
+业务数据库由 `app-init` 在空库建立当前 business 版本 1 与 knowledge 版本 1 基线，包含 OIDC 身份、会话、登出事件与本地 JWT 撤销表；API 与 worker 只接受精确当前版本。已有旧库需要部署者显式准备符合当前基线的数据与结构，不能仅修改版本号。历史绑定用户没有会话标识的旧 JWT 会被拒绝，需重新使用 OIDC 或密码登录。部署前保留数据库备份，具体边界见[部署指南](./deployment.md#_2-首次启动)。
+
+## 排查与验收
+
+1. 检查所有 API 实际读取相同 OIDC 配置，确认 Redirect URI 和 issuer 精确一致，API 可访问 discovery、JWKS、token 和 UserInfo。
+2. 完整走一次登录：新用户为普通用户，重复登录 ID 不变；同名本地账号不被合并，注销用户无法登录。
+3. 点击 Yuxi 退出，检查旧 JWT 访问返回 401；从认证中心结束会话，核对 back-channel 返回成功且对应本地会话同样失效。
+4. 在未配置 OIDC 的环境确认只有本地登录、无冗余第三方区域；配置不完整时 API 启动失败，不能把入口缺失当作配置成功。
+5. 身份校验或短期 state 失效会回到登录页提示重试。未知签名 kid 的远端刷新最多每 30 秒一次；认证中心轮换密钥应提前发布新公钥，若刚轮换失败，可稍后重新登录。
+
+OIDC 配置在 API 启动时校验，配置读取入口按当前进程环境创建配置对象。密码登录、OIDC 结果兑换和首次初始化使用相同登录字段与公开头像地址。
+
+授权事务有效期五分钟，结果有效期一分钟。不要分享完整回调 URL、cookie、JWT 或 token 正文；排障只提供固定错误类别和请求发生时间。API 重启不会丢失 Redis 中尚有效的事务，Redis 数据丢失时需要重新发起登录。

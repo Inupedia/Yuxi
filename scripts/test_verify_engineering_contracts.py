@@ -17,11 +17,11 @@ class EngineeringContractVerifierTest(unittest.TestCase):
         self.root = Path(self.tempdir.name)
         self._write("owner.md", "owner\n")
         self._write(
-            "backend/server/routers/valid_router.py",
+            "backend/yuxi/api/routers/valid_router.py",
             "async def route():\n    return None\n",
         )
         self._write(
-            "web/src/components/ValidComponent.vue",
+            "frontend/src/components/ValidComponent.vue",
             "<template><div>ok</div></template>\n",
         )
         for lifecycle in ("proposed", "implemented", "rejected", "archived"):
@@ -52,6 +52,20 @@ Owner 与 gate 必须在同一变更中保持一致。
 运行 verifier 及其负向测试。
 """,
         )
+        self._write("backend/test/run_tests.sh", """LIFECYCLE_E2E_TESTS=(
+    test/e2e/test_agent_lifecycle_e2e.py
+    test/e2e/test_agent_lifecycle_extended_e2e.py
+    test/e2e/test_input_projection_recovery_e2e.py
+    test/e2e/test_draft_attachments_e2e.py
+    test/e2e/test_session_cooperation_e2e.py
+    test/e2e/test_agent_lifecycle_key_scope_e2e.py
+    test/e2e/test_openai_events_e2e.py
+    test/e2e/test_agent_feedback_e2e.py
+)
+run_e2e_tests() {
+    "${PYTEST_CMD[@]}" "${LIFECYCLE_E2E_TESTS[@]}" -m e2e
+}
+""")
         self._write_valid_workflows()
         self._write_valid_agents_files()
         self._write_valid_postmortem_files()
@@ -83,6 +97,7 @@ jobs:
     paths:
       - '.env.template'
       - 'backend/**'
+      - 'docker/**'
       - 'scripts/init.sh'
       - 'scripts/init.ps1'
       - 'scripts/test_init_security.ps1'
@@ -97,16 +112,30 @@ jobs:
 """,
         )
         self._write(
-            ".github/workflows/web.yml",
+            ".github/workflows/frontend.yml",
             """on:
   pull_request:
     paths:
-      - 'web/**'
-      - '.github/workflows/web.yml'
+      - 'frontend/**'
+      - '.github/workflows/frontend.yml'
 jobs:
-  web:
+  frontend:
     steps:
       - run: pnpm run lint:check && pnpm run test:unit && pnpm run build
+""",
+        )
+        self._write(
+            ".github/workflows/service-integration.yml",
+            """on:
+  pull_request:
+    paths:
+      - 'backend/**'
+      - 'scripts/ci_run_service_integration.sh'
+      - '.github/workflows/service-integration.yml'
+jobs:
+  integration:
+    steps:
+      - run: bash scripts/ci_run_service_integration.sh
 """,
         )
         self._write(
@@ -114,21 +143,36 @@ jobs:
             """on:
   pull_request:
     paths:
-      - 'backend/package/yuxi/**'
-      - 'backend/server/**'
+      - 'backend/yuxi/**'
       - 'backend/test/integration/**'
       - 'backend/test/e2e/**'
       - 'backend/test/support/**'
+      - 'backend/test/run_tests.sh'
+      - 'docker/**'
+      - 'scripts/ci_prepare_system_tests_env.sh'
+      - 'scripts/ci_build_topology_images.sh'
       - '.github/workflows/system-tests.yml'
 jobs:
   system:
     steps:
-      - run: docker compose exec -T api uv run pytest test/integration/api/test_system_router_api.py::test_health_endpoint_is_public test/integration/api/test_system_router_api.py::test_readiness_endpoint_proves_core_runtime_dependencies test/integration/api/test_system_router_api.py::test_discovery_declares_cli_knowledge_capabilities test/integration/api/test_system_router_api.py::test_lite_startup_does_not_create_knowledge_schema -q
-      - run: docker compose exec -T api uv run pytest test/integration/services/test_agent_request_queue_concurrency.py -q
-      - run: docker compose exec -T api uv run pytest test/integration/services/test_agent_run_lease.py -q
-      - run: docker compose exec -T api uv run pytest test/integration/api/test_agent_run_result_causality.py -q
-      - run: docker compose exec -T -e E2E_USERNAME -e E2E_PASSWORD api uv run --no-sync --no-dev pytest test/e2e/test_deterministic_agent_path_e2e.py -q
-      - run: docker compose exec -T api uv run pytest test/integration/services/test_identity_admin_service.py test/integration/services/test_api_key_schema_migration.py test/integration/services/test_api_key_user_lifecycle.py test/integration/api/test_apikey_router.py -q
+      - run: docker compose exec -T api uv run --no-sync --no-dev pytest test/integration/api/test_system_router_api.py::test_health_endpoint_is_public test/integration/api/test_system_router_api.py::test_readiness_endpoint_proves_core_runtime_dependencies test/integration/api/test_system_router_api.py::test_discovery_and_openapi_declare_full_knowledge_capabilities -q
+      - run: docker compose exec -T api uv run --no-sync --no-dev pytest test/integration/services/test_schema_migration_version.py -q
+      - run: docker compose exec -T -e TEST_BASE_URL=http://127.0.0.1:1 -e CUBE_API_URL=http://127.0.0.1:1 -e TEST_USERNAME=fixture-probe -e TEST_PASSWORD=fixture-probe api uv run --no-sync --no-dev pytest test/integration/services/test_input_attachments.py -q
+      - run: docker compose exec -T api uv run --no-sync --no-dev pytest test/integration/services/test_agent_run_lease.py -q
+      - run: docker compose exec -T -e TEST_USERNAME="$E2E_USERNAME" -e TEST_PASSWORD="$E2E_PASSWORD" api uv run --no-sync --no-dev pytest test/integration/api/test_turn_result_causality.py -q
+      - run: docker compose exec -T -e TEST_USERNAME="$E2E_USERNAME" -e TEST_PASSWORD="$E2E_PASSWORD" api uv run --no-sync --no-dev pytest test/integration/api/test_chat_router.py::test_public_thread_endpoints_require_authentication test/integration/api/test_chat_router.py::test_public_create_rejects_empty_input test/integration/api/test_chat_router.py::test_public_missing_thread_and_turn_return_not_found test/integration/api/test_chat_router.py::test_public_input_rejects_unbound_attachment_without_persisting_receipt test/integration/api/test_removed_api_endpoints.py::test_removed_agent_session_entrypoints_are_unreachable test/integration/api/test_public_agents_key_boundary.py test/integration/services/test_agent_input_schema.py test/integration/services/test_project_thread_archive.py test/integration/services/test_run_stream_redis.py -q
+      - run: docker compose exec -T -e TEST_USERNAME="$E2E_USERNAME" -e TEST_PASSWORD="$E2E_PASSWORD" api uv run --no-sync --no-dev pytest test/integration/api/test_public_knowledge_tools.py::test_knowledge_key_tool_route_boundary_without_kb test/integration/api/test_public_knowledge_tools.py::test_agents_key_cannot_access_public_knowledge_api test/integration/api/test_removed_api_endpoints.py::test_public_knowledge_does_not_expose_management_routes -q
+      - run: docker compose exec -T -e TEST_USERNAME="$E2E_USERNAME" -e TEST_PASSWORD="$E2E_PASSWORD" api uv run --no-sync --no-dev pytest test/integration/api/test_chat_router.py::test_thread_message_audits_return_persisted_facts_without_leaking_into_history test/integration/api/test_chat_router.py::test_debug_messages_follow_database_sequence_and_include_unassigned_inputs -q --setup-show -o faulthandler_timeout=60
+      - run: docker compose exec -T -e TEST_USERNAME="$E2E_USERNAME" -e TEST_PASSWORD="$E2E_PASSWORD" api uv run --no-sync --no-dev pytest test/integration/api/test_chat_router.py::test_thread_artifact_uses_image_signature_for_content_type test/integration/api/test_public_agent_files.py -q
+      - run: TEST_USERNAME="$E2E_USERNAME" TEST_PASSWORD="$E2E_PASSWORD" bash backend/test/run_tests.sh e2e
+      - run: docker compose exec -T -e TEST_USERNAME="$E2E_USERNAME" -e TEST_PASSWORD="$E2E_PASSWORD" api uv run --no-sync --no-dev pytest test/integration/services/test_identity_admin_service.py test/integration/services/test_api_key_user_lifecycle.py test/integration/api/test_apikey_router.py -q
+      - run: |
+          docker compose exec -T -e TEST_USERNAME="$E2E_USERNAME" -e TEST_PASSWORD="$E2E_PASSWORD" api uv run --no-sync --no-dev pytest \\
+          test/integration/services/test_project_workdir.py::test_sessions_share_workdir_only_through_project \\
+          test/integration/services/test_user_skill_projection.py \\
+          test/integration/api/test_skill_artifact_authorization.py -q
+      - run: docker compose exec -T -e E2E_USERNAME -e E2E_PASSWORD -e CONTAINER_E2E_REPLAY_URL_TEMPLATE api uv run --no-sync --no-dev pytest test/e2e/test_container_agent_execution_e2e.py -q
+      - run: SANDBOX_CONTAINER_TEST=1 SANDBOX_CONTAINER_IMAGE="$(docker compose config --format json | jq -r '.services[\"sandbox-image\"].image')" uv run --project backend --locked --group test pytest backend/test/integration/sandbox/test_container_sandbox.py -q
 """,
         )
         self._write(
@@ -143,7 +187,7 @@ jobs:
             echo "SILICONFLOW_API_KEY repository secret is required for this manual probe." >&2
             exit 1
           fi
-      - run: docker compose exec -T -e E2E_USERNAME -e E2E_PASSWORD api uv run --no-sync --no-dev pytest test/e2e/test_agent_async_e2e.py -q
+      - run: docker compose exec -T -e E2E_USERNAME -e E2E_PASSWORD api uv run --no-sync --no-dev pytest test/e2e/test_real_provider_e2e.py -q
 """,
         )
 
@@ -153,11 +197,11 @@ jobs:
             "# 根约定\n\n见 [架构](ARCHITECTURE.md) 与 [决策](docs/develop-guides/decisions/README.md)。\n",
         )
         self._write("ARCHITECTURE.md", "# 架构\n")
+        self._write("docs/develop-guides/decisions/README.md", "# 决策记录\n")
         self._write(
-            "docs/develop-guides/decisions/README.md", "# 决策记录\n"
+            "backend/AGENTS.md", "# Backend 约定\n见 [根约定](../AGENTS.md)。\n"
         )
-        self._write("backend/AGENTS.md", "# Backend 约定\n见 [根约定](../AGENTS.md)。\n")
-        self._write("web/AGENTS.md", "# Web 约定\n见 [根约定](../AGENTS.md)。\n")
+        self._write("frontend/AGENTS.md", "# Frontend 约定\n见 [根约定](../AGENTS.md)。\n")
         self._write("docs/AGENTS.md", "# 文档约定\n见 [根约定](../AGENTS.md)。\n")
 
     def _write_valid_postmortem_files(self) -> None:
@@ -237,9 +281,7 @@ jobs:
             / "docs/develop-guides/decisions/implemented/2026-08-15-valid-decision.md"
         )
         path.write_text(
-            path.read_text(encoding="utf-8").replace(
-                "类型：process", "类型：refactor"
-            ),
+            path.read_text(encoding="utf-8").replace("类型：process", "类型：refactor"),
             encoding="utf-8",
         )
 
@@ -415,84 +457,141 @@ jobs:
 
     def test_system_workflow_cannot_narrow_owning_paths(self) -> None:
         path = self.root / ".github/workflows/system-tests.yml"
-        path.write_text(
-            path.read_text(encoding="utf-8").replace(
-                "      - 'backend/package/yuxi/**'\n", ""
-            ),
-            encoding="utf-8",
-        )
+        original = path.read_text(encoding="utf-8")
+        for owning_path in (
+            "backend/yuxi/**",
+            "backend/test/e2e/**",
+            "backend/test/support/**",
+            "docker/**",
+        ):
+            with self.subTest(owning_path=owning_path):
+                path.write_text(
+                    original.replace(f"      - '{owning_path}'\n", ""),
+                    encoding="utf-8",
+                )
+                self.assertTrue(
+                    any(
+                        "workflow PR paths 缺少 owning scope" in error
+                        and owning_path in error
+                        for error in self._errors()
+                    )
+                )
 
-        self.assertTrue(
-            any(
-                "workflow PR paths 缺少 owning scope" in error
-                for error in self._errors()
-            )
-        )
+    def test_system_workflow_required_command_cannot_be_removed(self) -> None:
+        path = self.root / ".github/workflows/system-tests.yml"
+        original = path.read_text(encoding="utf-8")
+        for test_path in (
+            "test/integration/sandbox/test_container_sandbox.py",
+            "test/e2e/test_container_agent_execution_e2e.py",
+            "test/integration/services/test_input_attachments.py",
+            'TEST_USERNAME="$E2E_USERNAME" TEST_PASSWORD="$E2E_PASSWORD" bash backend/test/run_tests.sh e2e',
+            'docker compose exec -T -e TEST_USERNAME="$E2E_USERNAME" -e TEST_PASSWORD="$E2E_PASSWORD" api uv run --no-sync --no-dev pytest test/integration/api/test_chat_router.py::test_thread_message_audits_return_persisted_facts_without_leaking_into_history test/integration/api/test_chat_router.py::test_debug_messages_follow_database_sequence_and_include_unassigned_inputs -q --setup-show -o faulthandler_timeout=60',
+            'docker compose exec -T -e TEST_USERNAME="$E2E_USERNAME" -e TEST_PASSWORD="$E2E_PASSWORD" api uv run --no-sync --no-dev pytest test/integration/api/test_chat_router.py::test_thread_artifact_uses_image_signature_for_content_type test/integration/api/test_public_agent_files.py -q',
+        ):
+            with self.subTest(test_path=test_path):
+                path.write_text(
+                    original.replace(
+                        test_path,
+                        "test/integration/services/test_removed_contract.py",
+                    ),
+                    encoding="utf-8",
+                )
+                self.assertTrue(
+                    any("缺少实际 run step" in error for error in self._errors())
+                )
 
-    def test_system_workflow_cannot_ignore_e2e_changes(self) -> None:
+    def test_e2e_runner_cannot_drop_prior_ci_coverage(self) -> None:
+        """统一入口删掉原 CI 用例或断开 selector 时拒绝。"""
+        path = self.root / "backend/test/run_tests.sh"
+        original = path.read_text()
+        for name in ("test_input_projection_recovery_e2e.py", "test_draft_attachments_e2e.py"):
+            path.write_text(original.replace(name, "removed.py"))
+            self.assertTrue(any("E2E runner" in error for error in self._errors()))
+        path.write_text(original.replace('"${LIFECYCLE_E2E_TESTS[@]}" -m e2e', 'test/other.py'))
+        self.assertTrue(any("E2E runner" in error for error in self._errors()))
+
+    def test_container_gate_cannot_drop_real_isolation_suite(self) -> None:
+        """删除 container 真实隔离专项时拒绝，不能以默认 skip 冒充通过。"""
         path = self.root / ".github/workflows/system-tests.yml"
         path.write_text(
             path.read_text(encoding="utf-8").replace(
-                "      - 'backend/test/e2e/**'\n", ""
+                "SANDBOX_CONTAINER_TEST=1",
+                "SANDBOX_CONTAINER_TEST=0",
             ),
             encoding="utf-8",
         )
-
-        self.assertTrue(
-            any(
-                "workflow PR paths 缺少 owning scope" in error
-                and "backend/test/e2e/**" in error
-                for error in self._errors()
-            )
-        )
-
-    def test_system_workflow_cannot_ignore_e2e_support_changes(self) -> None:
-        path = self.root / ".github/workflows/system-tests.yml"
-        path.write_text(
-            path.read_text(encoding="utf-8").replace(
-                "      - 'backend/test/support/**'\n", ""
-            ),
-            encoding="utf-8",
-        )
-
-        self.assertTrue(
-            any(
-                "workflow PR paths 缺少 owning scope" in error
-                and "backend/test/support/**" in error
-                for error in self._errors()
-            )
-        )
-
-    def test_deterministic_e2e_command_cannot_be_removed(self) -> None:
-        path = self.root / ".github/workflows/system-tests.yml"
-        path.write_text(
-            path.read_text(encoding="utf-8").replace(
-                "test/e2e/test_deterministic_agent_path_e2e.py",
-                "test/e2e/test_other_path.py",
-            ),
-            encoding="utf-8",
-        )
-
         self.assertTrue(any("缺少实际 run step" in error for error in self._errors()))
+
+    def test_lifecycle_boundary_guards_cannot_be_removed(self) -> None:
+        """逐项移除真实边界测试时阻断 workflow。"""
+        path = self.root / ".github/workflows/system-tests.yml"
+        original = path.read_text(encoding="utf-8")
+        for test_path in (
+            "test/integration/api/test_chat_router.py::test_public_thread_endpoints_require_authentication",
+            "test/integration/api/test_chat_router.py::test_debug_messages_follow_database_sequence_and_include_unassigned_inputs",
+            "test/integration/api/test_chat_router.py::test_public_create_rejects_empty_input",
+            "test/integration/api/test_chat_router.py::test_public_missing_thread_and_turn_return_not_found",
+            "test/integration/api/test_chat_router.py::test_public_input_rejects_unbound_attachment_without_persisting_receipt",
+            "test/integration/api/test_removed_api_endpoints.py::test_removed_agent_session_entrypoints_are_unreachable",
+            "test/integration/api/test_public_agents_key_boundary.py",
+            "test/integration/api/test_public_knowledge_tools.py::test_knowledge_key_tool_route_boundary_without_kb",
+            "test/integration/api/test_public_knowledge_tools.py::test_agents_key_cannot_access_public_knowledge_api",
+            "test/integration/api/test_removed_api_endpoints.py::test_public_knowledge_does_not_expose_management_routes",
+            "test/integration/services/test_agent_input_schema.py",
+            "test/integration/services/test_project_thread_archive.py",
+            "test/integration/services/test_run_stream_redis.py",
+        ):
+            with self.subTest(test_path=test_path):
+                path.write_text(original.replace(test_path, ""), encoding="utf-8")
+                self.assertTrue(
+                    any(
+                        "缺少实际 run step" in error and test_path in error
+                        for error in self._errors()
+                    )
+                )
+
+    def test_authenticated_system_steps_cannot_drop_credentials(self) -> None:
+        """恢复 HTTP 测试缺少账号的接线时 gate 必须拒绝。"""
+        path = self.root / ".github/workflows/system-tests.yml"
+        original = path.read_text(encoding="utf-8")
+        for credential in (
+            '-e TEST_USERNAME="$E2E_USERNAME" ',
+            '-e TEST_PASSWORD="$E2E_PASSWORD" ',
+        ):
+            with self.subTest(credential=credential):
+                path.write_text(original.replace(credential, ""), encoding="utf-8")
+                errors = self._errors()
+                for test_file in (
+                    "test_turn_result_causality.py",
+                    "test_chat_router.py",
+                    "test_apikey_router.py",
+                    "test_skill_artifact_authorization.py",
+                ):
+                    self.assertTrue(
+                        any(
+                            "缺少实际 run step" in error and test_file in error
+                            for error in errors
+                        )
+                    )
 
     def test_real_provider_probe_requires_manual_trigger(self) -> None:
         path = self.root / ".github/workflows/real-provider-probe.yml"
         path.write_text(
-            path.read_text(encoding="utf-8").replace(
-                "workflow_dispatch:", "push:"
-            ),
+            path.read_text(encoding="utf-8").replace("workflow_dispatch:", "push:"),
             encoding="utf-8",
         )
 
         self.assertTrue(
-            any("workflow 不监听 workflow_dispatch" in error for error in self._errors())
+            any(
+                "workflow 不监听 workflow_dispatch" in error for error in self._errors()
+            )
         )
 
     def test_real_provider_probe_command_cannot_be_removed(self) -> None:
         path = self.root / ".github/workflows/real-provider-probe.yml"
         path.write_text(
             path.read_text(encoding="utf-8").replace(
-                "test/e2e/test_agent_async_e2e.py",
+                "test/e2e/test_real_provider_e2e.py",
                 "test/e2e/test_other_real_provider.py",
             ),
             encoding="utf-8",
@@ -514,7 +613,7 @@ jobs:
 
     def test_router_sqlalchemy_query_builder_is_rejected(self) -> None:
         self._write(
-            "backend/server/routers/invalid_router.py",
+            "backend/yuxi/api/routers/invalid_router.py",
             "from sqlalchemy import select\n",
         )
 
@@ -527,7 +626,7 @@ jobs:
 
     def test_router_execute_and_delete_are_rejected(self) -> None:
         self._write(
-            "backend/server/routers/invalid_router.py",
+            "backend/yuxi/api/routers/invalid_router.py",
             """async def route(db, user):
     await db.execute('query')
     await db.delete(user)
@@ -538,17 +637,57 @@ jobs:
         self.assertTrue(any("db.execute" in error for error in errors))
         self.assertTrue(any("db.delete" in error for error in errors))
 
-    def test_web_api_literal_outside_api_owner_is_rejected(self) -> None:
+    def test_frontend_api_literal_outside_api_owner_is_rejected(self) -> None:
         self._write(
-            "web/src/components/InvalidComponent.vue",
+            "frontend/src/components/InvalidComponent.vue",
             "<script>fetch('/api/users')</script>\n",
         )
 
         self.assertTrue(
             any(
-                "web/src/apis 外不得拥有 /api 路径" in error for error in self._errors()
+                "frontend/src/apis 外不得拥有 /api 路径" in error for error in self._errors()
             )
         )
+
+    def test_service_workspace_host_path_bypasses_are_rejected(self) -> None:
+        cases = (
+            (
+                "from yuxi.modules.workspace.paths import user_workdir_host_dir\n",
+                "普通 Service/Repository 不得取得 UserWorkspace 宿主 Path",
+            ),
+            (
+                "import yuxi.modules.workspace.paths as workspace_paths\n",
+                "普通 Service/Repository 不得取得 UserWorkspace 宿主 Path",
+            ),
+            (
+                "from yuxi.infrastructure.runtime_settings import get_user_data_dir\n"
+                "def scan():\n"
+                "    return list((get_user_data_dir() / 'shared').iterdir())\n",
+                "普通 Service/Repository 不得取得 UserWorkspace 宿主 Path",
+            ),
+            (
+                "import os\nfrom pathlib import Path\n"
+                "def scan():\n"
+                "    return list(Path(os.environ['YUXI_USER_DATA_DIR']).iterdir())\n",
+                "不得读取 UserWorkspace 宿主根环境变量",
+            ),
+        )
+        path = "backend/yuxi/modules/agents/services/invalid_service.py"
+        for source, expected_error in cases:
+            with self.subTest(source=source):
+                self._write(path, source)
+                self.assertTrue(
+                    any(expected_error in error for error in self._errors())
+                )
+
+    def test_personal_skill_service_is_the_only_service_with_workspace_root_access(self) -> None:
+        """个人 Skill 文件 Owner 可定位用户根，其余 Service 仍被拒绝。"""
+        source = "from yuxi.modules.workspace.paths import user_workspace_dir\n"
+        self._write("backend/yuxi/modules/extensions/skills/personal.py", source)
+        self.assertFalse(any("UserWorkspace 宿主 Path" in error for error in self._errors()))
+
+        self._write("backend/yuxi/modules/extensions/skills/other.py", source)
+        self.assertTrue(any("UserWorkspace 宿主 Path" in error for error in self._errors()))
 
     def test_agents_instruction_file_missing_is_rejected(self) -> None:
         (self.root / "backend/AGENTS.md").unlink()
@@ -559,13 +698,9 @@ jobs:
 
     def test_agents_instruction_broken_link_is_rejected(self) -> None:
         path = self.root / "AGENTS.md"
-        path.write_text(
-            "# 根约定\n\n见 [断链](missing-guide.md)。\n", encoding="utf-8"
-        )
+        path.write_text("# 根约定\n\n见 [断链](missing-guide.md)。\n", encoding="utf-8")
 
-        self.assertTrue(
-            any("AGENTS 指令引用失效" in error for error in self._errors())
-        )
+        self.assertTrue(any("AGENTS 指令引用失效" in error for error in self._errors()))
 
     def test_agents_instruction_external_link_is_allowed(self) -> None:
         path = self.root / "AGENTS.md"
@@ -577,23 +712,19 @@ jobs:
         self.assertEqual(self._errors(), [])
 
     def test_agents_instruction_multiple_h1_is_rejected(self) -> None:
-        path = self.root / "web/AGENTS.md"
+        path = self.root / "frontend/AGENTS.md"
         path.write_text(
-            "# Web 约定\n\n# 重复标题\n见 [根约定](../AGENTS.md)。\n",
+            "# Frontend 约定\n\n# 重复标题\n见 [根约定](../AGENTS.md)。\n",
             encoding="utf-8",
         )
 
-        self.assertTrue(
-            any("必须有且只有一个 H1" in error for error in self._errors())
-        )
+        self.assertTrue(any("必须有且只有一个 H1" in error for error in self._errors()))
 
     def test_agents_instruction_budget_overflow_is_rejected(self) -> None:
         for relative in AGENTS_FILE_BUDGETS:
             with self.subTest(relative=relative):
                 path = self.root / relative
-                path.write_text(
-                    "# 标题\n\n" + "规则" * 3000 + "\n", encoding="utf-8"
-                )
+                path.write_text("# 标题\n\n" + "规则" * 3000 + "\n", encoding="utf-8")
 
                 self.assertTrue(
                     any(
@@ -601,6 +732,132 @@ jobs:
                         for error in self._errors()
                     )
                 )
+
+    def test_document_contrastive_negation_is_rejected(self) -> None:
+        examples = (
+            "系统不是缓存层，而是最终事实源。",
+            "质量不是取决于篇幅，而在于是否回答问题。",
+            "质量并非由篇幅决定，而在于是否回答问题。",
+            "问题不在于缓存大小，而是缓存失效没有边界。",
+        )
+        for prose in examples:
+            with self.subTest(prose=prose):
+                self._write(
+                    "docs/advanced/invalid-prose.md",
+                    f"# 无效文案\n\n{prose}\n",
+                )
+
+                self.assertTrue(
+                    any("禁止对举式否定" in error for error in self._errors())
+                )
+
+    def test_document_contrastive_negation_in_code_fence_is_allowed(self) -> None:
+        self._write(
+            "docs/advanced/quoted-prose.md",
+            "# 引用示例\n\n```text\n系统不是缓存层，而是最终事实源。\n```\n",
+        )
+
+        self.assertEqual(self._errors(), [])
+
+    def test_document_contrastive_negation_in_list_fence_is_allowed(self) -> None:
+        self._write(
+            "docs/advanced/list-fence.md",
+            "# 列表示例\n\n- 示例\n\n    ```text\n    系统不是缓存层，而是最终事实源。\n    ```\n",
+        )
+
+        self.assertEqual(self._errors(), [])
+
+    def test_document_contrastive_negation_in_blockquote_fence_is_allowed(
+        self,
+    ) -> None:
+        self._write(
+            "docs/advanced/blockquote-fence.md",
+            "# 引用示例\n\n> ```text\n> 系统不是缓存层，而是最终事实源。\n> ```\n",
+        )
+
+        self.assertEqual(self._errors(), [])
+
+    def test_deeper_blockquote_marker_does_not_close_outer_fence(self) -> None:
+        self._write(
+            "docs/advanced/nested-blockquote-fence.md",
+            "# 嵌套引用示例\n\n> ```text\n>> ```\n> 系统不是缓存层，而是最终事实源。\n> ```\n",
+        )
+
+        self.assertEqual(self._errors(), [])
+
+    def test_document_precise_exclusion_is_allowed(self) -> None:
+        self._write(
+            "docs/advanced/security-boundary.md",
+            "# 安全边界\n\n客户端发送 JWT，而不是账户密码。\n",
+        )
+
+        self.assertEqual(self._errors(), [])
+
+    def test_document_historical_transition_is_allowed(self) -> None:
+        self._write(
+            "docs/develop-guides/changelog.md",
+            "# 变更记录\n\n从 2.0 起，接口不再返回旧字段，而是返回新结构。\n",
+        )
+
+        self.assertEqual(self._errors(), [])
+
+    def test_four_space_indented_fence_cannot_hide_following_prose(self) -> None:
+        self._write(
+            "docs/advanced/indented-fence.md",
+            "# 缩进示例\n\n    ```text\n\n系统不是缓存层，而是最终事实源。\n",
+        )
+
+        self.assertTrue(any("禁止对举式否定" in error for error in self._errors()))
+
+    def test_shorter_fence_cannot_close_longer_fence(self) -> None:
+        self._write(
+            "docs/advanced/long-fence.md",
+            "# 长围栏\n\n````text\n```\n系统不是缓存层，而是最终事实源。\n````\n",
+        )
+
+        self.assertEqual(self._errors(), [])
+
+    def test_unclosed_blockquote_fence_cannot_hide_following_prose(self) -> None:
+        self._write(
+            "docs/advanced/unclosed-blockquote-fence.md",
+            "# 引用示例\n\n> ```text\n> 示例\n系统不是缓存层，而是最终事实源。\n",
+        )
+
+        self.assertTrue(any("禁止对举式否定" in error for error in self._errors()))
+
+    def test_unclosed_list_fence_cannot_hide_following_prose(self) -> None:
+        self._write(
+            "docs/advanced/unclosed-list-fence.md",
+            "# 列表示例\n\n- 示例\n\n    ```text\n    示例\n\n系统不是缓存层，而是最终事实源。\n",
+        )
+
+        self.assertTrue(any("禁止对举式否定" in error for error in self._errors()))
+
+    def test_nested_list_fence_cannot_hide_outer_item_prose(self) -> None:
+        self._write(
+            "docs/advanced/nested-list-fence.md",
+            "# 列表示例\n\n- 外层\n  - 内层\n"
+            "    ```text\n    fence 内容\n"
+            "  系统不是缓存层，而是最终事实源。\n",
+        )
+
+        self.assertTrue(any("禁止对举式否定" in error for error in self._errors()))
+
+    def test_vibe_drafts_are_excluded_from_prose_check(self) -> None:
+        self._write(
+            "docs/vibe/2026-08-17-personal-note.md",
+            "# 临时计划\n\n系统不是缓存层，而是最终事实源。\n",
+        )
+
+        self.assertEqual(self._errors(), [])
+
+    def test_node_modules_markdown_is_excluded_from_prose_check(self) -> None:
+        self._write(
+            "docs/node_modules/example/README.md",
+            "# README\n\n系统不是缓存层，而是最终事实源。\n",
+        )
+
+        self.assertEqual(self._errors(), [])
 
     def test_proposed_decision_missing_acceptance_heading_is_rejected(self) -> None:
         self._write(
@@ -639,7 +896,9 @@ Owner：owner.md
         )
 
         self.assertTrue(
-            any("proposed 验收标准缺少证据矩阵表头" in error for error in self._errors())
+            any(
+                "proposed 验收标准缺少证据矩阵表头" in error for error in self._errors()
+            )
         )
 
     def test_proposed_decision_empty_evidence_matrix_is_rejected(self) -> None:
@@ -670,7 +929,10 @@ Owner：owner.md
         )
 
         self.assertTrue(
-            any("proposed 验收标准缺少证据矩阵数据行" in error for error in self._errors())
+            any(
+                "proposed 验收标准缺少证据矩阵数据行" in error
+                for error in self._errors()
+            )
         )
 
     def test_proposed_evidence_matrix_empty_cell_is_rejected(self) -> None:
@@ -702,7 +964,9 @@ Owner：owner.md
         )
 
         self.assertTrue(
-            any("proposed 证据矩阵必须填写全部六列" in error for error in self._errors())
+            any(
+                "proposed 证据矩阵必须填写全部六列" in error for error in self._errors()
+            )
         )
 
     def test_proposed_evidence_matrix_unknown_result_is_rejected(self) -> None:
@@ -784,8 +1048,18 @@ Owner：owner.md
         )
 
         errors = self._errors()
-        self.assertTrue(any("simplification ## 验证 缺少：旧能力不存在：" in error for error in errors))
-        self.assertTrue(any("simplification ## 验证 缺少：重新引入条件：" in error for error in errors))
+        self.assertTrue(
+            any(
+                "simplification ## 验证 缺少：旧能力不存在：" in error
+                for error in errors
+            )
+        )
+        self.assertTrue(
+            any(
+                "simplification ## 验证 缺少：重新引入条件：" in error
+                for error in errors
+            )
+        )
 
     def test_postmortem_readme_missing_is_rejected(self) -> None:
         (self.root / "docs/develop-guides/postmortems/README.md").unlink()
@@ -809,7 +1083,10 @@ Owner：owner.md
         )
 
         self.assertTrue(
-            any("postmortem 模板缺少标题：## 防复发措施" in error for error in self._errors())
+            any(
+                "postmortem 模板缺少标题：## 防复发措施" in error
+                for error in self._errors()
+            )
         )
 
     def test_postmortem_template_empty_heading_is_rejected(self) -> None:
@@ -822,7 +1099,10 @@ Owner：owner.md
         )
 
         self.assertTrue(
-            any("postmortem 模板标题下没有内容：## 防复发措施" in error for error in self._errors())
+            any(
+                "postmortem 模板标题下没有内容：## 防复发措施" in error
+                for error in self._errors()
+            )
         )
 
     def test_rejected_decision_missing_rejection_reason_is_rejected(self) -> None:
@@ -889,9 +1169,10 @@ Owner：owner.md
             {
                 ".github/workflows/trust.yml",
                 ".github/workflows/test.yml",
-                ".github/workflows/web.yml",
+                ".github/workflows/frontend.yml",
                 ".github/workflows/system-tests.yml",
                 ".github/workflows/real-provider-probe.yml",
+                ".github/workflows/service-integration.yml",
             },
         )
 

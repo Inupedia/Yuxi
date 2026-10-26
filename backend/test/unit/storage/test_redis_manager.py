@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import pytest
-import yuxi.storage.redis.manager as redis_manager
-from yuxi.storage.redis import RedisConfig
+
+import yuxi.infrastructure.redis.manager as redis_manager
+from yuxi.infrastructure.redis import RedisConfig
 
 pytestmark = pytest.mark.unit
 
@@ -35,6 +36,46 @@ class _FakeAsyncRedis:
 
     async def aclose(self):
         self.closed = True
+
+
+def test_redis_config_reads_connection_capacity(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("REDIS_MAX_CONNECTIONS", "128")
+
+    assert RedisConfig.from_env().max_connections == 128
+
+
+@pytest.mark.parametrize("value", ["", "invalid", "0", "-1"])
+def test_redis_config_rejects_invalid_connection_capacity(
+    monkeypatch: pytest.MonkeyPatch,
+    value: str,
+):
+    monkeypatch.setenv("REDIS_MAX_CONNECTIONS", value)
+
+    with pytest.raises(RuntimeError, match="REDIS_MAX_CONNECTIONS"):
+        RedisConfig.from_env()
+
+
+def test_redis_config_validates_capacity_before_timeouts(monkeypatch: pytest.MonkeyPatch):
+    """多个配置同时非法时，容量错误仍先于超时解析错误。"""
+    monkeypatch.setenv("REDIS_MAX_CONNECTIONS", "invalid")
+    monkeypatch.setenv("REDIS_SOCKET_TIMEOUT", "invalid")
+
+    with pytest.raises(RuntimeError, match="REDIS_MAX_CONNECTIONS"):
+        RedisConfig.from_env()
+
+
+@pytest.mark.parametrize(
+    ("url", "expected"),
+    [
+        ("redis://:secret@redis:6379/0", "redis://:***@redis:6379/0"),
+        ("redis://user:secret@redis:6379/0", "redis://user:***@redis:6379/0"),
+        ("redis://user:pa%40ss@redis:6379/0", "redis://user:***@redis:6379/0"),
+        ("redis://redis:6379/0", "redis://redis:6379/0"),
+    ],
+)
+def test_redact_redis_url_hides_password_and_preserves_username(url: str, expected: str):
+    """日志地址只替换密码，保留用户名便于排障。"""
+    assert redis_manager.redact_redis_url(url) == expected
 
 
 def test_create_sync_redis_client_uses_config_and_pings(monkeypatch: pytest.MonkeyPatch):
@@ -125,3 +166,28 @@ async def test_get_async_redis_client_caches_and_closes_client(monkeypatch: pyte
     assert client_2 is fake_client
     assert create_calls == 1
     assert fake_client.closed is True
+
+
+def test_get_arq_redis_settings_preserves_connection_capacity():
+    settings = redis_manager.get_arq_redis_settings(RedisConfig(url="redis://redis:6379/2", max_connections=7))
+
+    assert settings.database == 2
+    assert settings.max_connections == 7
+
+
+@pytest.mark.asyncio
+async def test_create_arq_redis_pool_uses_configured_connection_capacity(monkeypatch: pytest.MonkeyPatch):
+    arq_connections = pytest.importorskip("arq.connections")
+    captured = {}
+
+    async def fake_create_pool(settings):
+        captured["settings"] = settings
+        return "pool"
+
+    monkeypatch.setattr(arq_connections, "create_pool", fake_create_pool)
+
+    pool = await redis_manager.create_arq_redis_pool(RedisConfig(url="redis://redis:6379/3", max_connections=11))
+
+    assert pool == "pool"
+    assert captured["settings"].database == 3
+    assert captured["settings"].max_connections == 11

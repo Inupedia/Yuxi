@@ -1,6 +1,11 @@
 import json
+from io import BytesIO
 
-from yuxi.storage.minio.client import MinIOClient, normalize_public_minio_url
+import pytest
+from minio.error import S3Error
+from urllib3 import HTTPResponse
+
+from yuxi.infrastructure.minio.client import MinIOClient, normalize_public_minio_url
 
 
 class FakeMinio:
@@ -34,21 +39,35 @@ def test_public_image_uses_same_origin_url_without_bucket_listing(monkeypatch):
     assert actions == ["s3:GetObject"]
 
 
-def test_legacy_public_minio_url_is_normalized_to_same_origin(monkeypatch):
+@pytest.mark.parametrize(
+    ("url", "expected"),
+    [
+        (
+            "http://example.test:9000/public/avatar/user.png",
+            "/minio/public/avatar/user.png",
+        ),
+        ("https://cdn.example.test/public/user.png", "https://cdn.example.test/public/user.png"),
+        (
+            "http://example.test:9000/public/avatar/user.png?v=123#preview",
+            "/minio/public/avatar/user.png?v=123#preview",
+        ),
+    ],
+)
+def test_legacy_public_minio_url_is_normalized(monkeypatch, url, expected):
     monkeypatch.setenv("MINIO_PUBLIC_URL", "/minio")
 
-    assert (
-        normalize_public_minio_url("http://example.test:9000/public/avatar/user.png") == "/minio/public/avatar/user.png"
-    )
-    assert normalize_public_minio_url("https://cdn.example.test/public/user.png") == (
-        "https://cdn.example.test/public/user.png"
-    )
+    assert normalize_public_minio_url(url) == expected
 
 
-def test_legacy_public_minio_url_preserves_query_and_fragment(monkeypatch):
-    monkeypatch.setenv("MINIO_PUBLIC_URL", "/minio")
+@pytest.mark.asyncio
+async def test_delete_prefix_is_idempotent_when_bucket_does_not_exist():
+    client = MinIOClient()
 
-    assert (
-        normalize_public_minio_url("http://example.test:9000/public/avatar/user.png?v=123#preview")
-        == "/minio/public/avatar/user.png?v=123#preview"
-    )
+    class MissingBucketClient:
+        def list_objects(self, *_args, **_kwargs):
+            response = HTTPResponse(BytesIO(b""), status=404)
+            raise S3Error(response, "NoSuchBucket", "Not found", "kb-images", "request_id", "host_id")
+
+    client._client = MissingBucketClient()
+
+    assert await client.adelete_objects_by_prefix("kb-images", "kb-1/") == 0

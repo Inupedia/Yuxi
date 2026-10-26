@@ -4,44 +4,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from yuxi.knowledge.base import KnowledgeBase
-from yuxi.services.file_preview import MAX_BINARY_PREVIEW_SIZE_BYTES
-
-
-class FakeKnowledgeBase(KnowledgeBase):
-    @property
-    def kb_type(self) -> str:
-        return "fake"
-
-    async def _create_kb_instance(self, kb_id: str, embedding_model_spec: str | None):
-        return None
-
-    async def _initialize_kb_instance(self, instance) -> None:
-        pass
-
-    async def index_file(self, kb_id: str, file_id: str, operator_id: str | None = None) -> dict:
-        return {}
-
-    async def update_content(self, kb_id: str, file_ids: list[str], params: dict | None = None) -> list[dict]:
-        return []
-
-    async def aquery(self, query_text: str, kb_id: str, **kwargs) -> list[dict]:
-        return []
-
-    def get_query_params_config(self, kb_id: str, **kwargs) -> dict:
-        return {"options": []}
-
-    async def delete_file(self, kb_id: str, file_id: str) -> None:
-        pass
-
-    async def get_file_basic_info(self, kb_id: str, file_id: str) -> dict:
-        return {}
-
-    async def get_file_content(self, kb_id: str, file_id: str) -> dict:
-        return {}
-
-    async def get_file_info(self, kb_id: str, file_id: str) -> dict:
-        return {}
+from yuxi.modules.knowledge import preview
+from yuxi.shared.files import MAX_FILE_PREVIEW_BYTES
+from yuxi.infrastructure.minio import ObjectSizeLimitError
+from test.unit.support.knowledge import make_knowledge_file_record
 
 
 class FakeMinioClient:
@@ -54,8 +20,11 @@ class FakeMinioClient:
         content = self.objects.get((bucket_name, object_name))
         return len(content) if content is not None else None
 
-    async def adownload_file(self, bucket_name: str, object_name: str) -> bytes:
-        return self.objects[(bucket_name, object_name)]
+    async def adownload_file(self, bucket_name: str, object_name: str, *, max_bytes: int | None = None) -> bytes:
+        content = self.objects[(bucket_name, object_name)]
+        if max_bytes is not None and len(content) > max_bytes:
+            raise ObjectSizeLimitError("object exceeds read limit")
+        return content
 
     async def aupload_file(
         self,
@@ -69,42 +38,35 @@ class FakeMinioClient:
         return SimpleNamespace(url=f"http://localhost:9000/{bucket_name}/{object_name}")
 
 
-def make_kb(tmp_path) -> FakeKnowledgeBase:
-    kb = FakeKnowledgeBase(str(tmp_path))
-    kb.test_file_meta = {
+def make_file_record(**overrides) -> SimpleNamespace:
+    values = {
         "file_id": "file1",
         "kb_id": "db1",
         "filename": "demo.docx",
         "path": "minio://knowledgebases/db1/upload/demo.docx",
-        "markdown_file": "minio://knowledgebases/db1/parsed/file1.md",
-        "status": "parsed",
+        "file_size": None,
     }
-
-    async def load_file_meta(kb_id: str, file_id: str, *, refresh: bool = False) -> dict:
-        assert kb_id == "db1"
-        assert file_id == "file1"
-        return kb.test_file_meta
-
-    kb._load_file_meta = load_file_meta
-    return kb
+    values.update(overrides)
+    return make_knowledge_file_record(**values)
 
 
-def test_office_file_entry_exposes_logical_file_availability(tmp_path) -> None:
-    kb = make_kb(tmp_path)
+def stub_file_record(monkeypatch: pytest.MonkeyPatch, record: SimpleNamespace) -> None:
+    async def get_by_file_id(file_id: str):
+        assert file_id == record.file_id
+        return record
 
-    entry = kb._knowledge_file_entry("db1", "file1", kb.test_file_meta)
-
-    assert "preview_modes" not in entry
-    assert "default_preview_mode" not in entry
+    monkeypatch.setattr(
+        preview,
+        "KnowledgeFileRepository",
+        lambda: SimpleNamespace(get_by_file_id=get_by_file_id),
+    )
 
 
 @pytest.mark.asyncio
-async def test_read_office_pdf_preview_converts_and_caches_pdf(tmp_path, monkeypatch) -> None:
-    kb = make_kb(tmp_path)
+async def test_read_office_pdf_preview_converts_and_caches_pdf(monkeypatch: pytest.MonkeyPatch) -> None:
+    stub_file_record(monkeypatch, make_file_record())
     minio_client = FakeMinioClient()
     minio_client.objects[("knowledgebases", "db1/upload/demo.docx")] = b"office"
-    minio_client.objects[("knowledgebases", "db1/parsed/file1.md")] = b"# parsed"
-
     convert_calls = 0
 
     async def fake_convert(filename: str, content: bytes) -> bytes:
@@ -114,11 +76,11 @@ async def test_read_office_pdf_preview_converts_and_caches_pdf(tmp_path, monkeyp
         assert content == b"office"
         return b"%PDF-1.4\nconverted"
 
-    monkeypatch.setattr("yuxi.storage.minio.get_minio_client", lambda: minio_client)
-    monkeypatch.setattr("yuxi.knowledge.base.convert_office_to_pdf", fake_convert)
+    monkeypatch.setattr(preview, "get_minio_client", lambda: minio_client)
+    monkeypatch.setattr(preview, "convert_office_to_pdf", fake_convert)
 
-    response = await kb.read_file_preview("db1", "file1")
-    cached_response = await kb.read_file_preview("db1", "file1")
+    response = await preview.read_knowledge_file_preview("db1", "file1")
+    cached_response = await preview.read_knowledge_file_preview("db1", "file1")
 
     assert response["preview_type"] == "pdf"
     assert response["supported"] is True
@@ -131,32 +93,88 @@ async def test_read_office_pdf_preview_converts_and_caches_pdf(tmp_path, monkeyp
 
 
 @pytest.mark.asyncio
-async def test_non_docx_pptx_office_files_do_not_get_pdf_preview(tmp_path, monkeypatch) -> None:
-    kb = make_kb(tmp_path)
-    kb.test_file_meta["filename"] = "demo.xlsx"
+async def test_non_docx_pptx_office_files_do_not_get_pdf_preview(monkeypatch: pytest.MonkeyPatch) -> None:
+    stub_file_record(monkeypatch, make_file_record(filename="demo.xlsx"))
     minio_client = FakeMinioClient()
     minio_client.objects[("knowledgebases", "db1/upload/demo.docx")] = b"PK\x03\x04excel"
-    monkeypatch.setattr("yuxi.storage.minio.get_minio_client", lambda: minio_client)
+    monkeypatch.setattr(preview, "get_minio_client", lambda: minio_client)
 
-    response = await kb.read_file_preview("db1", "file1")
+    response = await preview.read_knowledge_file_preview("db1", "file1")
 
     assert response["preview_type"] == "unsupported"
     assert response["supported"] is False
 
 
 @pytest.mark.asyncio
-async def test_read_file_preview_rejects_large_original_before_download(tmp_path, monkeypatch) -> None:
-    kb = make_kb(tmp_path)
-    kb.test_file_meta["filename"] = "large.pdf"
-    kb.test_file_meta["size"] = MAX_BINARY_PREVIEW_SIZE_BYTES + 1
+async def test_read_binary_preview_uses_complete_renderer_result(monkeypatch: pytest.MonkeyPatch) -> None:
+    stub_file_record(monkeypatch, make_file_record(filename="report.bin", file_size=16))
+    minio_client = FakeMinioClient()
+    content = b"%PDF-1.4\nreport"
+    minio_client.objects[("knowledgebases", "db1/upload/demo.docx")] = content
+    monkeypatch.setattr(preview, "get_minio_client", lambda: minio_client)
 
-    async def fail_read(_path: str) -> bytes:
-        raise AssertionError("large preview should not download file content")
+    response = await preview.read_knowledge_file_preview("db1", "file1")
 
-    monkeypatch.setattr(kb, "_read_minio_bytes", fail_read)
+    assert response["content"] == content
+    assert response["preview_type"] == "pdf"
+    assert response["supported"] is True
+    assert response["media_type"] == "application/pdf"
+    assert response["binary"] is True
+    assert response["filename"] == "report.bin"
 
-    response = await kb.read_file_preview("db1", "file1")
+
+@pytest.mark.asyncio
+async def test_read_file_preview_rejects_large_original_before_download(monkeypatch: pytest.MonkeyPatch) -> None:
+    stub_file_record(
+        monkeypatch,
+        make_file_record(filename="large.pdf", file_size=MAX_FILE_PREVIEW_BYTES + 1),
+    )
+
+    def fail_minio_access():
+        raise AssertionError("large preview should not access MinIO")
+
+    monkeypatch.setattr(preview, "get_minio_client", fail_minio_access)
+
+    response = await preview.read_knowledge_file_preview("db1", "file1")
 
     assert response["preview_type"] == "unsupported"
     assert response["supported"] is False
-    assert response["limit"] == MAX_BINARY_PREVIEW_SIZE_BYTES
+    assert response["limit"] == MAX_FILE_PREVIEW_BYTES
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("filename", ["report.pdf", "report.docx", "report.pptx"])
+@pytest.mark.parametrize("file_size", [0, None])
+async def test_read_file_preview_rejects_actual_oversize_before_conversion_or_cache(
+    monkeypatch: pytest.MonkeyPatch, filename: str, file_size: int | None
+) -> None:
+    stub_file_record(monkeypatch, make_file_record(filename=filename, file_size=file_size))
+    minio_client = FakeMinioClient()
+    minio_client.objects[("knowledgebases", "db1/upload/demo.docx")] = b"123456789"
+
+    async def unknown_stat(_bucket, _object):
+        return None
+
+    async def fail_conversion(_filename, _content):
+        raise AssertionError("oversized source must not be converted")
+
+    monkeypatch.setattr(minio_client, "astat_file", unknown_stat)
+    monkeypatch.setattr(preview, "get_minio_client", lambda: minio_client)
+    monkeypatch.setattr(preview, "MAX_FILE_PREVIEW_BYTES", 8)
+    monkeypatch.setattr(preview, "convert_office_to_pdf", fail_conversion)
+
+    response = await preview.read_knowledge_file_preview("db1", "file1")
+
+    assert response["content"] is None
+    assert response["preview_type"] == "unsupported"
+    assert response["supported"] is False
+    assert response["message"] == "文件过大，当前仅支持 30 MB 以内的文件预览"
+    assert ("knowledgebases", "db1/preview/file1.pdf") not in minio_client.objects
+
+
+@pytest.mark.asyncio
+async def test_read_file_preview_rejects_folder(monkeypatch: pytest.MonkeyPatch) -> None:
+    stub_file_record(monkeypatch, make_file_record(is_folder=True))
+
+    with pytest.raises(ValueError, match="folder"):
+        await preview.read_knowledge_file_preview("db1", "file1")

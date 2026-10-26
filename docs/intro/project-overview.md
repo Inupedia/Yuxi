@@ -1,78 +1,90 @@
-# 项目简介
+# 认识 Yuxi
 
-Yuxi (语析) 是一个智能知识库和知识图谱 Agent 开发平台，能够帮助你构建结合检索增强生成 (RAG) 与知识图谱推理的生产级 AI 应用。该平台基于 LangGraph、Vue.js 3、FastAPI、Milvus 和 Neo4j 构建，提供创建对话式 AI 系统所需的智能体编排、知识检索、图谱推理、工具调用和文件系统能力。
+Yuxi（语析）是一个可私有部署的知识智能体平台。它把知识库检索、知识图谱、智能体编排、工具调用和文件产物放在同一个工作区里，适合需要自己管理数据、模型和团队权限的组织。
 
-## 设计理念
+## Yuxi 适合什么场景
 
-项目的设计目标是为开发者提供一个易于上手、功能强大的 AI 应用开发框架。我们坚持以下原则：
+Yuxi 适合下面几类工作：
 
-- **技术栈简洁**：选择主流且成熟的技术，降低学习和维护成本
-- **MIT 开源协议**：完全开源，允许自由使用和二次开发
-- **容器化部署**：通过 Docker Compose 管理，简化部署流程
+- 用企业内部资料搭建带来源的问答和检索应用。
+- 让智能体调用搜索、MCP、Skills、会话协作和沙盒工具，完成多步骤任务。
+- 对知识库的检索质量和智能体的任务表现进行评估。
+- 在用户、部门和管理员之间划分知识库、智能体和扩展能力的访问范围。
 
-## 技术架构
+如果只需要一个不带权限和文件操作的单文档聊天页面，Yuxi 的能力会偏多。
 
-| 层级 | 技术 | 用途 |
-|------|------|------|
-| 前端 | Vue.js 3, Vite, Ant Design Vue | 现代响应式 UI 框架与组件库 |
-| 状态管理 | Pinia | 前端集中式状态管理 |
-| 后端 API | FastAPI, Uvicorn | 高性能异步 Python Web 框架 |
-| Agent 框架 | LangGraph | Agent 编排、状态管理与 checkpoint |
-| 知识库 | Milvus（可建库入库）、Dify / Notion（只读连接器） | 向量知识库 RAG 与外部只读数据源检索 |
-| 图数据库 | Neo4j | Milvus 知识库内知识图谱存储与查询 |
-| 文档处理 | MinerU, PaddleX, RapidOCR | 多格式文档解析与 OCR |
-| 任务队列 | Redis, PostgreSQL Workers | 异步任务处理 |
-| 对象存储 | MinIO | 文件与文档存储 |
-| 关系型数据库 | PostgreSQL | 元数据与用户数据持久化 |
-| 部署 | Docker, Docker Compose | 容器化部署与编排 |
+## 三个核心概念
 
+- **智能体（Agent）**：由模型、提示词、工具、知识库、Skills、MCP 组成的可复用配置；Session 是独立上下文和输入队列的会话实例。
+- **知识库**：Milvus 知识库保存文档并提供解析、分块、检索和图谱；飞书、Dify、Notion 连接器按配置的凭据只读访问外部内容。
+- **Workdir**：一个 Project 在用户工作区中的持久目录。智能体、文件查看器和交付物接口可以从不同入口访问同一份文件字节。
 
-## 核心能力
+## 能力概览
 
-Yuxi 的核心能力不在于“把大模型接进来”，而在于把 **智能体开发、知识库/RAG、知识图谱** 放进同一套系统里，并让它们在运行时真正协同工作。
+### 智能体与任务执行
 
-### 1. 面向真实业务的智能体开发
+Yuxi 使用 LangGraph 组织智能体运行。用户可以创建私有智能体，在授权范围内选择模型、工具、MCP 和 Skills；管理员还可发布共享定义。请求由独立 worker 执行，事件通过服务端事件流（SSE）发送到前端，结果和运行状态保存到 PostgreSQL。
 
-Yuxi 基于 LangGraph 提供智能体开发能力，不只是一个固定问答入口，而是一套可配置、可扩展的 Agent 运行框架。开发者可以围绕同一个 Agent 配置模型、提示词、工具、MCP、Skills、子智能体与中间件，使“对话能力”变成“可编排的业务能力”。
+工具可以读取和修改 Workdir 中的文件、执行沙盒命令、搜索网页、请求用户审批或创建协作会话。协作成员使用独立上下文、共享项目文件，用户可进入成员会话回答问题、审批或调整方向，见[会话协作](../agents/session-cooperation.md)。完成的文件可以在界面中预览和下载。
 
-这一层是项目的控制中心，决定了模型如何调用工具、如何访问知识、如何接入文件系统以及如何与其他子智能体协作。
+### 知识库与 RAG
 
-### 2. 知识库与 RAG 一体化能力
+Milvus 知识库支持文档上传、解析、分块和索引，提供向量、BM25 与混合检索；用户可从命中片段和回答引用继续核对来源正文。外部知识源通过只读连接器查询，支持的操作由连接器决定，不在 Yuxi 中上传或同步源文档。
 
-Yuxi 提供完整的知识入库链路，而不是只做检索接口封装。文档从上传开始，会经过解析、分块、向量化、检索配置和评估等阶段，最终成为 Agent 可直接调用的知识来源。
+外部应用通过[知识库 API](../advanced/knowledge-base-api.md)或[知识库 MCP](../advanced/knowledge-mcp.md)查询和阅读授权范围内的资料。
 
-将组织的文档转换为智能对话助手。上传 PDF 手册、技术规格、政策文档和培训材料，以创建可搜索、具备推理能力的知识库，员工可以使用自然语言查询。
-该系统能够理解复杂的问题，并提供带有来源引用的上下文感知答案。
+### 知识图谱
 
+管理员在 Milvus 知识库详情页配置抽取模型并提交构建任务，系统从已索引的文档块中抽取实体和关系并写入 Neo4j。图谱完成后可以查询、浏览关联，并与文本块检索融合，见[知识图谱](../advanced/knowledge-base-graph.md)。
 
-### 3. 知识图谱参与推理，而不只是展示
+### 团队治理
 
-Yuxi 的知识图谱能力不是孤立的可视化模块，而是和 Milvus 知识库入库链路联动的。系统可以从已入库 chunks 中抽取实体和关系，写入 Neo4j 与 PostgreSQL 并为唯一实体/三元组建立 Milvus 语义索引；检索时可召回图谱实体与三元组，并与 chunk 命中结果融合（RRF），在知识库详情页展示和检索子图。
+Yuxi 提供用户、部门、共享范围、模型供应商和 API Key 管理。外部应用通过 APP 与终端用户身份隔离会话，资源访问由后端授权，见[资源权限](../mechanisms/resource-permissions.md)和[API Key 接入](../advanced/api-key-integration.md)。
 
-### 4. 面向生产落地的文档理解与平台能力
+## 系统如何协作
 
-为了让知识真正可用，Yuxi 集成了 MinerU、PP-Structure-V3、RapidOCR、DeepSeek OCR 等解析能力，覆盖 PDF、Office、Markdown、图片等常见格式，解决原始资料进入系统前的结构化处理问题。
+一次普通的智能体请求大致经过这条链路：
 
-在此基础上，平台还补齐了业务落地常用的工程能力，例如：
+```text
+Web / CLI / 外部 API
+        ↓
+FastAPI 接收请求并保存 Input 原文、Receipt
+        ↓
+调度器消费就绪输入，创建 Message、Turn 与 Run
+        ↓  消费事务提交后
+Redis / ARQ 投递 AgentRun
+        ↓
+Worker 执行 LangGraph，写入事件和最终结果
+        ↓
+PostgreSQL 保存状态，前端通过 SSE 获取过程
+```
 
-- 部门与权限管理
-- 内容审查与守卫能力
-- 文件管理与任务管理
-- Docker Compose 部署与热重载开发
+这些组件的分工是：PostgreSQL 保存业务状态、知识库元数据和 LangGraph checkpoint，Redis 负责投递、短期事件、取消信号和缓存，MinIO 保存对象文件，Milvus 提供向量检索，Neo4j 保存可选的知识图谱。各组件在运行链路中的具体职责见[机制详解](../mechanisms/index.md)。
 
+## 部署与沙盒
 
-## 适用场景
+开发环境和单机部署使用 Docker Compose，默认启动知识库、图谱和评估所需的完整拓扑。应用通过 Cube 适配器访问每个用户的持久 VM，执行节点要求 Linux/KVM；模板与部署边界见[生产部署](../advanced/deployment.md)与[沙盒配置与运维](../advanced/sandbox-operations.md)。
 
-Yuxi 适用于以下场景：
+开发环境和默认服务拓扑以仓库根目录的 [ARCHITECTURE.md](https://github.com/xerrors/Yuxi/blob/main/ARCHITECTURE.md) 与 [docker-compose.yml](https://github.com/xerrors/Yuxi/blob/main/docker-compose.yml) 为准。
 
-- **企业知识库**：构建私有知识问答系统
-- **智能客服**：基于文档的自动问答
-- **知识管理**：文档自动解析、分类、构建图谱
-- **AI 应用开发**：快速构建基于大模型的应用原型
+## 技术栈
 
-## 下一步
+| 层 | 技术 | 主要职责 |
+| --- | --- | --- |
+| 前端 | Vue 3、Vite、Pinia | 工作区、配置界面和实时运行展示 |
+| API 与运行时 | FastAPI、LangGraph、ARQ | 请求接入、智能体编排和后台执行 |
+| 持久化 | PostgreSQL | 业务状态、知识库元数据和 checkpoint |
+| 缓存与事件 | Redis | 投递、短期事件、取消和缓存 |
+| 对象与检索 | MinIO、Milvus、Neo4j | 文件对象、向量索引和知识图谱 |
+| 文档处理 | MinerU、PaddleX、docling、RapidOCR 等 | 文档解析、版面分析和 OCR |
+| 部署 | Docker Compose | 开发与单机部署拓扑 |
 
-- 快速开始：阅读 [快速开始指南](./quick-start.md)
-- 模型配置：阅读 [模型配置](./model-config.md)
-- 知识库使用：阅读 [知识库与知识图谱](./knowledge-base.md)
-- 智能体开发：阅读 [智能体开发](../agents/agents-config.md)
+Yuxi 本体使用 MIT License；Compose 引入的第三方组件遵循各自许可证，生产部署和再分发边界见[生产部署指南](../advanced/deployment.md)。
+
+## 从这里开始
+
+- [快速开始](./quick-start.md)：启动一套可用的开发环境。
+- [模型配置](./model-config.md)：接入聊天、嵌入和重排模型。
+- [知识库与知识图谱](./knowledge-base.md)：创建知识库并让智能体检索文档。
+- [智能体配置](../agents/agents-config.md)：了解配置字段如何进入运行时。
+- [机制详解](../mechanisms/index.md)：深入查看沙盒、上下文压缩和知识库链路。

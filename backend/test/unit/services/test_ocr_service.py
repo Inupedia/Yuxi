@@ -2,16 +2,19 @@ from __future__ import annotations
 
 import pytest
 import pytest_asyncio
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
-
-from yuxi.config.options import ensure_options_in_db, update_option_value
-from yuxi.services import ocr_service
-from yuxi.storage.postgres.models_business import Base, ModelProvider
+import yuxi.modules.documents.service as ocr_service
+from sqlalchemy.ext.asyncio import async_sessionmaker
+from test.support.sqlite import create_utc_sqlite_engine
+from yuxi.bootstrap.options import ensure_options_in_db
+from yuxi.infrastructure.document_parsing.engines import ENGINE_SPECS
+from yuxi.infrastructure.postgres.base import Base
+from yuxi.modules.models.tables import ModelProvider
+from yuxi.modules.system.services.options import update_option_value
 
 
 @pytest_asyncio.fixture
 async def db_session():
-    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    engine = create_utc_sqlite_engine()
     async with engine.begin() as connection:
         await connection.run_sync(Base.metadata.create_all)
     async with async_sessionmaker(engine, expire_on_commit=False)() as session:
@@ -31,7 +34,44 @@ async def test_task_resolution_uses_database_option(db_session):
 
     resolved = await ocr_service.resolve_ocr_task_params({"ocr_engine": "mineru_ocr"}, db_session)
 
-    assert resolved["_ocr_processor_kwargs"] == {"server_url": "http://mineru-config:30001/"}
+    assert resolved["_ocr_processor_kwargs"] == {
+        "server_url": "http://mineru-config:30001/",
+        "backend": "hybrid-engine",
+        "effort": "medium",
+    }
+
+
+@pytest.mark.asyncio
+async def test_mineru_task_resolution_uses_saved_defaults_and_keeps_task_overrides(db_session):
+    """管理员配置作为引擎默认值，单次任务参数保持独立。"""
+    await update_option_value(
+        db_session,
+        "mineru_ocr_host_opts",
+        {"backend": "vlm-engine", "effort": "high"},
+        "tester",
+    )
+
+    resolved = await ocr_service.resolve_ocr_task_params(
+        {"ocr_engine": "mineru_ocr", "backend": "hybrid-engine", "effort": "medium"}, db_session
+    )
+
+    assert resolved["_ocr_processor_kwargs"]["backend"] == "vlm-engine"
+    assert resolved["_ocr_processor_kwargs"]["effort"] == "high"
+    assert resolved["backend"] == "hybrid-engine"
+    assert resolved["effort"] == "medium"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("saved", "expected"), [({}, "pipeline"), ({"model_version": "vlm"}, "vlm")])
+async def test_mineru_official_resolves_model_default_with_environment_credentials(db_session, monkeypatch, saved, expected):
+    """模型默认值与环境凭据一同传递，单次模型选择保持独立。"""
+    monkeypatch.setenv("MINERU_API_KEY", "fixture-key")
+    await update_option_value(db_session, "mineru_official_api_opts", saved, "tester")
+
+    resolved = await ocr_service.resolve_ocr_task_params({"ocr_engine": "mineru_official", "model_version": "pipeline"}, db_session)
+
+    assert resolved["_ocr_processor_kwargs"] == {"api_key": "fixture-key", "model_version": expected}
+    assert resolved["model_version"] == "pipeline"
 
 
 @pytest.mark.asyncio
@@ -42,11 +82,19 @@ async def test_ocr_options_use_parser_metadata(db_session, monkeypatch):
 
     monkeypatch.setattr(type(ocr_service.system_options), "get", get_options)
     options = await ocr_service.get_ocr_options(db_session)
-    rapid_ocr = next(item for item in options["engines"] if item["engine_id"] == "rapid_ocr")
 
-    assert rapid_ocr["service_name"] == "rapid_ocr"
-    assert rapid_ocr["display_name"] == "RapidOCR (ONNX)"
-    assert ".pdf" in rapid_ocr["supported_extensions"]
+    assert options == {
+        "default_engine": "rapid_ocr",
+        "engines": [
+            {
+                "engine_id": engine_id,
+                "service_name": capability.service_name,
+                "display_name": capability.display_name,
+                "supported_extensions": list(capability.supported_extensions),
+            }
+            for engine_id, capability in ENGINE_SPECS.items()
+        ],
+    }
 
 
 @pytest.mark.asyncio
@@ -80,13 +128,68 @@ async def test_health_checks_every_registered_ocr_method(db_session, monkeypatch
         return {"engine": engine_id}
 
     monkeypatch.setattr(ocr_service, "_build_processor_kwargs", build_kwargs)
+    from types import SimpleNamespace
+
     monkeypatch.setattr(
-        ocr_service.DocumentProcessorFactory,
-        "check_health",
-        lambda engine_id, **kwargs: {"status": "healthy", "message": kwargs["engine"]},
+        ocr_service,
+        "get_engine",
+        lambda engine_id, **kwargs: SimpleNamespace(check_health=lambda: {"status": "healthy", "message": kwargs["engine"]}),
     )
 
     health = await ocr_service.check_all_ocr_health(db_session)
 
-    assert set(health) == set(ocr_service.PROCESSOR_TYPES)
+    assert set(health) == set(ENGINE_SPECS)
     assert all(result["status"] == "healthy" for result in health.values())
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cancel", [False, True])
+async def test_resource_publication_reclaims_failed_or_cancelled_attempt(tmp_path, monkeypatch, cancel):
+    """上传线程完成后回收独占前缀，其他文档的资源仍然保留。"""
+    import asyncio
+    import threading
+
+    from yuxi.infrastructure.document_parsing import ParseResult
+    from yuxi.modules.documents import assets
+
+    started, release = threading.Event(), threading.Event()
+    objects = {"other-document/image.png": b"other"}
+
+    class Client:
+        """模拟不能被 asyncio 取消的实际上传 I/O。"""
+
+        def ensure_bucket_exists(self, bucket):
+            pass
+
+        async def aupload_file(self, *, bucket_name, object_name, data):
+            def upload():
+                if cancel:
+                    started.set()
+                    assert release.wait(5)
+                objects[object_name] = data
+
+            await asyncio.to_thread(upload)
+
+        async def adelete_objects_by_prefix(self, bucket, prefix):
+            for name in list(objects):
+                if name.startswith(prefix):
+                    del objects[name]
+
+    (tmp_path / "image.png").write_bytes(b"image")
+    (tmp_path / "document.md").write_text("![](image.png)")
+    result = ParseResult(tmp_path, tmp_path / "document.md", ("image.png",))
+    monkeypatch.setattr(assets, "get_minio_client", Client)
+
+    def url_builder(name):
+        raise ValueError("publication failed")
+
+    task = asyncio.create_task(assets.upload_resources(result, "images", "document/attempt/", url_builder))
+    if cancel:
+        assert await asyncio.to_thread(started.wait, 5)
+        task.cancel()
+        await asyncio.sleep(0)
+        assert not task.done()
+        release.set()
+    with pytest.raises(asyncio.CancelledError if cancel else ValueError):
+        await task
+    assert objects == {"other-document/image.png": b"other"}

@@ -7,12 +7,15 @@ from typing import Any
 import pytest
 from langchain.agents.middleware.types import ModelRequest, ModelResponse
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage, get_buffer_string
+from yuxi.modules.agents.runtime.middlewares.summary import YuxiSummarizationMiddleware
+from yuxi.modules.models.chat import load_chat_model
+from yuxi.modules.models.providers.builtin import BUILTIN_PROVIDERS
+from yuxi.modules.models.providers.cache import ModelInfo
+from yuxi.modules.workspace.runtime_paths import workdir_runtime_paths
 
-from yuxi.agents.models import load_chat_model
-from yuxi.agents.middlewares.summary import YuxiSummarizationMiddleware
-from yuxi.models.providers.cache import ModelInfo
-from yuxi.models.providers.builtin import BUILTIN_PROVIDERS
-from yuxi.utils.paths import VIRTUAL_PATH_CONVERSATION_HISTORY, VIRTUAL_PATH_LARGE_TOOL_RESULTS
+VIRTUAL_PATH_LARGE_TOOL_RESULTS, VIRTUAL_PATH_CONVERSATION_HISTORY = workdir_runtime_paths(
+    "/home/user/workspace/projects/11111111-1111-4111-8111-111111111111"
+)
 
 pytestmark = [
     pytest.mark.asyncio(loop_scope="session"),
@@ -84,7 +87,7 @@ def _select_enabled_chat_model(provider: dict[str, Any]) -> dict[str, Any]:
     pytest.skip(f"{provider['provider_id']} has no enabled chat model.")
 
 
-async def test_l1_compacted_messages_call_real_chat_model(monkeypatch: pytest.MonkeyPatch):
+async def test_compacted_messages_call_real_chat_model(monkeypatch: pytest.MonkeyPatch):
     provider = _load_provider_config()
     model_config = _select_enabled_chat_model(provider)
     api_key_env = provider.get("api_key_env")
@@ -107,7 +110,7 @@ async def test_l1_compacted_messages_call_real_chat_model(monkeypatch: pytest.Mo
     def get_model_info(current: str):
         return info if current == model_spec else None
 
-    monkeypatch.setattr("yuxi.agents.models.model_cache.get_model_info", get_model_info)
+    monkeypatch.setattr("yuxi.modules.models.chat.model_cache.get_model_info", get_model_info)
 
     model_params = (model_config.get("extra") or {}).get("parameters") or {}
     real_model = load_chat_model(model_spec, **model_params)
@@ -122,11 +125,10 @@ async def test_l1_compacted_messages_call_real_chat_model(monkeypatch: pytest.Mo
     middleware = YuxiSummarizationMiddleware(
         model=real_model,
         backend=backend,
-        trigger=("tokens", 500),
+        trigger=("tokens", 2000),
         keep=("messages", 2),
         token_counter=_content_char_counter,
         trim_tokens_to_summarize=None,
-        l1_l2_trigger_ratio=100.0,
     )
     middleware._history_path_prefix = VIRTUAL_PATH_CONVERSATION_HISTORY
     middleware._large_tool_results_prefix = VIRTUAL_PATH_LARGE_TOOL_RESULTS
@@ -155,6 +157,4 @@ async def test_l1_compacted_messages_call_real_chat_model(monkeypatch: pytest.Mo
     assert "[Tool result saved]" in formatted
     assert "END" not in formatted
     assert messages[2].content == large_result
-    assert any(
-        path.startswith(VIRTUAL_PATH_LARGE_TOOL_RESULTS) and content == large_result for path, content in backend.writes
-    )
+    assert any(path.startswith(VIRTUAL_PATH_LARGE_TOOL_RESULTS) and content == large_result for path, content in backend.writes)

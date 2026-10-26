@@ -1,185 +1,270 @@
-# 快速开始指南
+<script setup>
+import { ref } from 'vue'
+import SandboxSetup from '../.vitepress/theme/components/SandboxSetup.vue'
 
-欢迎使用 Yuxi（语析），这是一个智能知识库和知识图谱 Agent 开发平台。
-本指南将帮助你在几分钟内启动并运行系统，使你能够利用 LangGraph、RAG 技术和知识图谱构建 AI 驱动的知识应用。
+const sandbox = ref('container')
+</script>
 
-![系统架构图](https://xerrors.oss-cn-shanghai.aliyuncs.com/github/arch.png)
+# 快速开始
 
+准备好 Git、Docker 和 Docker Compose v2，按下面三步启动 Yuxi：下载代码、选择沙盒、启动服务并验证。本文使用仓库根目录的开发 Compose；正式上线请参考[生产部署](../advanced/deployment.md)。
 
-::: tip 提示
-除了此文档网站外，你还可以访问 [Zread](https://zread.ai/xerrors/Yuxi) 或 [DeepWiki](https://deepwiki.com/xerrors/Yuxi) 查看自动生成的详细项目文档。
-:::
+## 1. 下载代码
 
-## 环境要求
-
-项目采用微服务架构设计，默认服务无需 GPU 支持。如果需要使用 OCR 功能，可以通过环境变量配置外部服务。
-
-## 快速安装
-
-### 步骤一：获取项目代码
+本文固定使用 `v0.8.0.beta3` 候选标签，尚未正式发布。
 
 ```bash
-# 克隆最新版本
-git clone --branch v0.7.1 --depth 1 https://github.com/xerrors/Yuxi.git
+git clone --branch v0.8.0.beta3 --depth 1 https://github.com/xerrors/Yuxi.git
 cd Yuxi
 ```
 
-`--depth 1` 标志会创建一个浅克隆，仅包含最新的提交，从而显著减少下载时间和磁盘使用量。下表提供了版本选择的指导。
+后续命令都在这个目录执行。
 
-| 版本 | 适用场景 |
-|------|----------|
-| v0.7.1 | 当前稳定版本，推荐生产使用 |
-| main | 开发版本，包含最新特性（可能不稳定） |
+::: warning 使用全新数据目录
+0.8 不会自动升级旧数据库与索引。首次部署请使用独立数据目录，保留旧环境；版本差异见[0.8.0 更新说明](../develop-guides/releases/0.8.0.md)。
+:::
 
-### 步骤二：配置环境变量
+## 2. 选择沙盒并初始化
 
-**方式一：使用初始化脚本（推荐）**
+沙盒用于智能体执行命令。选择下面一种方式，完成对应初始化即可。
 
-我们提供了自动化脚本，帮你完成环境配置和 Docker 镜像拉取：
+| 方式 | 适用场景 | 环境要求 |
+| --- | --- | --- |
+| **Container** | 本地试用、单租户可信代码，需要基本命令执行 | Docker，无需 KVM 或额外执行节点 |
+| **Cube（默认）** | 需要 VM 隔离和持久用户环境 | 已准备好的 Linux/KVM 执行节点 |
 
-```bash
-# Linux/macOS
+Container 与宿主共享内核，不适合不可信多租户代码。后端由配置显式选择，Cube 不可用时不会自动切换。
+
+初始化脚本会提示填写 `SILICONFLOW_API_KEY`，生成应用安全密钥和实例标识，并准备基础镜像。其他模型供应商可在登录后配置。已有 `.env` 时直接编辑并保留密钥，不要用模板覆盖。
+
+::: info Windows 用户
+Windows 下的 Docker Desktop 不支持启动 Cube。可以选择 Container；如果需要 Cube，必须另备 Linux/KVM 执行节点，Windows 只运行 Yuxi 应用并连接该节点。
+:::
+
+<SandboxSetup v-model="sandbox">
+<template #container>
+
+**初始化 Container**
+
+按操作系统选择初始化命令：
+
+::: code-group
+
+```bash [Linux / macOS]
+export SANDBOX_BACKEND=container
 ./scripts/init.sh
+```
 
-# Windows PowerShell
+```powershell [Windows PowerShell]
+Copy-Item .env.template .env
+# 编辑 .env，将 SANDBOX_BACKEND=cube 改为 SANDBOX_BACKEND=container
+
+# 生成 runner 认证密钥并保存到 .env
+$bytes = New-Object byte[] 32
+$rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+$rng.GetBytes($bytes)
+$rng.Dispose()
+$token = [System.BitConverter]::ToString($bytes).Replace('-', '').ToLowerInvariant()
+Add-Content .env "SANDBOX_RUNNER_TOKEN=$token"
+Remove-Variable token, bytes
+
 .\scripts\init.ps1
 ```
 
-脚本会引导你完成以下配置：
-- 创建 `.env` 配置文件
-- 设置 `SILICONFLOW_API_KEY`（必需，用于调用大模型）
-- 独立生成并持久保存 `JWT_SECRET_KEY`、`API_KEY_DERIVATION_SECRET` 和 `SANDBOX_PROVISIONER_TOKEN`
-- 拒绝短于 32 字符或彼此复用的安全密钥，并将 Linux/macOS `.env` 权限收紧为 `600`
-- 设置 `TAVILY_API_KEY`（可选，用于搜索服务）
-- 自动拉取必需的 Docker 镜像
-
-::: tip API Key 获取
-- **硅基流动**：访问 [cloud.siliconflow.cn](https://cloud.siliconflow.cn/i/Eo5yTHGJ)，注册认证即送 16 元额度
-- **Tavily**：访问 [app.tavily.com](https://app.tavily.com/) 获取搜索 API Key（可选）
 :::
 
-**方式二：手动配置**
+Linux/macOS 脚本会自动生成 `SANDBOX_RUNNER_TOKEN`；PowerShell 脚本需要上面的显式生成步骤。Docker Desktop 使用 Linux 容器模式，并允许项目目录共享。
 
-如果偏好手动配置：
+初始化完成后，直接进入步骤 3。沙盒镜像会在启动时构建，不需要填写 Cube 配置。容器默认禁止联网，每个执行段（Run）使用独立临时环境；工作目录文件保留，Home 和临时安装的软件随容器清理。更多限制见[Container 沙盒](../advanced/container-sandbox.md)。
+
+</template>
+<template #cube>
+
+**先启动 Cube 执行节点**
+
+在 Linux/KVM 节点的仓库目录执行。安装会将 SELinux 设为 permissive，请使用专用节点：
 
 ```bash
-# 复制环境变量模板
-cp .env.template .env
-
-# 编辑 .env 文件，填入模型 API Key，并为下列三项分别生成不同的随机值
-# JWT_SECRET_KEY=$(openssl rand -hex 32)
-# API_KEY_DERIVATION_SECRET=$(openssl rand -hex 32)
-# SANDBOX_PROVISIONER_TOKEN=$(openssl rand -hex 32)
+test -e /dev/kvm && echo "KVM available"
+sudo bash docker/cube/setup-node.sh
+sudo cp docker/cube/Dockerfile.user docker/cube/build-template.sh /opt/yuxi-cube/
+sudo bash /opt/yuxi-cube/build-template.sh
+curl --fail http://127.0.0.1:3000/health
 ```
 
-也可以在复制模板后运行初始化脚本；脚本会检测已有 `.env`，只补齐缺失的 required 配置。三个安全密钥不能复用，后续重建与升级必须保留原值。
+脚本安装并启动 Cube v0.7.3，构建 `yuxi-user` 模板。应用主机与执行节点可以同机，也可以分开部署。
 
-### 步骤三：启动服务
+::: details Cube 节点准备完成的条件
+
+- 执行节点具备 `/dev/kvm`，Cube 控制面和数据代理可从应用主机的私网访问。
+- 已构建 `yuxi-user` 模板。
+- 应用主机的 `YUXI_STATE_DIR/yuxi/threads` 和 `YUXI_STATE_DIR/yuxi/skill-projections` 已共享到节点的对应目录；两端看到相同文件。`YUXI_STATE_DIR` 默认是 `./docker/volumes`，只填写配置不会创建共享挂载。
+
+节点安装、共享挂载和验证要求由[沙盒配置与运维](../advanced/sandbox-operations.md)说明。同机嵌套开发使用其中的[嵌套节点方案](../advanced/sandbox-operations.md#当前机器的嵌套开发节点)，控制端口和代理端口需按该方案填写。
+
+:::
+
+**再初始化 Yuxi 应用**
+
+回到应用主机的仓库目录，先复制配置模板：
+
+::: code-group
+
+```bash [Linux / macOS]
+cp .env.template .env
+chmod 600 .env
+```
+
+```powershell [Windows PowerShell]
+Copy-Item .env.template .env
+```
+
+:::
+
+编辑 `.env`，按 Cube 所在位置选择配置：
+
+::: code-group
+
+```dotenv [同一台主机]
+SANDBOX_BACKEND=cube
+CUBE_API_URL=http://host.docker.internal:3000
+# 未启用认证时留空
+CUBE_API_KEY=
+CUBE_PROXY_NODE_IP=host.docker.internal
+```
+
+```dotenv [独立节点]
+SANDBOX_BACKEND=cube
+CUBE_API_URL=http://<Cube节点的内网IP>:3000
+# 未启用认证时留空
+CUBE_API_KEY=
+CUBE_PROXY_NODE_IP=<Cube节点的内网IP>
+```
+
+:::
+
+保存后运行初始化：
+
+::: code-group
+
+```bash [Linux / macOS]
+./scripts/init.sh
+```
+
+```powershell [Windows PowerShell]
+.\scripts\init.ps1
+```
+
+:::
+
+</template>
+</SandboxSetup>
+
+## 3. 启动并验证
+
+下面的命令跟随步骤 2 的沙盒选择。
+
+<div v-show="sandbox === 'container'">
+
+**Container 启动命令**
 
 ```bash
-# 构建并启动所有服务
+docker compose --profile container config --quiet
+docker compose --profile container up --build -d
+```
+
+Container 的启动命令会构建沙盒镜像并启动 runner；`SANDBOX_BACKEND=container` 和 `--profile container` 缺一不可。
+
+</div>
+<div v-show="sandbox === 'cube'">
+
+**Cube 启动命令**
+
+```bash
+docker compose config --quiet
 docker compose up --build -d
 ```
 
-服务首次启动需要等待镜像拉取和编译，请耐心等待 2-3 分钟。
+此命令启动 Yuxi 应用服务；Cube 节点需要先完成步骤 2 的启动和配置。
 
-::: tip 轻量模式（Lite Mode）
-如果你不需要知识库和知识图谱功能，可以使用轻量模式启动，跳过 Milvus、Neo4j、etcd 等服务，节省系统资源：
+</div>
+
+首次启动需要下载镜像并构建应用。查看服务状态，等待就绪接口返回 `status: ready`：
 
 ```bash
-make up-lite  # macOS or Linux
+docker compose ps
+curl --fail http://localhost:5050/api/system/ready
 ```
 
-轻量模式仅启动核心服务（前端、后端、PostgreSQL、Redis、MinIO），前端侧边栏会自动隐藏知识库和图谱入口。切换回完整模式只需运行 `make up`。
+打开 **<http://localhost:5173>**，按提示创建超级管理员账号。在「智能体 → 模型供应商」配置模型，然后选择已启用命令执行工具的智能体，发送：
+
+> 请执行 `pwd`，并在当前工作目录创建 `hello.txt`，内容为 `hello Yuxi`。
+
+如出现审批，批准后继续。确认命令执行成功，并在工作区打开 `hello.txt` 核对内容，至此完成部署验证。就绪接口只证明服务可以接流量，不能代替这一步。
+
+## 常见配置
+
+以下配置保存在 `.env`。首次启动前按需调整；模型、Skills 和用户设置可在登录后配置。
+
+| 需要调整什么 | 配置或入口 |
+| --- | --- |
+| 模型供应商 | 初始化脚本要求 `SILICONFLOW_API_KEY`；其他供应商见[模型配置](./model-config.md) |
+| Web 端口 | `YUXI_FRONTEND_PORT`，默认 `5173` |
+| 数据目录 | `YUXI_STATE_DIR`，默认 `./docker/volumes`；更换目录不会自动迁移已有数据 |
+| 应用安全密钥 | `JWT_SECRET_KEY`、`API_KEY_DERIVATION_SECRET`，由初始化脚本生成，需独立且至少 32 字符；重新部署时保留 |
+| 容器镜像、联网与资源 | 见[Container 沙盒](../advanced/container-sandbox.md)；默认禁止联网 |
+| Cube 节点、模板与休眠 | 见[沙盒配置与运维](../advanced/sandbox-operations.md) |
+
+::: details 手动配置或无人值守初始化
+
+可以复制 `.env.template` 为 `.env`，填写模型 Key、两个独立安全密钥、`YUXI_INSTANCE_ID` 和所选沙盒配置，跳过初始化脚本。Container 还需要独立随机 `SANDBOX_RUNNER_TOKEN`，建议至少 32 个字符。
+
+Linux/macOS 初始化脚本接受环境变量覆盖 `.env` 中的同名配置。无人值守时先提供 `SILICONFLOW_API_KEY` 和所选沙盒配置，再设置 `YUXI_INIT_NON_INTERACTIVE=1`；仅生成配置而暂不准备镜像时可设置 `YUXI_INIT_SKIP_IMAGES=1`。已有安全密钥应保留，不要用临时环境变量覆盖。PowerShell 脚本不提供这些开关，也不会把进程环境中的 `CUBE_*` 写入 `.env`。
+
 :::
 
-### 步骤四：访问系统
+## 启动遇到问题
 
-服务启动后，访问以下地址：
-
-| 服务 | 地址 |
-|------|------|
-| Web 界面 | http://localhost:5173 |
-| API 文档 | http://localhost:5050/docs |
-
-首次访问时，系统会要求你设置超级管理员账号和密码，请妥善保存。
-
-## 故障排除
-
-### 查看服务状态
+::: details API 或 worker 无法就绪
 
 ```bash
-# 查看所有容器状态
-docker ps
-
-# 实时查看后端日志
-docker logs api-dev -f
-
-# 实时查看前端日志
-docker logs web-dev -f
+docker compose logs --tail=100 app-init api worker
 ```
 
-### 部署故障排查
+`storage-init` 和 `app-init` 是一次性初始化服务，成功退出属于正常状态。API 和 worker 等待初始化完成后启动。
 
-<details>
-<summary><strong>Docker 镜像拉取失败</strong></summary>
+日志出现 `sandbox_provider` 时，按所选后端检查：
 
-如果网络原因导致镜像拉取失败，可以尝试：
+- **Container**：确认 `.env` 中选择了 `container`、runner token 已配置，并使用 `--profile container` 启动。执行 `docker compose --profile container logs --tail=100 sandbox-image sandbox-runner` 查看镜像和 runner 错误，详细诊断见[Container 沙盒](../advanced/container-sandbox.md)。
+- **Cube**：检查控制面、认证、模板和代理端口，以及节点的共享目录。执行 `curl --fail http://<node-private-ip>:3000/health` 验证原生节点控制面可达；嵌套节点使用实际配置的地址和端口。
+
+:::
+
+::: details 镜像拉取或构建失败
+
+先确认 Docker 能访问镜像仓库。可单独重试拉取：
 
 ```bash
-# 手动拉取基础镜像
 bash scripts/pull_image.sh python:3.13-slim
 ```
 
-**离线环境部署方案**：
+需要代理时，先配置 Docker daemon 和构建环境使用的代理，再重试步骤 3 的启动命令。离线镜像导出可使用 `docker/save_docker_images.sh`，导出前核对所需镜像列表。
+
+:::
+
+::: details 知识库依赖未就绪
 
 ```bash
-# 在有网络的环境导出镜像，注意检查镜像列表，不一定是最新的。
-bash docker/save_docker_images.sh
-
-# 传输到目标机器
-scp docker_images_xxx.tar user@host:/path/
-
-# 导入镜像
-docker load -i docker_images_xxx.tar
-```
-</details>
-
-<details>
-<summary><strong>构建失败</strong></summary>
-
-多数构建失败是由于网络问题。尝试配置代理：
-
-```bash
-# Linux/macOS
-export HTTP_PROXY=http://IP:PORT
-export HTTPS_PROXY=http://IP:PORT
-
-# Windows PowerShell
-$env:HTTP_PROXY="http://IP:PORT"
-$env:HTTPS_PROXY="http://IP:PORT"
+docker compose ps milvus etcd minio graph
+docker compose logs --tail=100 milvus etcd minio graph
 ```
 
-如果配置代理后反而失败，尝试移除代理后重试。
-</details>
+这些服务属于默认拓扑。以各服务健康状态和 API 就绪接口为准，初始化脚本退出不代表所有依赖已就绪。
 
-<details>
-<summary><strong>Milvus 服务启动失败</strong></summary>
-
-```bash
-# 重启 Milvus 服务
-docker compose up milvus -d
-docker restart api-dev
-```
-</details>
-
-::: tip 调试面板
-前端提供了调试面板（在头像菜单中可找到），可以查看详细的请求和响应信息。生产环境建议关闭此特性。
 :::
 
 ## 下一步
 
-- 了解如何配置模型：阅读 [模型配置](./model-config.md)
-- 探索知识库功能：阅读 [知识库与知识图谱](./knowledge-base.md)
-- 学习智能体开发：阅读 [智能体开发](../agents/agents-config.md)
-- 深入了解配置系统：阅读 [配置系统详解](../advanced/configuration.md)
+- [知识库入门](./knowledge-base.md)：上传文档并验证检索。
+- [命令行工具](./cli.md)：从终端连接实例和进行对话。
+- [生产部署](../advanced/deployment.md)：使用生产 Compose、配置凭据并验证部署。

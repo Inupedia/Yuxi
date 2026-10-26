@@ -1,193 +1,118 @@
-from yuxi.agents.backends.sandbox import (
-    VIRTUAL_PATH_PREFIX,
-    ensure_thread_dirs,
-    sandbox_outputs_dir,
-    sandbox_uploads_dir,
+import pytest
+from yuxi.modules.agents.runtime.sandbox import backend as sandbox_backend
+from yuxi.modules.agents.runtime.state import merge_artifacts
+from yuxi.modules.extensions.tools.builtin.present_artifacts import (
+    PresentArtifactsInput,
+    _normalize_presented_artifact_path,
+    present_artifacts,
 )
-from yuxi.agents.buildin.chatbot.state import merge_subagent_runs
-from yuxi.agents.state import merge_artifacts
-from yuxi.agents.toolkits.buildin.tools import _normalize_presented_artifact_path
-from yuxi.utils.paths import CONVERSATION_HISTORY_DIR_NAME, LARGE_TOOL_RESULTS_DIR_NAME
+from yuxi.modules.workspace.runtime_paths import CONVERSATION_HISTORY_DIR_NAME, LARGE_TOOL_RESULTS_DIR_NAME
 
 
 def _runtime_with_thread(thread_id: str, uid: str = "user-1"):
-    context = type("RuntimeContext", (), {"thread_id": thread_id, "uid": uid})()
+    context = type(
+        "RuntimeContext",
+        (),
+        {
+            "thread_id": thread_id,
+            "runtime_scope_id": thread_id,
+            "workdir_relative_path": "projects/11111111-1111-4111-8111-111111111111",
+            "workdir_path": "/home/user/workspace/projects/11111111-1111-4111-8111-111111111111",
+            "uid": uid,
+        },
+    )()
     return type("RuntimeStub", (), {"context": context})()
+
+
+def _stub_output_exists(monkeypatch: pytest.MonkeyPatch, exists: bool = True) -> None:
+    class FakeBackend:
+        def __init__(self, **kwargs):
+            pass
+
+        def regular_file_exists(self, _path: str) -> bool:
+            return exists
+
+    monkeypatch.setattr(sandbox_backend, "UserSandboxBackend", FakeBackend)
 
 
 def test_merge_artifacts_deduplicates_and_preserves_order():
     assert merge_artifacts(
-        ["/home/gem/user-data/outputs/a.md"],
-        ["/home/gem/user-data/outputs/a.md", "/home/gem/user-data/outputs/b.md"],
+        ["/home/user/workspace/outputs/a.md"],
+        ["/home/user/workspace/outputs/a.md", "/home/user/workspace/outputs/b.md"],
     ) == [
-        "/home/gem/user-data/outputs/a.md",
-        "/home/gem/user-data/outputs/b.md",
+        "/home/user/workspace/outputs/a.md",
+        "/home/user/workspace/outputs/b.md",
     ]
 
 
-def test_merge_subagent_runs_does_not_merge_entries_without_run_id():
-    assert merge_subagent_runs(
-        [{"id": "run-1", "status": "completed"}],
-        [
-            {"id": "run-1", "status": "failed", "error": "boom"},
-            {"id": "run-2", "status": "completed"},
-        ],
-    ) == [
-        {"id": "run-1", "status": "completed"},
-        {"id": "run-1", "status": "failed", "error": "boom"},
-        {"id": "run-2", "status": "completed"},
-    ]
+def test_merge_artifacts_rejects_legacy_objects():
+    """产物 state 只接受字符串，旧对象不能被悄悄转换。"""
+    with pytest.raises(TypeError):
+        merge_artifacts([], [{"path": "/b.md", "type": "file"}])
+    assert merge_artifacts(None, None) == []
+    assert merge_artifacts(["/a.png"], None) == ["/a.png"]
 
 
-def test_merge_subagent_runs_updates_existing_run_by_run_id():
-    assert merge_subagent_runs(
-        [
-            {
-                "id": "tool-1",
-                "run_id": "agent-run-1",
-                "child_thread_id": "child-thread",
-                "status": "running",
-            }
-        ],
-        [
-            {
-                "id": "tool-1",
-                "run_id": "agent-run-1",
-                "child_thread_id": "child-thread",
-                "status": "completed",
-            }
-        ],
-    ) == [
-        {
-            "id": "tool-1",
-            "run_id": "agent-run-1",
-            "child_thread_id": "child-thread",
-            "status": "completed",
-        }
-    ]
+def test_present_artifacts_registers_paths_without_presentation_type(monkeypatch):
+    """PNG 与其他文件共用路径登记，工具 schema 不提供展示类型。"""
+    _stub_output_exists(monkeypatch)
+    path = "/home/user/workspace/outputs/screenshot.png"
+    assert set(PresentArtifactsInput.model_json_schema()["properties"]) == {"filepaths"}
+    result = present_artifacts.func(filepaths=[path], runtime=_runtime_with_thread("thread-1"), tool_call_id="call-1")
+    assert result.update["artifacts"] == [path]
+    assert result.update["messages"][0].content == "已将交付物展示给用户"
 
 
-def test_merge_subagent_runs_keeps_continuation_run_history():
-    assert merge_subagent_runs(
-        [
-            {
-                "id": "tool-old",
-                "run_id": "agent-run-old",
-                "child_thread_id": "child-thread",
-                "status": "completed",
-                "completed_at": "2026-06-20T01:00:00Z",
-            }
-        ],
-        [
-            {
-                "id": "tool-new",
-                "run_id": "agent-run-new",
-                "child_thread_id": "child-thread",
-                "status": "pending",
-            }
-        ],
-    ) == [
-        {
-            "id": "tool-old",
-            "run_id": "agent-run-old",
-            "child_thread_id": "child-thread",
-            "status": "completed",
-            "completed_at": "2026-06-20T01:00:00Z",
-        },
-        {
-            "id": "tool-new",
-            "run_id": "agent-run-new",
-            "child_thread_id": "child-thread",
-            "status": "pending",
-        },
-    ]
+def test_present_artifacts_does_not_register_missing_image(monkeypatch):
+    """图片声明仍需经过普通文件边界，失败结果明确标记错误。"""
+    _stub_output_exists(monkeypatch, exists=False)
+    result = present_artifacts.func(
+        filepaths=["/home/user/workspace/outputs/missing.png"],
+        runtime=_runtime_with_thread("thread-1"),
+        tool_call_id="call-1",
+    )
+    assert "artifacts" not in result.update
+    assert result.update["messages"][0].status == "error"
+    assert "文件不存在或不是普通文件" in result.update["messages"][0].content
 
 
-def test_merge_subagent_runs_does_not_merge_different_run_ids_by_state_id():
-    assert merge_subagent_runs(
-        [
-            {
-                "id": "tool-1",
-                "run_id": "agent-run-old",
-                "child_thread_id": "child-thread",
-                "status": "completed",
-            }
-        ],
-        [
-            {
-                "id": "tool-1",
-                "run_id": "agent-run-new",
-                "child_thread_id": "child-thread",
-                "status": "pending",
-            }
-        ],
-    ) == [
-        {
-            "id": "tool-1",
-            "run_id": "agent-run-old",
-            "child_thread_id": "child-thread",
-            "status": "completed",
-        },
-        {
-            "id": "tool-1",
-            "run_id": "agent-run-new",
-            "child_thread_id": "child-thread",
-            "status": "pending",
-        },
-    ]
+def test_normalize_presented_artifact_path_rejects_host_path():
+    with pytest.raises(ValueError, match="可见范围"):
+        _normalize_presented_artifact_path(
+            "saves/threads/thread-1/user-data/outputs/report.md",
+            _runtime_with_thread("thread-1"),
+        )
 
 
-def test_normalize_presented_artifact_path_accepts_host_path():
-    thread_id = "artifacts-host-path"
-    ensure_thread_dirs(thread_id, "user-1")
-    output_file = sandbox_outputs_dir(thread_id) / "report.md"
-    output_file.write_text("# demo", encoding="utf-8")
-
-    normalized = _normalize_presented_artifact_path(str(output_file), _runtime_with_thread(thread_id))
-
-    assert normalized == f"{VIRTUAL_PATH_PREFIX}/outputs/report.md"
-
-
-def test_normalize_presented_artifact_path_accepts_virtual_path():
+def test_normalize_presented_artifact_path_accepts_virtual_path(monkeypatch: pytest.MonkeyPatch):
     thread_id = "artifacts-virtual-path"
-    ensure_thread_dirs(thread_id, "user-1")
-    output_file = sandbox_outputs_dir(thread_id) / "summary.txt"
-    output_file.write_text("demo", encoding="utf-8")
+    _stub_output_exists(monkeypatch)
 
     normalized = _normalize_presented_artifact_path(
-        f"{VIRTUAL_PATH_PREFIX}/outputs/summary.txt",
+        "/home/user/workspace/projects/11111111-1111-4111-8111-111111111111/outputs/summary.txt",
         _runtime_with_thread(thread_id),
     )
 
-    assert normalized == f"{VIRTUAL_PATH_PREFIX}/outputs/summary.txt"
+    assert normalized == "/home/user/workspace/projects/11111111-1111-4111-8111-111111111111/outputs/summary.txt"
 
 
-def test_normalize_presented_artifact_path_rejects_non_outputs_path():
+def test_normalize_presented_artifact_path_accepts_any_visible_regular_file(monkeypatch: pytest.MonkeyPatch):
     thread_id = "artifacts-reject-path"
-    ensure_thread_dirs(thread_id, "user-1")
-    upload_file = sandbox_uploads_dir(thread_id) / "note.txt"
-    upload_file.write_text("demo", encoding="utf-8")
+    _stub_output_exists(monkeypatch)
 
-    try:
-        _normalize_presented_artifact_path(str(upload_file), _runtime_with_thread(thread_id))
-    except ValueError as exc:
-        assert f"{VIRTUAL_PATH_PREFIX}/outputs/" in str(exc)
-    else:
-        raise AssertionError("expected ValueError for non-outputs file")
+    assert (
+        _normalize_presented_artifact_path(
+            "/home/user/workspace/projects/11111111-1111-4111-8111-111111111111/uploads/note.txt",
+            _runtime_with_thread(thread_id),
+        )
+        == "/home/user/workspace/projects/11111111-1111-4111-8111-111111111111/uploads/note.txt"
+    )
 
 
-def test_normalize_presented_artifact_path_rejects_internal_output_files():
+def test_normalize_presented_artifact_path_does_not_special_case_internal_names(monkeypatch: pytest.MonkeyPatch):
     thread_id = "artifacts-reject-internal"
-    ensure_thread_dirs(thread_id, "user-1")
+    _stub_output_exists(monkeypatch)
 
     for dir_name in [LARGE_TOOL_RESULTS_DIR_NAME, CONVERSATION_HISTORY_DIR_NAME, "large_tool_history"]:
-        output_file = sandbox_outputs_dir(thread_id) / dir_name / "stage.txt"
-        output_file.parent.mkdir(parents=True, exist_ok=True)
-        output_file.write_text("internal", encoding="utf-8")
-
-        try:
-            _normalize_presented_artifact_path(str(output_file), _runtime_with_thread(thread_id))
-        except ValueError as exc:
-            assert "工具调用阶段文件" in str(exc)
-        else:
-            raise AssertionError(f"expected ValueError for internal output file under {dir_name}")
+        path = f"/home/user/workspace/projects/11111111-1111-4111-8111-111111111111/outputs/{dir_name}/stage.txt"
+        assert _normalize_presented_artifact_path(path, _runtime_with_thread(thread_id)) == path

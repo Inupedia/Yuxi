@@ -1,14 +1,16 @@
 from __future__ import annotations
 
-import uuid
 from pathlib import Path
+from uuid import uuid4
 
 import httpx
 import pytest
 from PIL import Image, ImageDraw, ImageFont
 
-from test.live_api_cleanup import remove_e2e_thread_storage
-from yuxi.storage.minio.client import get_minio_client
+from test.live_api_cleanup import (
+    make_test_session_title,
+)
+from test.e2e.e2e_helpers import cleanup_uploaded_chat_attachment
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.e2e]
 
@@ -44,59 +46,69 @@ async def test_admin_ocr_config_drives_real_tmp_attachment_parse(
         assert options_response.json()["default_engine"] == "rapid_ocr"
 
         thread_response = await e2e_client.post(
-            "/api/chat/thread",
+            "/api/v1/agents/sessions",
             json={
                 "agent_id": e2e_agent_context["agent_slug"],
-                "title": f"ocr-config-e2e-{uuid.uuid4().hex[:8]}",
-                "metadata": {"_yuxi_e2e": True, "test": "ocr-config-e2e"},
+                "title": make_test_session_title("ocr-config-e2e"),
             },
-            headers=e2e_headers,
+            headers={**e2e_headers, "Idempotency-Key": f"ocr-config-{uuid4().hex}"},
         )
-        assert thread_response.status_code == 200, thread_response.text
-        thread_payload = thread_response.json()
-        thread_id = str(thread_payload.get("thread_id") or thread_payload["id"])
+        assert thread_response.status_code == 201, thread_response.text
+        thread_id = str(thread_response.json()["id"])
 
         with image_path.open("rb") as image_file:
             upload_response = await e2e_client.post(
-                "/api/chat/attachments/tmp",
+                "/api/v1/agents/files",
                 files={"file": (image_path.name, image_file, "image/png")},
                 headers=e2e_headers,
             )
-        assert upload_response.status_code == 200, upload_response.text
+        assert upload_response.status_code == 201, upload_response.text
         uploaded = upload_response.json()
-        assert "rapid_ocr" in uploaded["parse_methods"]
+        options = await e2e_client.get(f"/api/agent/files/{uploaded['id']}", headers=e2e_headers)
+        assert "rapid_ocr" in options.json()["parse_methods"]
 
         parse_response = await e2e_client.post(
-            "/api/chat/attachments/tmp/parse",
-            json={
-                "object_name": uploaded["object_name"],
-                "file_name": uploaded["file_name"],
-                "bucket_name": uploaded["bucket_name"],
-                "parse_method": None,
-            },
+            f"/api/agent/files/{uploaded['id']}/parse",
+            json={"parse_method": None},
             headers=e2e_headers,
         )
         assert parse_response.status_code == 200, parse_response.text
         parsed = parse_response.json()
         assert parsed["parse_method"] == "rapid_ocr"
 
-        confirm_response = await e2e_client.post(
-            f"/api/chat/thread/{thread_id}/attachments/confirm",
+        from yuxi.infrastructure.postgres.manager import pg_manager
+        from yuxi.modules.agents.repositories.sessions import SessionRepository
+
+        pg_manager.initialize()
+        async with pg_manager.get_async_session_context() as db:
+            session = await SessionRepository(db).get_session_by_thread_id(thread_id)
+            session.queue_paused = True
+        accepted = await e2e_client.post(
+            f"/api/v1/agents/sessions/{thread_id}/events",
+            headers={**e2e_headers, "Idempotency-Key": uuid4().hex},
             json={
-                "attachments": [
+                "events": [
                     {
-                        "file_name": uploaded["file_name"],
-                        "file_type": uploaded["file_type"],
-                        "bucket_name": uploaded["bucket_name"],
-                        "object_name": uploaded["object_name"],
-                        "parsed_object_name": parsed["parsed_object_name"],
+                        "type": "agent.session.input.message",
+                        "input": [
+                            {
+                                "role": "user",
+                                "content": [{"type": "input_text", "text": "保存 OCR 文档"}],
+                            }
+                        ],
+                        "yuxi": {"mode": "follow_up", "attachment_file_ids": [uploaded["id"]]},
                     }
                 ]
             },
-            headers=e2e_headers,
         )
-        assert confirm_response.status_code == 200, confirm_response.text
-        attachment = confirm_response.json()["attachments"][0]
+        assert accepted.status_code == 202, accepted.text
+        [attachment] = (await e2e_client.get(f"/api/v1/agents/sessions/{thread_id}/attachments", headers=e2e_headers)).json()["attachments"]
+        cancelled = await e2e_client.post(
+            f"/api/v1/agents/sessions/{thread_id}/events",
+            headers={**e2e_headers, "Idempotency-Key": uuid4().hex},
+            json={"events": [{"type": "yuxi.session.input.cancel_input", "input_id": accepted.json()["input_id"]}]},
+        )
+        assert cancelled.status_code == 202, cancelled.text
         assert attachment["status"] == "parsed"
         assert attachment["path"].endswith(".md")
         assert attachment["artifact_url"]
@@ -152,20 +164,15 @@ async def _cleanup_created_resources(
 
     if thread_id and attachment:
         response = await e2e_client.delete(
-            f"/api/chat/thread/{thread_id}/attachments/{attachment['file_id']}",
+            f"/api/v1/agents/sessions/{thread_id}/attachments/{attachment['file_id']}",
             headers=e2e_headers,
         )
         assert response.status_code == 200, response.text
 
-    if uploaded and attachment is None:
-        minio_client = get_minio_client()
-        object_names = [uploaded["object_name"]]
-        if parsed:
-            object_names.append(parsed["parsed_object_name"])
-        for object_name in object_names:
-            assert await minio_client.adelete_file(uploaded["bucket_name"], object_name)
+    if uploaded:
+        me = await e2e_client.get("/api/auth/me", headers=e2e_headers)
+        await cleanup_uploaded_chat_attachment(str(me.json()["uid"]), uploaded["id"])
 
     if thread_id:
-        response = await e2e_client.delete(f"/api/chat/thread/{thread_id}", headers=e2e_headers)
+        response = await e2e_client.post(f"/api/v1/agents/sessions/{thread_id}/archive", headers=e2e_headers)
         assert response.status_code == 200, response.text
-        remove_e2e_thread_storage(thread_id)

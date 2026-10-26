@@ -1,9 +1,10 @@
+from contextlib import asynccontextmanager
 from types import SimpleNamespace
 
 import pytest
 
-from yuxi.knowledge.eval import service as eval_service_module
-from yuxi.knowledge.eval.service import EvaluationService, build_evaluation_run_name
+from yuxi.modules.knowledge.evaluation import service as eval_service_module
+from yuxi.modules.knowledge.evaluation.service import EvaluationService, build_evaluation_run_name
 
 
 class FakeEvaluationRepository:
@@ -13,7 +14,7 @@ class FakeEvaluationRepository:
         self.dataset = None
         self.created_run = None
 
-    async def create_dataset(self, payload):
+    async def create_dataset_in_session(self, session, payload):
         self.created_dataset = payload
 
     async def update_dataset(self, dataset_id, payload):
@@ -22,7 +23,7 @@ class FakeEvaluationRepository:
     async def get_dataset(self, dataset_id):
         return self.dataset
 
-    async def create_run(self, payload):
+    async def create_run_in_session(self, session, payload):
         self.created_run = payload
 
 
@@ -39,12 +40,30 @@ class FakeKnowledgeBaseRepository:
         return SimpleNamespace(query_params={"options": {"top_k": 3}})
 
 
-@pytest.mark.asyncio
-async def test_generate_dataset_saves_generation_params(monkeypatch):
-    async def fake_enqueue(**kwargs):
-        return SimpleNamespace(id="task_1")
+@pytest.fixture
+def job_submission(monkeypatch):
+    """捕获 owning transaction 内创建并在提交后发布的 Job。"""
+    captured = {}
 
-    monkeypatch.setattr(eval_service_module.tasker, "enqueue", fake_enqueue)
+    @asynccontextmanager
+    async def fake_session_context():
+        yield SimpleNamespace()
+
+    async def fake_create_in_session(session, **kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(id="job_1"), True
+
+    async def fake_publish(job_id):
+        captured["published"] = job_id
+
+    monkeypatch.setattr(eval_service_module.pg_manager, "get_async_session_context", fake_session_context)
+    monkeypatch.setattr(eval_service_module, "register_job_in_session", fake_create_in_session)
+    monkeypatch.setattr(eval_service_module, "dispatch_job", fake_publish)
+    return captured
+
+
+@pytest.mark.asyncio
+async def test_generate_dataset_saves_generation_params(job_submission):
     service = EvaluationService()
     service.eval_repo = FakeEvaluationRepository()
     service.chunk_repo = FakeChunkRepository(indexed_count=1)
@@ -62,12 +81,69 @@ async def test_generate_dataset_saves_generation_params(monkeypatch):
         created_by="user_1",
     )
 
-    assert result["task_id"] == "task_1"
+    assert result["job_id"] == "job_1"
+    assert job_submission["payload_match"] == {"dataset_id": job_submission["payload"]["dataset_id"]}
+    assert job_submission["published"] == "job_1"
     params = service.eval_repo.created_dataset["build_metadata"]["params"]
     assert params["generation_mode"] == "graph_enhanced"
     assert params["graph_expand_top_k"] == 2
-    updated_metadata = service.eval_repo.updated_dataset[1]["build_metadata"]
-    assert updated_metadata["params"] == params
+    assert service.eval_repo.created_dataset["build_metadata"]["job_id"] == "job_1"
+
+
+@pytest.mark.asyncio
+async def test_dataset_submission_gap_remains_pending_instead_of_false_failure(monkeypatch):
+    async def no_active_job(**_kwargs):
+        return None
+
+    class MissingBackgroundJobRepository:
+        async def get_by_id(self, job_id):
+            return None
+
+    monkeypatch.setattr(eval_service_module.job_tracker, "find_job_by_payload", no_active_job)
+    service = EvaluationService()
+    service.eval_repo = FakeEvaluationRepository()
+    service.job_repo = MissingBackgroundJobRepository()
+    row = SimpleNamespace(
+        dataset_id="dataset_1",
+        build_metadata={"source": "generated", "status": "pending", "params": {"count": 5}},
+    )
+
+    await service._sync_dataset_build_metadata(row)
+
+    assert row.build_metadata["status"] == "pending"
+    assert service.eval_repo.updated_dataset is None
+
+
+@pytest.mark.asyncio
+async def test_pending_dataset_recovers_active_job_association(monkeypatch):
+    active_job = SimpleNamespace(id="job_1", status="pending", progress=0, message="等待 worker")
+
+    async def find_active_job(**kwargs):
+        assert kwargs == {
+            "job_type": "dataset_generation",
+            "payload_match": {"dataset_id": "dataset_1"},
+            "statuses": {"pending", "running"},
+        }
+        return active_job
+
+    class MissingBackgroundJobRepository:
+        async def get_by_id(self, job_id):
+            return None
+
+    monkeypatch.setattr(eval_service_module.job_tracker, "find_job_by_payload", find_active_job)
+    service = EvaluationService()
+    service.eval_repo = FakeEvaluationRepository()
+    service.job_repo = MissingBackgroundJobRepository()
+    row = SimpleNamespace(
+        dataset_id="dataset_1",
+        build_metadata={"source": "generated", "status": "pending", "params": {"count": 5}},
+    )
+
+    await service._sync_dataset_build_metadata(row)
+
+    assert row.build_metadata["job_id"] == "job_1"
+    assert row.build_metadata["status"] == "pending"
+    assert service.eval_repo.updated_dataset == ("dataset_1", {"build_metadata": row.build_metadata})
 
 
 @pytest.mark.asyncio
@@ -93,6 +169,54 @@ async def test_generate_dataset_rejects_graph_mode_without_indexed_chunks():
     assert service.eval_repo.created_dataset is None
 
 
+@pytest.mark.asyncio
+async def test_list_runs_projects_failed_background_job_to_evaluation_run():
+    started_at = eval_service_module.utc_now()
+    run = SimpleNamespace(
+        run_id="run_12345678",
+        name="评估",
+        dataset_id="dataset_1",
+        status="running",
+        started_at=started_at,
+        completed_at=None,
+        total_items=1,
+        completed_items=0,
+        overall_score=None,
+        retrieval_config={},
+        metrics={},
+    )
+
+    class RunRepository(FakeEvaluationRepository):
+        async def list_runs(self, kb_id):
+            return [run]
+
+        async def update_run(self, run_id, data):
+            self.updated_run = (run_id, data)
+
+    class FailedBackgroundJobRepository:
+        async def list_by_payload_values(self, **kwargs):
+            assert kwargs["payload_values"] == {"run_12345678"}
+            return [
+                SimpleNamespace(
+                    payload={"run_id": "run_12345678"},
+                    status="failed",
+                    error="worker_lease_expired",
+                    message="执行中断",
+                    completed_at=started_at,
+                )
+            ]
+
+    service = EvaluationService()
+    service.eval_repo = RunRepository()
+    service.job_repo = FailedBackgroundJobRepository()
+
+    result = await service.list_runs("kb_1")
+
+    assert result[0]["status"] == "failed"
+    assert result[0]["metrics"] == {"error": "worker_lease_expired"}
+    assert service.eval_repo.updated_run[0] == "run_12345678"
+
+
 def test_build_evaluation_run_name_uses_eval_date_hash_format():
     name = build_evaluation_run_name(hash_value="abcdef12")
 
@@ -102,11 +226,7 @@ def test_build_evaluation_run_name_uses_eval_date_hash_format():
 
 
 @pytest.mark.asyncio
-async def test_run_evaluation_saves_custom_name(monkeypatch):
-    async def fake_enqueue(**kwargs):
-        return SimpleNamespace(id="task_1")
-
-    monkeypatch.setattr(eval_service_module.tasker, "enqueue", fake_enqueue)
+async def test_run_evaluation_saves_custom_name(job_submission):
     repo = FakeEvaluationRepository()
     repo.dataset = SimpleNamespace(
         dataset_id="dataset_1",
@@ -128,6 +248,7 @@ async def test_run_evaluation_saves_custom_name(monkeypatch):
     )
 
     assert run_id.startswith("run_")
+    assert job_submission["published"] == "job_1"
     assert repo.created_run["name"] == "回归评估"
     assert repo.created_run["retrieval_config"]["top_k"] == 3
     assert repo.created_run["retrieval_config"]["answer_llm"] == "test:model"

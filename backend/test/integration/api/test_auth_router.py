@@ -13,10 +13,11 @@ import pytest_asyncio
 from sqlalchemy import update
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from yuxi.services import login_rate_limit_service as login_limiter
-from yuxi.storage.postgres.models_business import User as UserModel
-from yuxi.storage.redis import close_async_redis_client, create_async_redis_client, get_async_redis_client
-from yuxi.utils.datetime_utils import utc_now_naive
+import yuxi.modules.identity.services.login_limits as login_limiter
+from yuxi.modules.identity.models import User as UserModel
+from yuxi.infrastructure.redis import close_async_redis_client, create_async_redis_client, get_async_redis_client
+from yuxi.shared.datetime import utc_now
+from test.integration.api.helpers import create_api_user, create_department, delete_department_by_id, delete_user_by_id
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.integration]
 
@@ -46,9 +47,7 @@ async def _expire_login_lock(user_id: int) -> None:
         session_factory = async_sessionmaker(bind=engine, expire_on_commit=False)
         async with session_factory() as session:
             await session.execute(
-                update(UserModel)
-                .where(UserModel.id == user_id)
-                .values(login_locked_until=utc_now_naive() - timedelta(seconds=1))
+                update(UserModel).where(UserModel.id == user_id).values(login_locked_until=utc_now() - timedelta(seconds=1))
             )
             await session.commit()
     finally:
@@ -91,17 +90,16 @@ async def _create_department_with_admin(test_client, headers, label: str) -> dic
     suffix = uuid.uuid4().hex[:8]
     admin_uid = f"adm{label}_{suffix}"
     admin_password = f"Pw!{suffix}"
-    response = await test_client.post(
-        "/api/departments",
-        json={
+    department = await create_department(
+        test_client,
+        headers,
+        {
             "name": f"pytest_{label}_{suffix}",
             "description": "pytest managed department",
             "admin_uid": admin_uid,
             "admin_password": admin_password,
         },
-        headers=headers,
     )
-    assert response.status_code == 201, response.text
 
     login_response = await test_client.post(
         "/api/auth/token",
@@ -111,7 +109,7 @@ async def _create_department_with_admin(test_client, headers, label: str) -> dic
 
     login_payload = login_response.json()
     return {
-        "department": response.json(),
+        "department": department,
         "admin_id": login_payload["user_id"],
         "admin_headers": {"Authorization": f"Bearer {login_payload['access_token']}"},
     }
@@ -127,19 +125,7 @@ async def _create_user(test_client, headers, label: str, role: str = "user", dep
     if department_id is not None:
         payload["department_id"] = department_id
 
-    response = await test_client.post("/api/auth/users", json=payload, headers=headers)
-    assert response.status_code == 200, response.text
-    return response.json()
-
-
-async def _cleanup_user(test_client, headers, user_id: int) -> None:
-    response = await test_client.delete(f"/api/auth/users/{user_id}", headers=headers)
-    assert response.status_code in {200, 404}, response.text
-
-
-async def _cleanup_department(test_client, headers, department_id: int) -> None:
-    response = await test_client.delete(f"/api/departments/{department_id}", headers=headers)
-    assert response.status_code in {200, 404}, response.text
+    return await create_api_user(test_client, headers, payload)
 
 
 async def test_login_with_invalid_credentials(test_client):
@@ -171,20 +157,18 @@ async def test_user_is_locked_after_repeated_failed_logins(test_client, standard
 
 
 async def test_login_rate_limit_blocks_repeated_failures_per_ip_and_account(test_client, isolated_redis_client):
-    # 测试进程连 localhost:5050，服务端看到的来源 IP 是 127.0.0.1
+    request_headers = {"X-Forwarded-For": "192.0.2.77"}
     identifier = f"nouser_{uuid.uuid4().hex[:8]}"
-    for _ in range(login_limiter.LOGIN_FAILURE_IP_ACCOUNT_MAX - 1):
-        await login_limiter.record_login_failure("127.0.0.1", identifier)
-
-    failure_response = await test_client.post(
-        "/api/auth/token",
-        data={"username": identifier, "password": "wrong-password"},
-    )
-    assert failure_response.status_code == 401, failure_response.text
+    for _ in range(login_limiter.LOGIN_FAILURE_IP_ACCOUNT_MAX):
+        response = await test_client.post(
+            "/api/auth/token", headers=request_headers, data={"username": identifier, "password": "wrong-password"}
+        )
+        assert response.status_code == 401, response.text
 
     # 第 10 次失败后，同 IP+账号组合进入滑动窗口限速
     blocked_response = await test_client.post(
         "/api/auth/token",
+        headers=request_headers,
         data={"username": identifier, "password": "wrong-password"},
     )
     assert blocked_response.status_code == 429, blocked_response.text
@@ -252,10 +236,49 @@ async def test_admin_can_create_and_delete_user(test_client, admin_headers):
     assert delete_payload["success"] is True
     assert delete_payload["message"] == "用户已删除"
 
+    list_response = await test_client.get("/api/auth/users?limit=1000", headers=admin_headers)
+    assert list_response.status_code == 200, list_response.text
+    assert created_user["id"] not in {user["id"] for user in list_response.json()}
 
-async def test_admin_password_mutations_reject_passwords_shorter_than_eight_characters(
-    test_client, admin_headers, standard_user
-):
+
+async def test_admin_user_page_filters_before_pagination_and_excludes_deleted(test_client, admin_headers):
+    suffix = uuid.uuid4().hex[:8]
+    created_users = []
+    try:
+        for index in range(3):
+            response = await test_client.post(
+                "/api/auth/users",
+                json={
+                    "username": f"paged_{suffix}_{index}",
+                    "password": "routerTest123!",
+                    "role": "user",
+                },
+                headers=admin_headers,
+            )
+            assert response.status_code == 200, response.text
+            created_users.append(response.json())
+
+        delete_response = await test_client.delete(f"/api/auth/users/{created_users[1]['id']}", headers=admin_headers)
+        assert delete_response.status_code == 200, delete_response.text
+
+        page_response = await test_client.get(
+            "/api/auth/users/page",
+            params={"search": f"paged_{suffix}", "offset": 1, "limit": 1, "role": "user"},
+            headers=admin_headers,
+        )
+        assert page_response.status_code == 200, page_response.text
+        page = page_response.json()
+        assert page["total"] == 2
+        assert page["limit"] == 1
+        assert page["offset"] == 1
+        assert [item["id"] for item in page["items"]] == [created_users[2]["id"]]
+        assert created_users[1]["id"] not in {item["id"] for item in page["items"]}
+    finally:
+        for user in created_users:
+            await test_client.delete(f"/api/auth/users/{user['id']}", headers=admin_headers)
+
+
+async def test_admin_password_mutations_reject_passwords_shorter_than_eight_characters(test_client, admin_headers, standard_user):
     create_response = await test_client.post(
         "/api/auth/users",
         json={"username": f"weak_{uuid.uuid4().hex[:8]}", "password": "short", "role": "user"},
@@ -316,13 +339,25 @@ async def test_department_admin_is_limited_to_own_department_users(test_client, 
         assert user_b["id"] not in listed_user_ids
         assert all(user["department_id"] == department_a["id"] for user in listed_users)
 
+        page_response = await test_client.get(
+            "/api/auth/users/page",
+            params={"department_id": department_b["id"], "limit": 100},
+            headers=dept_a["admin_headers"],
+        )
+        assert page_response.status_code == 200, page_response.text
+        paged_users = page_response.json()["items"]
+        paged_user_ids = {user["id"] for user in paged_users}
+        assert user_a["id"] in paged_user_ids
+        assert user_b["id"] not in paged_user_ids
+        assert all(user["department_id"] == department_a["id"] for user in paged_users)
+
         options_response = await test_client.get("/api/auth/users/access-options", headers=dept_a["admin_headers"])
         assert options_response.status_code == 200, options_response.text
         access_options = options_response.json()
         option_uids = {user["uid"] for user in access_options}
         assert user_a["uid"] in option_uids
-        assert user_b["uid"] not in option_uids
-        assert all(user["department_id"] == department_a["id"] for user in access_options)
+        assert user_b["uid"] in option_uids
+        assert all(set(user) == {"uid", "username", "role", "department_id", "department_name"} for user in access_options)
 
         superadmin_list_response = await test_client.get("/api/auth/users?limit=1000", headers=admin_headers)
         assert superadmin_list_response.status_code == 200, superadmin_list_response.text
@@ -343,10 +378,9 @@ async def test_department_admin_is_limited_to_own_department_users(test_client, 
         )
         assert cross_update.status_code == 403, cross_update.text
 
-        role_escalation = await test_client.put(
-            f"/api/auth/users/{user_a['id']}", json={"role": "admin"}, headers=dept_a["admin_headers"]
-        )
-        assert role_escalation.status_code == 422, role_escalation.text
+        role_escalation = await test_client.put(f"/api/auth/users/{user_a['id']}", json={"role": "admin"}, headers=dept_a["admin_headers"])
+        assert role_escalation.status_code == 403, role_escalation.text
+        assert role_escalation.json()["detail"] == "只有系统管理员可以提升角色"
 
         cross_delete = await test_client.delete(f"/api/auth/users/{user_b['id']}", headers=dept_a["admin_headers"])
         assert cross_delete.status_code == 403, cross_delete.text
@@ -356,11 +390,11 @@ async def test_department_admin_is_limited_to_own_department_users(test_client, 
         user_ids.remove(user_a["id"])
     finally:
         for user_id in user_ids:
-            await _cleanup_user(test_client, admin_headers, user_id)
+            await delete_user_by_id(test_client, admin_headers, user_id)
         for admin_id in admin_ids:
-            await _cleanup_user(test_client, admin_headers, admin_id)
+            await delete_user_by_id(test_client, admin_headers, admin_id)
         for department_id in department_ids:
-            await _cleanup_department(test_client, admin_headers, department_id)
+            await delete_department_by_id(test_client, admin_headers, department_id)
 
 
 async def test_invalid_token_is_rejected(test_client):

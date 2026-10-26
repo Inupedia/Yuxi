@@ -1,6 +1,6 @@
 # 使用轻量级Python基础镜像
 FROM python:3.13-slim
-COPY --from=ghcr.io/astral-sh/uv:0.11.26 /uv /uvx /bin/
+COPY --from=ghcr.io/astral-sh/uv:0.12.6 /uv /uvx /bin/
 COPY --from=node:24-slim /usr/local/bin /usr/local/bin
 COPY --from=node:24-slim /usr/local/lib/node_modules /usr/local/lib/node_modules
 COPY --from=node:24-slim /usr/local/include /usr/local/include
@@ -37,6 +37,7 @@ RUN set -ex \
         libpq5 \
         libsm6 \
         libxext6 \
+        libreoffice-calc-nogui \
         libreoffice-impress-nogui \
         libreoffice-writer-nogui \
     # (D) 清理垃圾，减小体积
@@ -44,15 +45,31 @@ RUN set -ex \
     && rm -rf /var/lib/apt/lists/*
 
 # 复制项目配置文件
-COPY backend/pyproject.toml /app/pyproject.toml
-COPY backend/.python-version /app/.python-version
-COPY backend/uv.lock /app/uv.lock
+COPY --chown=0:0 --chmod=0644 backend/pyproject.toml /app/pyproject.toml
+COPY --chown=0:0 --chmod=0644 backend/.python-version /app/.python-version
+COPY --chown=0:0 --chmod=0644 backend/uv.lock /app/uv.lock
 
-# 先复制 package 目录，因为 pyproject.toml 中 yuxi = { path = "package", editable = true }
-COPY backend/package /app/package
+# 安装唯一的后端 Python 项目。
+COPY --chown=0:0 --chmod=0644 backend/README.md /app/README.md
+COPY --chown=0:0 --chmod=0644 backend/MANIFEST.in /app/MANIFEST.in
+COPY --chown=0:0 backend/yuxi /app/yuxi
+# 构建输入可来自 600/700 checkout，镜像内源码只读权限不依赖宿主模式。
+RUN find /app/yuxi -type d -exec chmod 0755 {} + \
+    && find /app/yuxi -type f -exec chmod 0644 {} +
 
 # 如果网络还是不好，可以在后面添加 --index-url https://pypi.tuna.tsinghua.edu.cn/simple
 RUN uv sync --no-cache --group test --no-dev --frozen
 
-# 复制 server 代码
-COPY backend/server /app/server
+COPY --chown=0:0 --chmod=0755 docker/api-entrypoint.sh /usr/local/bin/yuxi-entrypoint
+
+RUN groupadd --gid 1000 yuxi \
+    && useradd --uid 1000 --gid 1000 --create-home yuxi \
+    && mkdir -p /app/runtime /home/yuxi/.cache/rapidocr/models \
+    && chown -R 1000:1000 /app/runtime /home/yuxi
+
+ENV HOME=/home/yuxi \
+    RAPIDOCR_MODEL_DIR=/home/yuxi/.cache/rapidocr/models
+
+USER 1000:1000
+
+ENTRYPOINT ["/usr/local/bin/yuxi-entrypoint"]
