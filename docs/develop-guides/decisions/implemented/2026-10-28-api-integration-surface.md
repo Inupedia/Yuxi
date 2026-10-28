@@ -28,6 +28,6 @@ HTTP 入口在 `backend/yuxi/api/routers/identity/users.py`，identity 服务执
 
 ## 验证
 
-上游实现曾记录真实 HTTP 集成测试 `test/integration/api/test_apikey_router.py` 的 18 项通过；当前分支新增了不同用户共用 `app_id` 的分开计数，以及 `User.app_id` 与 `AgentInput.app_id` 不一致时排除该输入的负向样本。本机尝试运行扩展后的真实 HTTP 集成测试时，fixture 在 HTTP 客户端初始化阶段因缺少 `socksio` 失败；同时本机没有配置 `POSTGRES_URL`、integration 管理员账号或可用 Docker daemon。因此，这两项新增 PostgreSQL 断言当前为 `Not run`，需要在更新后的本地服务环境补跑。
+上游实现曾记录真实 HTTP 集成测试 `test/integration/api/test_apikey_router.py` 的 18 项通过；当前分支新增了不同用户共用 `app_id` 的分开计数，以及 `User.app_id` 与 `AgentInput.app_id` 不一致时排除该输入的负向样本。2026-10-28 在更新后的 local beta5 服务上运行 `test_app_overview_counts_app_keys_and_end_users`，真实 HTTP + PostgreSQL 用例 `1 passed`；测试账号和用例数据均已清理。测试账号需绑定默认部门，未绑定时会被既有部门权限检查拒绝。
 
-`frontend/test/browser/apiIntegrationSurfaces.js` 在真实 Chromium 中使用合成响应，核对运行 OpenAPI、不同所有者共用同一 `app_id` 时仍显示两行、浅深主题及 1280/1024/768px 布局、错误恢复、无效 Key 状态、剪贴板实际回读和设置跳转。该脚本不包含在 `pnpm run test:unit`。本次通过 Playwright Chromium 执行，页面的十个 Public API 路径从本地 Yuxi API 读取 OpenAPI，APP 概览使用两名所有者共用相同 ID 的合成数据；浅深主题、三种宽度、错误恢复、剪贴板与独立行断言均为 `Passed`。这次读取的 API 仍为 beta4；本地更新到 beta5 后会再跑一次确认。该浏览器检查不替代外部 MCP 客户端或公网部署验证。
+`frontend/test/browser/apiIntegrationSurfaces.js` 在真实 Chromium 中使用合成响应，核对运行 OpenAPI、不同所有者共用同一 `app_id` 时仍显示两行、浅深主题及 1280/1024/768px 布局、错误恢复、无效 Key 状态、剪贴板实际回读和设置跳转。该脚本不包含在 `pnpm run test:unit`。本次通过 Playwright Chromium 执行，页面的十个 Public API 路径从 beta5 local API 读取 OpenAPI，APP 概览使用两名所有者共用相同 ID 的合成数据；浅深主题、三种宽度、错误恢复、剪贴板与独立行断言均为 `Passed`。该浏览器检查不替代外部 MCP 客户端或公网部署验证。
