@@ -1079,7 +1079,7 @@ defineExpose({ closeSelectionModal })
 
         &:focus-within {
           border-color: var(--main-color);
-          box-shadow: 0 0 0 2px rgba(1, 97, 121, 0.1);
+          box-shadow: 0 0 0 2px var(--main-100);
 
           .search-icon {
             color: var(--main-color);
@@ -1116,7 +1116,7 @@ defineExpose({ closeSelectionModal })
 
         &:hover {
           border-color: var(--gray-300);
-          background: var(--gray-20);
+          background: var(--gray-25);
         }
         .selection-item-content {
           .selection-item-header {

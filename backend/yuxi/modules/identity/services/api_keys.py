@@ -4,6 +4,7 @@ from datetime import datetime
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from yuxi.modules.agents.repositories.input import AgentInputRepository
 from yuxi.modules.identity.models import APIKey, User
 from yuxi.modules.identity.repositories.api_keys import APIKeyRepository
 from yuxi.modules.identity.security import AuthUtils
@@ -57,6 +58,45 @@ async def list_api_keys(db: AsyncSession, *, actor: User, skip: int, limit: int)
         limit=limit,
     )
     return {"api_keys": [key.to_dict() for key in keys], "total": total}
+
+
+async def list_app_overview(db: AsyncSession, *, actor: User) -> dict:
+    """汇总完整 APP 凭据、有效 Key、影子用户与持久化输入数。"""
+    if actor.role != "superadmin":
+        raise PermissionDeniedError("仅超级管理员可查看 API 集成概览")
+
+    repository = APIKeyRepository(db)
+    keys = await repository.list_app_keys()
+    apps = {}
+    valid_key_count = 0
+    for key in keys:
+        if not key.app_id:
+            continue
+        scope = (key.user_id, key.app_id)
+        app = apps.setdefault(
+            scope,
+            {"owner_user_id": key.user_id, "owner_username": key.user.username, "app_id": key.app_id, "keys": []},
+        )
+        valid = key.is_valid()
+        app["keys"].append({"id": key.id, "name": key.name, "access_level": key.access_level, "is_valid": valid})
+        valid_key_count += int(valid)
+
+    end_users = await repository.count_end_users_by_app_scope(list(apps))
+    inputs = await AgentInputRepository(db).count_by_owner_app(list(apps))
+
+    for scope, app in apps.items():
+        app["end_user_count"] = end_users.get(scope, 0)
+        app["input_count"] = inputs.get(scope, 0)
+
+    return {
+        "apps": list(apps.values()),
+        "totals": {
+            "app_count": len(apps),
+            "key_count": valid_key_count,
+            "end_user_count": sum(end_users.values()),
+            "input_count": sum(inputs.values()),
+        },
+    }
 
 
 async def get_api_key(db: AsyncSession, *, actor: User, api_key_id: int) -> dict:

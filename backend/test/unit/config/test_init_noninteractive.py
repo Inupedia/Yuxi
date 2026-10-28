@@ -53,6 +53,9 @@ def test_env_overrides_create_selected_file_and_preserve_secrets_on_rerun(tmp_pa
     assert values["SILICONFLOW_API_KEY"] == "test-api-key"
     assert values["YUXI_INSTANCE_ID"] == "Production"
     assert values["TAVILY_API_KEY"] == "test-search-key"
+    assert values["SANDBOX_BACKEND"] == "container"
+    assert len(values["SANDBOX_RUNNER_TOKEN"]) >= 32
+    assert "--profile container" in result.stdout
     assert len(values["JWT_SECRET_KEY"]) >= 32
     assert values["JWT_SECRET_KEY"] != values["API_KEY_DERIVATION_SECRET"]
     assert not (tmp_path / ".env").exists()
@@ -97,7 +100,7 @@ def test_invalid_existing_secret_is_not_rotated(tmp_path):
 
 def test_production_generates_credentials_and_requires_cube_address(tmp_path):
     """生产初始化生成服务凭据并要求执行节点地址。"""
-    result = run_init(tmp_path, YUXI_ENV="production", SILICONFLOW_API_KEY="test-key")
+    result = run_init(tmp_path, YUXI_ENV="production", SANDBOX_BACKEND="cube", SILICONFLOW_API_KEY="test-key")
     assert result.returncode != 0
     assert "CUBE_API_URL" in result.stderr
     result = run_init(
@@ -113,6 +116,8 @@ def test_production_generates_credentials_and_requires_cube_address(tmp_path):
     for name in ["POSTGRES_PASSWORD", "NEO4J_PASSWORD", "MINIO_ACCESS_KEY", "MINIO_SECRET_KEY"]:
         assert len(values[name]) >= 32
     assert values["YUXI_ENV"] == "production"
+    assert values["SANDBOX_BACKEND"] == "cube"
+    assert "SANDBOX_RUNNER_TOKEN" not in values
 
 
 @pytest.mark.parametrize("filename", ["docker-compose.yml", "docker-compose.prod.yml"])
@@ -133,6 +138,7 @@ def test_cube_compose_defaults_and_explicit_paths_after_init(tmp_path, filename,
     result = run_init(
         tmp_path,
         YUXI_ENV="production" if ".prod." in filename else "development",
+        SANDBOX_BACKEND="cube",
         SILICONFLOW_API_KEY="test-key",
         CUBE_API_URL="http://node:3000",
         CUBE_PROXY_NODE_IP="node",
@@ -162,6 +168,46 @@ def test_container_backend_generates_runner_token_in_development(tmp_path):
     result = run_init(tmp_path, SANDBOX_BACKEND="container", SILICONFLOW_API_KEY="test-key")
     assert result.returncode == 0, result.stdout + result.stderr
     assert len(read_env(tmp_path)["SANDBOX_RUNNER_TOKEN"]) >= 32
+
+
+def test_default_container_initialization_renders_complete_compose(tmp_path):
+    """默认初始化配合文档启动参数，为应用和 runner 注入同一认证与后端。"""
+    import json
+    import shutil
+
+    if not shutil.which("docker"):
+        pytest.skip("需要 Docker Compose 命令验证默认部署")
+    result = run_init(tmp_path, SILICONFLOW_API_KEY="test-key")
+    assert result.returncode == 0, result.stderr
+    env_file = tmp_path / ".env.prod"
+    rendered = subprocess.run(
+        [
+            "docker",
+            "compose",
+            "--env-file",
+            str(env_file),
+            "-f",
+            str(project_root() / "docker-compose.yml"),
+            "--profile",
+            "container",
+            "config",
+            "--format",
+            "json",
+        ],
+        env={**isolated_environment(), "YUXI_ENV_FILE": str(env_file)},
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=20,
+    )
+    services = json.loads(rendered.stdout)["services"]
+    token = read_env(tmp_path)["SANDBOX_RUNNER_TOKEN"]
+    assert len(token) >= 32
+    for name in ("api", "worker", "sandbox-runner"):
+        assert services[name]["environment"]["SANDBOX_RUNNER_TOKEN"] == token
+    for name in ("api", "worker"):
+        assert services[name]["environment"]["SANDBOX_BACKEND"] == "container"
+    assert services["sandbox-image"]["image"] == services["sandbox-runner"]["environment"]["SANDBOX_CONTAINER_IMAGE"]
 
 
 def test_production_container_backend_requires_runner_credentials(tmp_path):

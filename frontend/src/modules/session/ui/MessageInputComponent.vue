@@ -1429,12 +1429,6 @@ defineExpose({
     grid-column: 1 / -1;
   }
 
-  // &:focus-within {
-  //   border-color: var(--main-500);
-  //   background: var(--gray-0);
-  //   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
-  // }
-
   &.dragging-files {
     border-color: var(--main-color);
     background: var(--main-10);
@@ -1502,7 +1496,7 @@ defineExpose({
       position: absolute;
       left: 0;
       top: 0;
-      color: var(--gray-400);
+      color: var(--gray-600);
       pointer-events: none;
     }
   }
@@ -1561,6 +1555,52 @@ defineExpose({
   }
 }
 
+:global(:root.dark .input-box) {
+  border: 0;
+  box-shadow: none;
+  transition: background-color 0.15s ease;
+}
+
+:global(:root.dark .input-box:not(.dragging-files)) {
+  background: var(--gray-30);
+}
+
+:global(:root.dark .input-box:not(.dragging-files):hover) {
+  background: var(--gray-40);
+}
+
+:global(:root.dark .input-box:not(.dragging-files):focus-within) {
+  background: var(--gray-50);
+}
+
+:global(:root.dark .send-button.ant-btn-icon-only) {
+  background: var(--gray-1000);
+  color: var(--bg-page);
+  box-shadow: none;
+}
+
+:global(:root.dark .send-button.ant-btn-icon-only:hover:not(:disabled)) {
+  background: var(--gray-800);
+  color: var(--bg-page);
+  box-shadow: none;
+}
+
+:global(:root.dark .send-button.ant-btn-icon-only:active:not(:disabled)) {
+  background: var(--gray-700);
+  box-shadow: none;
+}
+
+:global(:root.dark .send-button.ant-btn-icon-only:focus-visible) {
+  outline: 2px solid var(--gray-400);
+  outline-offset: 3px;
+}
+
+:global(:root.dark .mention-popup) {
+  background: var(--color-bg-elevated);
+  border: 0;
+  box-shadow: none;
+}
+
 // @ 提及弹窗样式
 .mention-dropdown-wrapper {
   position: absolute;
@@ -1578,8 +1618,8 @@ defineExpose({
   background: var(--gray-0);
   border-radius: 12px;
   box-shadow:
-    0 -4px 16px rgba(0, 0, 0, 0.08),
-    0 4px 16px rgba(0, 0, 0, 0.12);
+    0 -4px 16px var(--shadow-2),
+    0 4px 16px var(--shadow-3);
   border: 1px solid var(--gray-200);
   padding: 8px 0;
 
@@ -1738,7 +1778,7 @@ defineExpose({
   }
 
   .query-match {
-    color: #fa8c16; /* 明亮温润的金橘色 */
+    color: var(--color-warning-700);
     font-weight: 700;
   }
 

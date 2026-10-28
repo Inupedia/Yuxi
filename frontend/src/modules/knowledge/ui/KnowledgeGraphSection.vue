@@ -189,7 +189,7 @@
               <a-progress
                 v-if="isBuildActive"
                 :percent="graphBuildStatus?.build_job_progress ?? 0"
-                :stroke-color="{ '0%': '#108ee9', '100%': '#87d068' }"
+                :stroke-color="{ '0%': 'var(--main-400)', '100%': 'var(--main-700)' }"
                 size="small"
                 style="margin-bottom: 10px"
               />
@@ -926,7 +926,7 @@ onUnmounted(() => {
     &:focus,
     &-focused {
       background: var(--main-0);
-      border-color: var(--primary-color);
+      border-color: var(--main-color);
     }
 
     input {
@@ -963,8 +963,8 @@ onUnmounted(() => {
     position: relative;
 
     &:hover {
-      background: var(--shadow-1);
-      color: var(--primary-color);
+      background: var(--dark-5);
+      color: var(--main-color);
     }
   }
 
@@ -1227,7 +1227,7 @@ onUnmounted(() => {
   margin-top: 4px;
   font-size: 12px;
   line-height: 1.5;
-  color: var(--gray-600, #6b7280);
+  color: var(--gray-600);
 }
 
 .graph-config-footer {

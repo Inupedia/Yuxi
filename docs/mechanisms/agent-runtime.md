@@ -84,7 +84,7 @@ manifest v2 的配置摘要来自准备后的可配置字段，包含模型覆�
 
 ## 文件和 Memory
 
-当前 Project 的 `workdir_path` 决定 Agent 的默认工作目录。同树会话共享 Project Workdir，各自拥有消息历史、Thread checkpoint、Run lease、heartbeat 和命令清理责任。执行环境属于用户，同用户不同 Project 也共用持久 Cube VM；一个协作树结束不会销毁 VM。用户没有活动 Run、操作和待清理命令时，worker 才按空闲策略休眠环境，详见[沙盒生命周期](./sandbox.md#生命周期与并发)。
+当前 Project 的 `workdir_path` 决定 Agent 的默认工作目录。同树会话共享 Project Workdir，各自拥有消息历史、Thread checkpoint、Run lease、heartbeat 和命令清理责任。默认 Container 为每个 Run 创建临时执行环境，终态后清理容器并保留 Workdir。显式选择 Cube 时，同用户不同 Project 共用持久 VM；用户没有活动 Run、操作或待清理命令时才按空闲策略休眠，详见[沙盒生命周期](./sandbox.md#生命周期与并发)。
 
 `agents/MEMORY.md` 只有在用户配置 `enable_memory=true`，且该文件存在并包含非空内容时，才由 Memory middleware 读取并提供受限的记忆工具。未保存配置的用户默认启用 Memory，已保存的关闭选择继续生效。用户可在账户设置中切换开关，或点击“查看 Memory”进入个人空间并打开该文件。它是用户主动维护的参考资料，不是系统指令。Memory 读取和更新有独立的用户、Run、worker 和文件大小校验。
 

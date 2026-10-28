@@ -133,7 +133,7 @@ async def resolve_session_workdir_path(*, agent_session: Session, uid: str, db) 
 
 async def ensure_session_workdir_available(
     *,
-    agent_session,
+    agent_session: Session,
     uid: str,
     db,
     workdir_binding: WorkdirBinding | None = None,

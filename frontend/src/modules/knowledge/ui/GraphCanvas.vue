@@ -731,7 +731,7 @@ defineExpose({
       }
 
       .stat-total {
-        color: var(--color-text-quaternary);
+        color: var(--gray-400);
         font-size: 11px;
       }
     }
@@ -846,7 +846,7 @@ defineExpose({
     filter: brightness(1);
   }
   50% {
-    filter: brightness(1.3) drop-shadow(0 0 8px rgba(255, 0, 0, 0.8));
+    filter: brightness(1.3) drop-shadow(0 0 8px color-mix(in srgb, var(--color-error-500) 80%, transparent));
   }
   100% {
     filter: brightness(1);

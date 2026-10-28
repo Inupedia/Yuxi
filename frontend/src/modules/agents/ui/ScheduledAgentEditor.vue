@@ -458,7 +458,7 @@ function changeFrequency(frequency) {
 .trust-warning {
   padding: 0 2px;
   margin: 6px 0 0;
-  color: var(--color-warning-800);
+  color: var(--color-warning-900);
   font-size: 12px;
   line-height: 18px;
   text-align: right;

@@ -34,52 +34,48 @@ Yuxi is built for teams that need control over their data, models, and permissio
 
 ## Quick Start
 
-Yuxi application services run with Docker Compose; agent execution uses Cube user VMs on a dedicated Linux/KVM node. Cube is not started by Compose: install and run Cube on the execution node before starting the application.
+Yuxi starts with Docker Compose and the Container sandbox by default. Each agent run uses a temporary container while workspace files persist. No separate KVM node is required.
 
 ### Prerequisites
 
-Install [Docker Engine](https://docs.docker.com/get-docker/) and Docker Compose, prepare a working LLM API, and prepare an x86_64 Linux/KVM execution node. The node needs `/dev/kvm`, admin access, Docker (to build the user template), and shared Workspace/Skills directories with the application host. Applications running on macOS or Windows also need access to this Linux/KVM node.
+Install Git, [Docker Engine](https://docs.docker.com/get-docker/), and Docker Compose v2, and prepare a working LLM API. On macOS or Windows, use Docker Desktop in Linux container mode and allow access to the project directory.
 
-This guide uses the `v0.8.0.beta3` candidate tag; a formal release is pending. Version 0.8 requires a fresh deployment with separate data directories and provides no automatic upgrade of older databases, indexes, or file layouts. See the [0.8.0 release notes](docs/develop-guides/releases/0.8.0.md).
+This guide uses the `v0.8.0.beta5` beta release. Version 0.8 requires a fresh deployment with separate data directories and provides no automatic upgrade of older databases, indexes, or file layouts. See the [0.8.0 release notes](docs/develop-guides/releases/0.8.0.md).
 
-### 1. Start the Cube Execution Node
+Container shares the host kernel and suits local evaluation and trusted single-tenant workloads. For VM isolation or persistent user environments, select Cube in the [quick start](docs/intro/quick-start.md) and prepare a Linux/KVM execution node.
 
-On the dedicated node, follow [sandbox operations](docs/advanced/sandbox-operations.md#原生执行节点) to run `docker/cube/setup-node.sh` and build the `yuxi-user` template. If the same Linux machine runs the application and provides `/dev/kvm`, install Cube directly on it; to run the development node in a separate container or VM, use the [nested development node](docs/advanced/sandbox-operations.md#当前机器的嵌套开发节点) and start the separate Cube Compose project.
-
-Yuxi checks the Cube control plane, user template, and data proxy at startup; if the check fails, the application does not become ready. See the [quick start](docs/intro/quick-start.md) for node setup, shared directories, and platform requirements.
-
-### 2. Get the Code and Initialize
+### 1. Get the Code and Initialize
 
 ```bash
-git clone --branch v0.8.0.beta3 --depth 1 https://github.com/xerrors/Yuxi.git
+git clone --branch v0.8.0.beta5 --depth 1 https://github.com/xerrors/Yuxi.git
 cd Yuxi
+./scripts/init.sh
 ```
 
-Follow step 3 of the [quick start](docs/intro/quick-start.md) to prepare `.env`, the Cube connection values, and shared directories. Initialize with `./scripts/init.sh` (Linux/macOS) or `.\scripts\init.ps1` (Windows; fill `.env` first because `init.ps1` does not copy `CUBE_*` from the process environment).
+On Windows, run `.\scripts\init.ps1` in PowerShell. The script prompts for a SiliconFlow API Key, generates independent application secrets, a runner authentication token, and an instance identifier, then prepares base images. Configure other model providers after signing in. Keep existing secrets when reusing `.env`; to switch to Container, set `SANDBOX_BACKEND=container` and rerun initialization.
 
-The initialization script creates `.env`, prompts for a SiliconFlow API Key, and generates separate JWT and API Key derivation secrets. You can also copy `.env.template` manually. It does not provision Cube: `CUBE_API_URL`, `CUBE_PROXY_NODE_IP`, `CUBE_NODE_USER_DATA_DIR`, and `CUBE_NODE_SKILL_PROJECTION_DIR` must be configured before it runs, plus `CUBE_API_KEY` when the node requires authentication. Run `docker compose config --quiet` before starting.
-
-### 3. Start the Development Environment
+### 2. Start Services
 
 ```bash
-docker compose up --build -d
+docker compose --profile container config --quiet
+docker compose --profile container up --build -d
 ```
 
-Check service status:
+The `container` profile builds the sandbox image and starts its runner. Sandbox networking is disabled by default; see [Container sandbox](docs/advanced/container-sandbox.md) for configuration and limitations.
+
+### 3. Verify the Deployment
 
 ```bash
-docker compose ps
+docker compose --profile container ps
 curl --fail http://localhost:5050/api/system/ready
 ```
 
-Once the returned `status` is `ready`, open [http://localhost:5173](http://localhost:5173), follow the page instructions to initialize the superadmin account, and sign in. API documentation is available at [http://localhost:5050/docs](http://localhost:5050/docs).
-
-Keep the existing deployment and a consistent backup of PostgreSQL, MinIO, and user files before trying 0.8 in a separate environment. Read the [production deployment guide](docs/advanced/deployment.md) for the current schema and storage requirements.
+Once `status` is `ready`, open [http://localhost:5173](http://localhost:5173), initialize the superadmin account, and sign in. Ask an agent to create `hello.txt`, then verify its contents in the workspace; see the [quick start](docs/intro/quick-start.md) for the full check. API documentation is available at [http://localhost:5050/docs](http://localhost:5050/docs).
 
 ## Documentation
 
 - [Project overview](https://xerrors.github.io/Yuxi/intro/project-overview): Capabilities, concepts, and system boundaries.
-- [Quick start](https://xerrors.github.io/Yuxi/intro/quick-start): Prepare the execution node and start a development environment.
+- [Quick start](https://xerrors.github.io/Yuxi/intro/quick-start): Choose a sandbox and start a development environment.
 - [Command-line client](docs/intro/cli.md): Sign in, chat, send attachments, and query knowledge bases.
 - [Public Agent API quick start](docs/intro/agents-api-quickstart.md): Create sessions, submit messages, and read results from external applications.
 - [Model configuration](https://xerrors.github.io/Yuxi/intro/model-config): Connect chat, embedding, and rerank models.

@@ -427,7 +427,7 @@ def test_shipping_selects_cube_or_container_with_explicit_runner_boundary(filena
     assert "sandbox-provisioner" not in services
     for name in ("api", "worker"):
         env = services[name]["environment"]
-        assert env["SANDBOX_BACKEND"] == "${SANDBOX_BACKEND:-cube}"
+        assert env["SANDBOX_BACKEND"] == "${SANDBOX_BACKEND:-container}"
         assert env["SANDBOX_RUNNER_URL"] == "${SANDBOX_RUNNER_URL:-http://sandbox-runner:8090}"
         assert env["CUBE_API_URL"] == "${CUBE_API_URL:-}"
         assert env["CUBE_NODE_USER_DATA_DIR"] == "${CUBE_NODE_USER_DATA_DIR:-/data/shared/yuxi/threads}"

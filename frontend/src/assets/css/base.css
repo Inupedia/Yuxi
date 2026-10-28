@@ -68,9 +68,15 @@
   --gray-150: #eef0f0;
   --gray-100: #eff2f2;
   --gray-50: #f5f7f7;
+  --gray-40: #f6f8f8;
+  --gray-30: #f7f9f9;
   --gray-25: #f8fafa;
+  --gray-20: #f9fbfb;
   --gray-10: #fbfcfc;
   --gray-0: #ffffff;
+
+  --border-surface: var(--gray-150);
+  --border-surface-hover: var(--gray-300);
 
   /* Semantic Color Scale - 语义色阶系统：背景 → 标准色 → 前景，深色模式保持用途。 */
   --color-primary-25: var(--main-30); /* 柔和背景 */
@@ -148,6 +154,9 @@
   --chart-palette-10: #a0a0a0;
 
   --bg-sider: var(--main-5);
+  --bg-sider-hover: var(--main-20);
+  /* 页面底色与表面色分离；浅色保持现状，深色由 base.dark.css 覆盖为更暗的底色。 */
+  --bg-page: var(--gray-0);
 
   --light-98: rgba(255, 255, 255, 0.98);
   --light-95: rgba(255, 255, 255, 0.95);

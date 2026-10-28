@@ -265,6 +265,10 @@ onUnmounted(() => {
   overflow-x: hidden;
 }
 
+:global(:root.dark .dashboard-container) {
+  background-color: var(--bg-page);
+}
+
 .dashboard-header-actions {
   display: flex;
   align-items: center;

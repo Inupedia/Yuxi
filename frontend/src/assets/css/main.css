@@ -28,7 +28,7 @@ body {
   display: flow-root;
   min-height: 100vh;
   color: var(--gray-900);
-  background: var(--gray-0);
+  background: var(--bg-page);
   line-height: 1.6;
   font-family: var(--font-family);
   font-size: 15px;

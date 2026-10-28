@@ -198,7 +198,7 @@ const normalizedTags = computed(() => {
   gap: 10px;
   padding: 16px;
   border-radius: 8px;
-  border: 1px solid var(--gray-150);
+  border: 1px solid var(--border-surface);
   background: var(--gray-0);
   cursor: pointer;
   transition:
@@ -207,7 +207,7 @@ const normalizedTags = computed(() => {
   overflow: hidden;
 
   &:hover {
-    border-color: var(--gray-300);
+    border-color: var(--border-surface-hover);
     background: var(--gray-25);
   }
 
@@ -448,9 +448,9 @@ const normalizedTags = computed(() => {
 
     &:hover,
     &:focus {
-      border-color: var(--color-error-200);
+      border-color: var(--color-error-100);
       background: var(--color-error-50);
-      color: var(--color-error-800);
+      color: var(--color-error-900);
     }
   }
 }

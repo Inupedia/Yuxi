@@ -74,6 +74,22 @@ class ReleaseWorkflowTests(unittest.TestCase):
         """首次启动的 API 和 worker 不依赖 Docker 创建目录的默认所有权。"""
         self.assert_runtime_mount_ownership((WORKFLOWS / "system-tests.yml").read_text())
 
+    def test_real_provider_probe_starts_container_sandbox_runner(self) -> None:
+        """手动 provider probe 显式启动 Container profile 中的 runner。"""
+        workflow = (WORKFLOWS / "real-provider-probe.yml").read_text()
+        start = re.search(r"(?m)^        run: docker compose up -d --build (.+)$", workflow)
+        self.assertIsNotNone(start, "real-provider probe 缺少拓扑启动命令")
+        self.assertIn("sandbox-runner", start.group(1).split())
+
+    def test_real_provider_probe_rejects_missing_container_sandbox_runner(self) -> None:
+        """恢复遗漏 profile runner 的启动缺陷时门禁必须失败。"""
+        workflow = (WORKFLOWS / "real-provider-probe.yml").read_text()
+        broken = workflow.replace(" minio api worker sandbox-runner\n", " minio api worker\n")
+        start = re.search(r"(?m)^        run: docker compose up -d --build (.+)$", broken)
+        self.assertIsNotNone(start, "real-provider probe 缺少拓扑启动命令")
+        with self.assertRaises(AssertionError):
+            self.assertIn("sandbox-runner", start.group(1).split())
+
     def test_runtime_mounts_reject_missing_ownership_preparation(self) -> None:
         """恢复 root 所有的挂载根目录或遗漏任一 job 时门禁失败。"""
         workflow = (WORKFLOWS / "system-tests.yml").read_text()

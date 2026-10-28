@@ -1185,7 +1185,7 @@ watch([useInlinePreview, workspaceActive], ([isInline, isActive]) => {
   transition: grid-template-columns 220ms ease;
   flex: 1 1 auto;
   min-height: 0;
-  background: var(--gray-0);
+  background: var(--bg-page);
   overflow: hidden;
 
   &.is-sidebar-collapsed {

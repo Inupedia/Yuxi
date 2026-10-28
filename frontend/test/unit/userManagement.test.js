@@ -98,14 +98,35 @@ test('表头筛选支持角色与部门多选，未选值不下发筛选参数',
     assert.deepEqual(requests.at(-1).roles, [])
     assert.equal(page.hasActiveFilters.value, false)
 
-    page.userManagement.roleFilterValues = ['admin', 'user']
-    page.userManagement.departmentFilterValues = ['3', '5']
+    page.setFilterOpen('role', true)
+    page.filterDraft.role = ['admin', 'user']
+    await page.fetchUsers()
+    assert.deepEqual(requests.at(-1).roles, [])
+    page.setFilterOpen('role', false)
+    page.setFilterOpen('role', true)
+    assert.deepEqual(page.filterDraft.role, [])
+    page.filterDraft.role = ['admin', 'user']
+    page.applyFilter('role')
+    assert.equal(page.filterOpen.role, false)
+
+    page.setFilterOpen('department', true)
+    page.filterDraft.department = ['3', '5']
+    page.applyFilter('department')
     const filterWatch = watches.find(({ read }) => Array.isArray(read()))
     filterWatch.run()
     await page.fetchUsers()
     assert.deepEqual(requests.at(-1).roles, ['admin', 'user'])
     assert.deepEqual(requests.at(-1).departmentIds, ['3', '5'])
     assert.equal(page.hasActiveFilters.value, true)
+
+    page.setFilterOpen('role', true)
+    page.filterDraft.role = []
+    page.setFilterOpen('role', false)
+    page.setFilterOpen('role', true)
+    assert.deepEqual(page.filterDraft.role, ['admin', 'user'])
+    page.filterDraft.role = []
+    page.applyFilter('role')
+    assert.deepEqual(page.userManagement.roleFilterValues, [])
 
     // APP 终端用户视图隐藏表头筛选
     page.userManagement.userKindFilter = 'end_user'

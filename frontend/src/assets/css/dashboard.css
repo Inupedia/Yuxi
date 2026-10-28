@@ -53,6 +53,10 @@
 }
 
 /* 共享的卡片样式 */
+:root.dark .dashboard-card {
+  border-color: transparent;
+}
+
 .dashboard-card {
   background-color: var(--gray-0);
   border: 1px solid var(--gray-100);

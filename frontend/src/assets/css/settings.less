@@ -1,4 +1,11 @@
 /* 显式类由设置面板主动使用，浮层容器不接管后代的通用类名。 */
+:root.dark .settings-table-wrapper {
+  .ant-table-thead > tr > th,
+  .ant-table-tbody > tr > td {
+    border-bottom-color: transparent;
+  }
+}
+
 .settings-page {
   min-width: 0;
   container: settings-page / inline-size;
@@ -74,7 +81,7 @@
 .settings-service-card,
 .settings-table-surface,
 .settings-table-wrapper {
-  border: 1px solid var(--gray-150);
+  border: 1px solid var(--border-surface);
   border-radius: 8px;
   background: var(--gray-0);
 }

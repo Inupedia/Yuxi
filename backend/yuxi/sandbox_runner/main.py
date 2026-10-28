@@ -28,43 +28,6 @@ _executor_lock = threading.Lock()
 _settings: RunnerSettings | None = None
 
 
-def get_settings() -> RunnerSettings:
-    """首次请求时读取并校验部署配置。"""
-    global _settings
-    if _settings is None:
-        with _settings_lock:
-            if _settings is None:
-                _settings = RunnerSettings.from_env()
-    return _settings
-
-
-def get_manager() -> ContainerManager:
-    """懒初始化 Docker 与镜像，失败后允许下一次请求重试。"""
-    if app.state.manager is None:
-        with _manager_lock:
-            if app.state.manager is None:
-                app.state.manager = ContainerManager(get_settings())
-    return app.state.manager
-
-
-def get_executor() -> ThreadPoolExecutor:
-    """长命令使用独立线程池，避免占满 ASGI 的短请求线程池。"""
-    if app.state.executor is None:
-        with _executor_lock:
-            if app.state.executor is None:
-                settings = get_settings()
-                workers = max(8, min(256, settings.max_containers * settings.max_execs))
-                app.state.executor = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="sandbox-exec")
-    return app.state.executor
-
-
-def require_token(authorization: str | None = Header(default=None)) -> None:
-    """只接受共享 Bearer token，比较使用常量时间。"""
-    expected = f"Bearer {get_settings().token}"
-    if not authorization or not secrets.compare_digest(authorization, expected):
-        raise HTTPException(status_code=401, detail="unauthorized")
-
-
 class ExecRequest(BaseModel):
     """执行一条归属于 Run 与 attempt 的命令。"""
 
@@ -135,6 +98,46 @@ app = FastAPI(
 )
 app.state.manager = None
 app.state.executor = None
+
+
+def get_settings() -> RunnerSettings:
+    """首次请求时读取并校验部署配置。"""
+    global _settings
+    if _settings is None:
+        with _settings_lock:
+            if _settings is None:
+                _settings = RunnerSettings.from_env()
+    return _settings
+
+
+def get_manager() -> ContainerManager:
+    """懒初始化 Docker 与镜像，失败后允许下一次请求重试。"""
+    if app.state.manager is None:
+        with _manager_lock:
+            if app.state.manager is None:
+                app.state.manager = ContainerManager(get_settings())
+    return app.state.manager
+
+
+def get_executor() -> ThreadPoolExecutor:
+    """长命令使用独立线程池，避免占满 ASGI 的短请求线程池。"""
+    if app.state.executor is None:
+        with _executor_lock:
+            if app.state.executor is None:
+                settings = get_settings()
+                # 线程数按容器与单容器并发 exec 的乘积推导，并夹在固定上下界内
+                workers = max(8, min(256, settings.max_containers * settings.max_execs))
+                app.state.executor = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="sandbox-exec")
+    return app.state.executor
+
+
+def require_token(authorization: str | None = Header(default=None)) -> None:
+    """只接受共享 Bearer token，比较使用常量时间。"""
+    expected = f"Bearer {get_settings().token}"
+    if not authorization or not secrets.compare_digest(authorization, expected):
+        raise HTTPException(status_code=401, detail="unauthorized")
+
+
 router = APIRouter(dependencies=[Depends(require_token)])
 
 

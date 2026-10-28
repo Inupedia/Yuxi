@@ -6,14 +6,14 @@
 
 | 值 | 执行 Owner | 生命周期 | 隔离定位 |
 |---|---|---|---|
-| `cube`（默认） | 每用户一个持久 Cube VM | 跨 Run 复用，空闲休眠，显式重建 | Linux/KVM，强隔离 |
-| `container` | 独立 `sandbox-runner`，每 Run 一个临时容器 | 首次 `execute` 创建，Run 终态/取消/失败时销毁 | 普通 Docker/Podman，单租户或可信代码 |
+| `cube` | 每用户一个持久 Cube VM | 跨 Run 复用，空闲休眠，显式重建 | Linux/KVM，强隔离 |
+| `container`（默认） | 独立 `sandbox-runner`，每 Run 一个临时容器 | 首次 `execute` 创建，Run 终态/取消/失败时销毁 | 普通 Docker/Podman，单租户或可信代码 |
 
 两种后端复用 Agent 工具入口、Workspace 虚拟路径、审批、审计和 Run lease。每个 Run 终态（包括 yielded）都登记 `runtime_cleanup_pending`；统一的 `cleanup_run` 确认资源释放后才清除责任。Cube 清理所属命令并保留用户 VM，container 删除所属 Run 容器。清理失败由现有恢复循环重试。
 
 Steer 在原事务中提交旧 Run 的 yielded 状态及新 pending Run，提交后先清理旧环境再投递接续。即使周期补投提前到达，Run 领取边界也拒绝同 Thread 尚有清理责任的首次执行；清理恢复后由 pending 补投接续，不丢失已消费输入。
 
-Container 模式的部署、挂载、资源限制和能力差异见[Container 沙盒](../advanced/container-sandbox.md)。以下“用户 VM”段落描述默认 Cube 后端。
+Container 模式的部署、挂载、资源限制和能力差异见[Container 沙盒](../advanced/container-sandbox.md)。以下“用户 VM”段落描述 Cube 后端。
 
 ## Cube 用户 VM
 

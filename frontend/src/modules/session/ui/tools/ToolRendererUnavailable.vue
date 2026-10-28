@@ -7,9 +7,10 @@
 <style scoped>
 .tool-renderer-unavailable {
   padding: 8px 12px;
-  color: var(--text-color-secondary, #8c8c8c);
+  color: var(--gray-600);
   font-size: 12px;
-  border: 1px solid var(--border-color, #d9d9d9);
+  border: 1px solid var(--border-surface);
+  background: var(--gray-10);
   border-radius: 6px;
 }
 </style>

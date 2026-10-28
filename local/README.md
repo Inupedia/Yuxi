@@ -1,6 +1,6 @@
 # 引大济岷定制与部署
 
-上游基线为 `upstream/main` 的 `4889c339`（0.8.0.beta4）。品牌路由、首页、登录页、CLI 授权页、主题和场景代码位于 `frontend/src/custom/inupedia/`；单位配置为 `backend/yuxi/modules/system/static/info.inupedia.yaml`，由 `YUXI_BRAND_FILE_PATH` 指定。Tavily 代理继续使用 `TAVILY_API_BASE`，覆盖搜索和正文抓取。容器沙盒镜像包含 Node/npm 和固定版本 Skills CLI。
+上游基线为 `v0.8.0.beta5`（`ce90a047`）。品牌路由、首页、登录页、CLI 授权页、主题和场景代码位于 `frontend/src/custom/inupedia/`；单位配置为 `backend/yuxi/modules/system/static/info.inupedia.yaml`，由 `YUXI_BRAND_FILE_PATH` 指定。Tavily 代理继续使用 `TAVILY_API_BASE`，覆盖搜索和正文抓取。容器沙盒镜像包含 Node/npm 和固定版本 Skills CLI。
 
 ## 环境与入口
 
@@ -17,12 +17,12 @@
 
 `local/compose.preview.yml` 的文件名沿用部署历史。设置 `YUXI_PREVIEW_PUBLIC=true` 会同时注册正式域名 `knowledge.ai.swhisxy.cn` 与预览域名 `knowledge-next.ai.swhisxy.cn`，两者服务于同一实例。它不是独立预览环境模板，不能在另一套实例上启用该配置来竞争现有路由。
 
-在部署目录准备独立 `.env.prod`，填写上游生产 Compose 的必填项，使用 `COMPOSE_PROJECT_NAME=yuxi08`、`YUXI_API_PORT=16050`、`YUXI_FRONTEND_PORT=18180`。`YUXI_VERSION` 和 `SANDBOX_CONTAINER_IMAGE` 必须指向已构建的 beta4 定制镜像。在线技能需要 `SANDBOX_CONTAINER_NETWORK=bridge`；镜像 digest 由 daemon 的实际 `.Id` 固定。
+在部署目录准备独立 `.env.prod`，填写上游生产 Compose 的必填项，使用 `COMPOSE_PROJECT_NAME=yuxi08`、`YUXI_API_PORT=16050`、`YUXI_FRONTEND_PORT=18180`。`YUXI_VERSION` 和 `SANDBOX_CONTAINER_IMAGE` 必须指向已构建的 beta5 定制镜像。在线技能需要 `SANDBOX_CONTAINER_NETWORK=bridge`；镜像 digest 由 daemon 的实际 `.Id` 固定。
 
 ```bash
 docker compose --env-file .env.prod -f docker-compose.prod.yml -f local/compose.preview.yml --profile container config --quiet
 docker compose --env-file .env.prod -f docker-compose.prod.yml -f local/compose.preview.yml --profile container build api frontend minio storage-init sandbox-image
-docker image inspect yuxi08-sandbox:0.8.0.beta4-inupedia-20261028 --format '{{.Id}}'
+docker image inspect yuxi08-sandbox:0.8.0.beta5-inupedia-20261028 --format '{{.Id}}'
 ```
 
 把上述镜像 ID 填入 `SANDBOX_CONTAINER_IMAGE_DIGEST`。新建环境先保持 `YUXI_PREVIEW_PUBLIC=false`，完成初始化和私网验收后再启用两个域名；现有实例升级前检查活动 Run，保留 `.env.prod` 与部署叠加配置。

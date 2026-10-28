@@ -8,7 +8,9 @@ import os
 import stat
 import tempfile
 import uuid
-from contextlib import ExitStack
+from collections import deque
+from collections.abc import Iterator
+from contextlib import ExitStack, contextmanager, suppress
 from pathlib import Path, PurePosixPath
 from typing import BinaryIO
 
@@ -22,6 +24,9 @@ from yuxi.infrastructure.filesystem import (
 )
 from yuxi.modules.workspace.errors import FileTransferLimitError
 from yuxi.modules.workspace.paths import normalize_workspace_scope, user_workspace_dir, validate_directory_name
+
+# 文件读写统一按 1MB 分块，控制单次读取的内存占用。
+_READ_CHUNK_SIZE = 1024 * 1024
 
 
 class Workspace:
@@ -63,13 +68,13 @@ class Workspace:
     ) -> list[dict]:
         """在授权根内执行有界实时扫描并返回文件名或路径匹配项。"""
         normalized_query = str(query or "").strip().lower()
-        pending: list[tuple[str, int]] = [(root, 0)]
+        pending: deque[tuple[str, int]] = deque([(root, 0)])
         results: list[dict] = []
         visited_directories = 0
         scanned_entries = 0
 
         while pending and visited_directories < max_directories and scanned_entries < max_scanned_entries:
-            directory, depth = pending.pop(0)
+            directory, depth = pending.popleft()
             visited_directories += 1
             remaining_entries = max_scanned_entries - scanned_entries
             entries, examined_entries = self._list_authorized_directory_limited(
@@ -86,53 +91,24 @@ class Workspace:
                 if is_dir and not excluded and depth < max_depth:
                     pending.append((path, depth + 1))
 
-                matched = not normalized_query or normalized_query in name.lower() or normalized_query in path.lower()
+                # path 以 name 结尾，匹配 path 即同时覆盖纯文件名匹配。
+                matched = not normalized_query or normalized_query in path.lower()
                 if matched and not excluded and (include_directories or not is_dir):
                     results.append({"path": path, **item})
                     if len(results) >= max_results:
                         return results
         return results
 
-    def _list_authorized_directory_limited(
-        self,
-        path: str,
-        *,
-        root: str,
-        max_entries: int,
-    ) -> tuple[list[dict], int]:
-        """最多检查指定数量的目录项，避免宽目录触发全量 I/O。"""
-        if max_entries < 0:
-            raise ValueError("directory entry limit must be non-negative")
-        self._require_within(path, root)
-        base, parts = self._resolve_path(path)
-        directory_fd = self._open_directory(base, parts)
-        entries: list[dict] = []
-        examined_entries = 0
-        try:
-            with os.scandir(directory_fd) as iterator:
-                for entry in itertools.islice(iterator, max_entries):
-                    examined_entries += 1
-                    item_stat = entry.stat(follow_symlinks=False)
-                    if not (stat.S_ISDIR(item_stat.st_mode) or stat.S_ISREG(item_stat.st_mode)):
-                        continue
-                    entries.append({"name": entry.name, **self._metadata_from_stat(item_stat)})
-        finally:
-            os.close(directory_fd)
-        entries.sort(key=lambda item: str(item["name"]).lower())
-        return entries, examined_entries
-
     def download_authorized_file_to_path(self, path: str, target_path: str, max_bytes: int) -> int:
         """把授权普通文件有界复制到服务临时文件。"""
         if max_bytes < 0:
             raise ValueError("file download limit must be non-negative")
-        target_fd = None
         with self._open_regular_file(path, writable=False) as (source_fd, _source_stat):
+            target_fd = os.open(target_path, os.O_WRONLY | os.O_TRUNC | os.O_NOFOLLOW)
             try:
-                target_fd = os.open(target_path, os.O_WRONLY | os.O_TRUNC | os.O_NOFOLLOW)
                 return copy_file_fd(source_fd, target_fd, max_bytes=max_bytes)
             finally:
-                if target_fd is not None:
-                    os.close(target_fd)
+                os.close(target_fd)
 
     def read_authorized_file(self, path: str, max_bytes: int) -> bytes:
         """在 no-follow 边界内有界读取普通文件。"""
@@ -141,30 +117,17 @@ class Workspace:
         with self._open_regular_file(path, writable=False) as (source_fd, source_stat):
             if source_stat.st_size > max_bytes:
                 raise FileTransferLimitError("file exceeds transfer limit")
-            chunks: list[bytes] = []
-            total = 0
-            while chunk := os.read(source_fd, 1024 * 1024):
-                total += len(chunk)
-                if total > max_bytes:
-                    raise FileTransferLimitError("file exceeds transfer limit")
-                chunks.append(chunk)
-            return b"".join(chunks)
+            content, truncated = self._read_bounded(source_fd, max_bytes)
+            if truncated:
+                raise FileTransferLimitError("file exceeds transfer limit")
+            return content
 
     def read_authorized_file_prefix(self, path: str, max_bytes: int) -> tuple[bytes, bool]:
         """有界读取普通文件前缀，并报告内容是否被截断。"""
         if max_bytes < 0:
             raise ValueError("file read limit must be non-negative")
         with self._open_regular_file(path, writable=False) as (source_fd, _source_stat):
-            chunks: list[bytes] = []
-            remaining = max_bytes + 1
-            while remaining > 0:
-                chunk = os.read(source_fd, min(1024 * 1024, remaining))
-                if not chunk:
-                    break
-                chunks.append(chunk)
-                remaining -= len(chunk)
-            content = b"".join(chunks)
-        return content[:max_bytes], len(content) > max_bytes
+            return self._read_bounded(source_fd, max_bytes)
 
     def write_authorized_file(self, path: str, content: bytes) -> dict:
         """通过已打开的普通文件描述符覆盖内容，拒绝 symlink 与目录。"""
@@ -179,43 +142,27 @@ class Workspace:
         base, parts = self._resolve_path(path)
         if not parts:
             raise IsADirectoryError(path)
-
         parent_fd = self._open_directory(base, parts[:-1])
-        target_fd = None
-        temp_name = f".yuxi-replace-{uuid.uuid4().hex}"
         try:
             try:
                 target_stat = os.stat(parts[-1], dir_fd=parent_fd, follow_symlinks=False)
             except FileNotFoundError:
-                # 目标不存在时 rename 直接创建，无需校验既有类型
-                target_stat = None
-            if target_stat is not None:
+                # 目标不存在时 rename 直接创建，无需校验既有类型。
+                pass
+            else:
                 if stat.S_ISLNK(target_stat.st_mode):
                     raise PermissionError("symlink paths are not allowed")
                 if not stat.S_ISREG(target_stat.st_mode):
                     raise PermissionError("only regular files can be replaced")
 
-            target_fd = os.open(
-                temp_name,
-                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
-                0o600,
-                dir_fd=parent_fd,
-            )
-            write_all_fd(target_fd, content)
-            os.fsync(target_fd)
-            final_stat = os.fstat(target_fd)
-            os.close(target_fd)
-            target_fd = None
-            os.rename(temp_name, parts[-1], src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
+            with self._staged_temp_file(parent_fd, ".yuxi-replace-") as (temp_fd, temp_name):
+                write_all_fd(temp_fd, content)
+                os.fsync(temp_fd)
+                final_stat = os.fstat(temp_fd)
+                os.rename(temp_name, parts[-1], src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
             os.fsync(parent_fd)
             return self._metadata_from_stat(final_stat)
         finally:
-            if target_fd is not None:
-                os.close(target_fd)
-            try:
-                os.unlink(temp_name, dir_fd=parent_fd)
-            except FileNotFoundError:
-                pass
             os.close(parent_fd)
 
     def stat_authorized_path(self, path: str, *, root: str) -> dict:
@@ -224,7 +171,6 @@ class Workspace:
         base, parts = self._resolve_path(path)
         if not parts:
             item_stat = os.stat(base, follow_symlinks=False)
-            is_dir = stat.S_ISDIR(item_stat.st_mode)
         else:
             parent_fd = self._open_directory(base, parts[:-1])
             try:
@@ -233,8 +179,7 @@ class Workspace:
                 os.close(parent_fd)
             if stat.S_ISLNK(item_stat.st_mode):
                 raise PermissionError("symlink paths are not allowed")
-            is_dir = stat.S_ISDIR(item_stat.st_mode)
-        if not (is_dir or stat.S_ISREG(item_stat.st_mode)):
+        if not (stat.S_ISDIR(item_stat.st_mode) or stat.S_ISREG(item_stat.st_mode)):
             raise PermissionError("only regular files and directories are allowed")
         return self._metadata_from_stat(item_stat)
 
@@ -266,43 +211,22 @@ class Workspace:
         if not parts:
             raise IsADirectoryError(path)
         parent_fd = self._open_directory(base, parts[:-1], create=create_parents)
-        target_fd = None
-        temp_name = f".yuxi-write-{uuid.uuid4().hex}"
         try:
-            target_fd = os.open(
-                temp_name,
-                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
-                0o600,
-                dir_fd=parent_fd,
-            )
-            written = 0
-            while chunk := source.read(1024 * 1024):
-                written += len(chunk)
-                if max_bytes is not None and written > max_bytes:
-                    raise FileTransferLimitError("file exceeds limit")
-                write_all_fd(target_fd, chunk)
-            final_stat = os.fstat(target_fd)
-            os.close(target_fd)
-            target_fd = None
-            if overwrite:
-                os.rename(temp_name, parts[-1], src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
-            else:
-                os.link(
-                    temp_name,
-                    parts[-1],
-                    src_dir_fd=parent_fd,
-                    dst_dir_fd=parent_fd,
-                    follow_symlinks=False,
-                )
-                os.unlink(temp_name, dir_fd=parent_fd)
+            with self._staged_temp_file(parent_fd, ".yuxi-write-") as (temp_fd, temp_name):
+                written = 0
+                while chunk := source.read(_READ_CHUNK_SIZE):
+                    written += len(chunk)
+                    if max_bytes is not None and written > max_bytes:
+                        raise FileTransferLimitError("file exceeds limit")
+                    write_all_fd(temp_fd, chunk)
+                final_stat = os.fstat(temp_fd)
+                if overwrite:
+                    os.rename(temp_name, parts[-1], src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
+                else:
+                    os.link(temp_name, parts[-1], src_dir_fd=parent_fd, dst_dir_fd=parent_fd, follow_symlinks=False)
+                    os.unlink(temp_name, dir_fd=parent_fd)
             return self._metadata_from_stat(final_stat)
         finally:
-            if target_fd is not None:
-                os.close(target_fd)
-            try:
-                os.unlink(temp_name, dir_fd=parent_fd)
-            except FileNotFoundError:
-                pass
             os.close(parent_fd)
 
     def copy_authorized_directory_from_path(self, path: str, source_path: str | Path) -> tuple[int, int]:
@@ -318,6 +242,7 @@ class Workspace:
             stack.callback(os.close, parent_fd)
             staging_fd = open_directory_fd(Path(staging), ())
             stack.callback(os.close, staging_fd)
+            # 先在暂存层组装完整目录，再整体原子发布到目标名，不暴露半成品。
             os.mkdir("directory", 0o700, dir_fd=staging_fd)
             target_fd = open_directory_fd(staging_fd, ("directory",))
             stack.callback(os.close, target_fd)
@@ -350,11 +275,6 @@ class Workspace:
         finally:
             os.close(parent_fd)
 
-    def _open_regular_file(self, path: str, *, writable: bool):
-        """固定父目录与最终普通文件，统一拒绝 symlink、目录和特殊文件。"""
-        base, parts = self._resolve_path(path)
-        return open_regular_file_fd(base, parts, writable=writable)
-
     def _resolve_path(self, path: str) -> tuple[Path, tuple[str, ...]]:
         """把 UserWorkspace scope 路径解析为持久化根内组件。"""
         pure = PurePosixPath(normalize_workspace_scope(path))
@@ -369,12 +289,86 @@ class Workspace:
                 return
             raise ValueError("operation cannot target the Workdir root")
         if normalized_root == "/":
-            if normalized_path.startswith("/"):
-                return
-            raise ValueError("path is outside the Workdir")
+            # normalize_workspace_scope 保证路径为绝对路径，根授权即放行。
+            return
         normalized_root = normalized_root.rstrip("/")
         if not normalized_path.startswith(f"{normalized_root}/"):
             raise ValueError("path is outside the Workdir")
+
+    @staticmethod
+    def _open_directory(base: Path, parts: tuple[str, ...], *, create: bool = False) -> int:
+        try:
+            return open_directory_fd(base, parts, create=create)
+        except OSError as exc:
+            if exc.errno == errno.ELOOP:
+                raise PermissionError("symlink paths are not allowed") from exc
+            raise
+
+    def _open_regular_file(self, path: str, *, writable: bool):
+        """固定父目录与最终普通文件，统一拒绝 symlink、目录和特殊文件。"""
+        base, parts = self._resolve_path(path)
+        return open_regular_file_fd(base, parts, writable=writable)
+
+    @staticmethod
+    @contextmanager
+    def _staged_temp_file(parent_fd: int, prefix: str) -> Iterator[tuple[int, str]]:
+        """在已固定父目录内创建未发布临时文件，退出时关闭并回收半成品。"""
+        temp_name = f"{prefix}{uuid.uuid4().hex}"
+        temp_fd = os.open(
+            temp_name,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+            0o600,
+            dir_fd=parent_fd,
+        )
+        try:
+            yield temp_fd, temp_name
+        finally:
+            os.close(temp_fd)
+            # 已发布的条目不再使用临时名，统一回收并容忍缺失。
+            with suppress(FileNotFoundError):
+                os.unlink(temp_name, dir_fd=parent_fd)
+
+    @staticmethod
+    def _read_bounded(source_fd: int, max_bytes: int) -> tuple[bytes, bool]:
+        """最多读取 max_bytes 字节，并报告源中是否仍有剩余内容。"""
+        chunks: list[bytes] = []
+        remaining = max_bytes + 1
+        while remaining > 0:
+            chunk = os.read(source_fd, min(_READ_CHUNK_SIZE, remaining))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        content = b"".join(chunks)
+        return content[:max_bytes], len(content) > max_bytes
+
+    def _list_authorized_directory_limited(
+        self,
+        path: str,
+        *,
+        root: str,
+        max_entries: int,
+    ) -> tuple[list[dict], int]:
+        """最多检查指定数量的目录项，避免宽目录触发全量 I/O。"""
+        if max_entries < 0:
+            raise ValueError("directory entry limit must be non-negative")
+        self._require_within(path, root)
+        base, parts = self._resolve_path(path)
+        directory_fd = self._open_directory(base, parts)
+        entries: list[dict] = []
+        examined_entries = 0
+        try:
+            with os.scandir(directory_fd) as iterator:
+                for entry in itertools.islice(iterator, max_entries):
+                    examined_entries += 1
+                    item_stat = entry.stat(follow_symlinks=False)
+                    if not (stat.S_ISDIR(item_stat.st_mode) or stat.S_ISREG(item_stat.st_mode)):
+                        continue
+                    entries.append({"name": entry.name, **self._metadata_from_stat(item_stat)})
+        finally:
+            os.close(directory_fd)
+        entries.sort(key=lambda item: str(item["name"]).lower())
+        return entries, examined_entries
 
     @staticmethod
     def _metadata_from_stat(item_stat: os.stat_result) -> dict:
@@ -386,13 +380,9 @@ class Workspace:
         }
 
     @staticmethod
-    def _open_directory(base: Path, parts: tuple[str, ...], *, create: bool = False) -> int:
-        try:
-            return open_directory_fd(base, parts, create=create)
-        except OSError as exc:
-            if exc.errno == errno.ELOOP:
-                raise PermissionError("symlink paths are not allowed") from exc
-            raise
+    def _identity_matches(item_stat: os.stat_result, expected_identity: tuple[int, int] | None) -> bool:
+        """无身份约束或 (st_dev, st_ino) 一致时才允许删除目标。"""
+        return expected_identity is None or (item_stat.st_dev, item_stat.st_ino) == expected_identity
 
     @classmethod
     def _remove_entry(cls, parent_fd: int, name: str, *, expected_identity: tuple[int, int] | None = None) -> None:
@@ -402,7 +392,8 @@ class Workspace:
             if expected_identity is not None:
                 return
             raise
-        if expected_identity is not None and (item_stat.st_dev, item_stat.st_ino) != expected_identity:
+        if not cls._identity_matches(item_stat, expected_identity):
+            # 目录项已被并发替换，放弃本次定向删除。
             return
         if not stat.S_ISDIR(item_stat.st_mode):
             if not (stat.S_ISREG(item_stat.st_mode) or stat.S_ISLNK(item_stat.st_mode)):
@@ -413,7 +404,7 @@ class Workspace:
         child_fd = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent_fd)
         try:
             opened_stat = os.fstat(child_fd)
-            if expected_identity is not None and (opened_stat.st_dev, opened_stat.st_ino) != expected_identity:
+            if not cls._identity_matches(opened_stat, expected_identity):
                 return
             for child_name in os.listdir(child_fd):
                 cls._remove_entry(child_fd, child_name)
@@ -424,6 +415,7 @@ class Workspace:
                 remaining_stat = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
             except FileNotFoundError:
                 return
-            if (remaining_stat.st_dev, remaining_stat.st_ino) != expected_identity:
+            if not cls._identity_matches(remaining_stat, expected_identity):
+                # 递归期间目录被并发替换，不能删除冒名的新目录。
                 return
         os.rmdir(name, dir_fd=parent_fd)

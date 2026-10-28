@@ -452,7 +452,7 @@ div.header,
   justify-content: flex-start;
   align-items: stretch;
   gap: 0;
-  background-color: var(--main-5);
+  background-color: var(--bg-sider);
   height: 100%;
   width: @sidebar-width;
   border-right: 1px solid var(--gray-100);
@@ -493,7 +493,7 @@ div.header,
     z-index: 1;
     flex: 0 0 auto;
     margin-top: auto;
-    background: var(--main-5);
+    background: var(--bg-sider);
     padding: 0 @sidebar-padding-x @sidebar-padding-y;
   }
 
@@ -567,12 +567,12 @@ div.header,
 
     &:hover,
     &:focus-visible {
-      background: var(--main-20);
+      background: var(--bg-sider-hover);
       color: var(--main-color);
       outline: none;
     }
     &.active {
-      background: var(--main-20);
+      background: var(--bg-sider-hover);
       color: var(--main-color);
     }
   }
@@ -674,13 +674,13 @@ div.header,
       border-color: var(--gray-150);
       background-color: var(--gray-0);
       color: var(--main-color);
-      box-shadow: 0 3px 4px rgba(0, 10, 20, 0.02);
+      box-shadow: 0 3px 4px var(--shadow-0);
 
       &:hover {
         border-color: var(--gray-200);
         background-color: var(--gray-0);
         color: var(--gray-900);
-        box-shadow: 0 3px 4px rgba(0, 10, 20, 0.07);
+        box-shadow: 0 3px 4px var(--shadow-2);
       }
     }
 
@@ -854,7 +854,7 @@ div.header,
 
       &:hover,
       &:focus-visible {
-        background: var(--main-20);
+        background: var(--bg-sider-hover);
         outline: none;
 
         .brand-logo-image {

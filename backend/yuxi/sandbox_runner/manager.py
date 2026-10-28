@@ -31,6 +31,7 @@ MAX_COMMAND_BYTES = 4 * 1024 * 1024
 MAX_STDIN_BYTES = 100 * 1024 * 1024
 MAX_OUTPUT_BUDGET = 160 * 1024 * 1024
 MAX_ENV_BYTES = 1024 * 1024
+MAX_TIMEOUT_SECONDS = 3600
 RESERVED_ENV_KEYS = frozenset({"YUXI_EXECUTION_ID", "YUXI_RUN_ID", "YUXI_UID"})
 CONTAINER_NAME_PREFIX = "yuxi-sandbox-"
 
@@ -186,6 +187,7 @@ class ContainerManager:
     def health(self) -> dict:
         """确认 daemon 与启动时固定的镜像仍然可用。"""
         self.engine.ping()
+        # run_owner("") 不取行锁，用一次真实查询证明 repository 与 PostgreSQL 连通。
         self.repository.run_owner("")
         identity = self.engine.image_identity(self.image_id)
         if identity["id"] != self.image_id:
@@ -245,18 +247,7 @@ class ContainerManager:
     ) -> dict:
         """确保容器后执行命令，返回合并输出、退出码与截断。"""
         normalized = self._validate_request(uid=uid, run_id=run_id, owner=owner, workdir=workdir)
-        if not COMMAND_ID_PATTERN.fullmatch(command_id):
-            raise SandboxValidationError("command_id 格式非法")
-        if not isinstance(command, str) or not command:
-            raise SandboxValidationError("command 不能为空")
-        if "\0" in command:
-            raise SandboxValidationError("command 包含非法字符")
-        if len(command.encode("utf-8")) > MAX_COMMAND_BYTES:
-            raise SandboxValidationError("command 超过长度限制")
-        if not 1 <= timeout_seconds <= 3600:
-            raise SandboxValidationError("timeout_seconds 必须在 1 到 3600 之间")
-        if not 1 <= output_budget <= MAX_OUTPUT_BUDGET:
-            raise SandboxValidationError("output_budget 超出允许范围")
+        self._validate_command(command_id, command, timeout_seconds, output_budget)
         normalized_cwd = self._container_cwd(cwd)
         stdin_data = self._decode_stdin(stdin_b64)
         if stdin_data is not None and normalized is None:
@@ -265,12 +256,18 @@ class ContainerManager:
         container = self.create(uid=uid, run_id=run_id, owner=owner, workdir=normalized)
         container_id = container["id"]
         safe_uid = workspace_uid_dirname(uid)
-        local_workdir, _ = self._validated_workdir(safe_uid, normalized) if normalized else (None, None)
-        stdin_local = local_workdir / f".yuxi-stdin-{run_id}-{command_id}" if stdin_data is not None and local_workdir else None
-        stdin_path = f"/home/user/workspace/{normalized}/.yuxi-stdin-{run_id}-{command_id}" if stdin_local is not None else ""
+        local_workdir = None
+        if normalized:
+            local_workdir, _ = self._validated_workdir(safe_uid, normalized)
+        stdin_local = None
+        stdin_path = ""
+        if stdin_data is not None and local_workdir is not None:
+            filename = f".yuxi-stdin-{run_id}-{command_id}"
+            stdin_local = local_workdir / filename
+            stdin_path = f"/home/user/workspace/{normalized}/{filename}"
         key = (run_id, command_id)
         with self._exec_lock:
-            if len([item for item in self._execs.values() if item["run_id"] == run_id]) >= self.settings.max_execs:
+            if sum(1 for item in self._execs.values() if item["run_id"] == run_id) >= self.settings.max_execs:
                 raise SandboxCapacityError("同一 Run 的并发命令已达到上限")
             if key in self._execs:
                 raise SandboxConflictError("command_id 已存在")
@@ -315,6 +312,7 @@ class ContainerManager:
             timer.daemon = True
             timer.start()
             try:
+                # 读取窗口与截止时间都比命令超时多留余量，给容器内收尾和取消确认留出时间。
                 output, truncated = self.engine.start_exec(
                     exec_id,
                     read_timeout=timeout_seconds + 30,
@@ -548,6 +546,22 @@ class ContainerManager:
             return normalize_workdir_path(workdir)
         except ValueError as exc:
             raise SandboxValidationError("workdir 非法") from exc
+
+    @staticmethod
+    def _validate_command(command_id: str, command: str, timeout_seconds: int, output_budget: int) -> None:
+        """校验命令执行参数的标识格式、命令体与超时、输出预算上限。"""
+        if not COMMAND_ID_PATTERN.fullmatch(command_id):
+            raise SandboxValidationError("command_id 格式非法")
+        if not isinstance(command, str) or not command:
+            raise SandboxValidationError("command 不能为空")
+        if "\0" in command:
+            raise SandboxValidationError("command 包含非法字符")
+        if len(command.encode("utf-8")) > MAX_COMMAND_BYTES:
+            raise SandboxValidationError("command 超过长度限制")
+        if not 1 <= timeout_seconds <= MAX_TIMEOUT_SECONDS:
+            raise SandboxValidationError(f"timeout_seconds 必须在 1 到 {MAX_TIMEOUT_SECONDS} 之间")
+        if not 1 <= output_budget <= MAX_OUTPUT_BUDGET:
+            raise SandboxValidationError("output_budget 超出允许范围")
 
     @staticmethod
     def _validate_identifier(value: str, name: str) -> None:

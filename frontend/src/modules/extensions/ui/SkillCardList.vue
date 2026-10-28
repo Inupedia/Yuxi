@@ -1430,9 +1430,9 @@ defineExpose({
 
     &:hover,
     &:focus {
-      border-color: var(--color-error-200, #ffccc7);
-      background: var(--color-error-50, #fff2f0);
-      color: var(--color-error-700, #cf1322);
+      border-color: var(--color-error-100);
+      background: var(--color-error-50);
+      color: var(--color-error-700);
 
       .action-icon-check {
         display: none;
@@ -1864,8 +1864,8 @@ defineExpose({
     }
 
     &:hover {
-      color: var(--color-error-500, #ff4d4f);
-      background: var(--color-error-10, rgba(255, 77, 79, 0.1));
+      color: var(--color-error-500);
+      background: var(--color-error-10);
     }
   }
 }
@@ -1881,7 +1881,7 @@ defineExpose({
   align-items: center;
   justify-content: center;
   gap: 6px;
-  color: var(--color-error-500, #ff4d4f);
+  color: var(--color-error-500);
   font-weight: 500;
   font-size: 13px;
   width: 100%;

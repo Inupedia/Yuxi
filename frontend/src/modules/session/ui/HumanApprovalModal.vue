@@ -617,7 +617,7 @@ const formattedToolArgs = computed(() => formatToolApprovalArgs(activeToolReques
 .approval-modal {
   background: var(--gray-0);
   border-radius: 12px 12px;
-  box-shadow: 0 -4px 16px rgba(0, 0, 0, 0.12);
+  box-shadow: 0 -4px 16px var(--shadow-3);
   margin: 0 auto 8px;
   max-width: 800px;
   min-width: 360px;

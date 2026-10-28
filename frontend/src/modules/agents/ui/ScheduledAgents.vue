@@ -819,7 +819,7 @@ defineExpose({ beforeLeave: flushAutoSave, loading, saving })
   }
 
   &.warning {
-    color: var(--color-warning-800);
+    color: var(--color-warning-900);
   }
 }
 

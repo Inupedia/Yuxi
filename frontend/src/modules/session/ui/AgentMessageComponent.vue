@@ -463,7 +463,7 @@ const parsedData = computed(() => {
   border: 1px solid var(--gray-200);
   border-radius: 0.625rem;
   background: var(--gray-0);
-  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+  box-shadow: 0 1px 2px var(--shadow-1);
 }
 
 .message-attachment-icon {
@@ -476,6 +476,11 @@ const parsedData = computed(() => {
   border-radius: 0.5rem;
   color: var(--main-color);
   background: var(--main-50);
+}
+
+:global(:root.dark .message-attachment-file) {
+  border-color: transparent;
+  box-shadow: none;
 }
 
 .message-attachment-body {
@@ -574,7 +579,7 @@ const parsedData = computed(() => {
     object-fit: contain;
     cursor: pointer;
     border-radius: 12px;
-    border: 1px solid rgba(255, 255, 255, 0.2);
+    border: 1px solid var(--gray-200);
   }
 }
 

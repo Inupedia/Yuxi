@@ -3212,7 +3212,7 @@ watch(currentChatId, (threadId, oldThreadId) => {
   justify-content: center;
   padding: 8px;
   background: var(--gray-0);
-  color: var(--text-secondary);
+  color: var(--gray-600);
   font-size: 14px;
 }
 
@@ -3274,7 +3274,7 @@ watch(currentChatId, (threadId, oldThreadId) => {
       font-size: 14px;
       line-height: 20px;
       font-weight: 400;
-      color: var(--text-primary);
+      color: var(--gray-900);
       max-width: 200px;
       overflow: hidden;
       text-overflow: ellipsis;
@@ -3623,7 +3623,7 @@ watch(currentChatId, (threadId, oldThreadId) => {
   margin: 0 auto;
   padding: 14px 14px 0 14px;
   z-index: 1000;
-  background: linear-gradient(to bottom, transparent, var(--gray-0) 10%);
+  background: linear-gradient(to bottom, transparent, var(--bg-page) 10%);
 
   .message-input-wrapper {
     width: 100%;
@@ -4509,6 +4509,10 @@ watch(currentChatId, (threadId, oldThreadId) => {
 
 .embedded-session .chat-main {
   margin-right: 0;
+}
+
+.embedded-session .bottom {
+  background: linear-gradient(to bottom, transparent, var(--gray-0) 10%);
 }
 
 .chat > .side-panel--state.is-floating {

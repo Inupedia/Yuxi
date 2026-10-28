@@ -34,50 +34,48 @@ Yuxi 是面向需要企业自部署的多用户 Agent 产品，且需要自己�
 
 ## 快速启动
 
-语析（Yuxi）的应用服务通过 Docker Compose 启动，Agent 执行环境使用专用 Linux/KVM 节点上的 Cube 用户 VM。Cube 不由 Compose 启动；请先在执行节点安装并运行 Cube，再启动应用。
+语析（Yuxi）默认使用 Docker Compose 和 Container 沙盒启动。每段智能体执行使用独立临时容器，工作目录文件持久保留，无需额外准备 KVM 节点。
 
 ### 前置条件
 
-安装 [Docker Engine](https://docs.docker.com/get-docker/) 和 Docker Compose，准备一个可用的大模型 API，并准备一台 x86_64 Linux/KVM 执行节点。节点需要 `/dev/kvm`、管理员权限、Docker（构建用户模板），以及与应用主机共享的 Workspace 和 Skills 目录。macOS/Windows 上运行应用也需要一台可访问的 Linux/KVM 节点。
+安装 Git、[Docker Engine](https://docs.docker.com/get-docker/) 和 Docker Compose v2，准备一个可用的大模型 API。macOS/Windows 使用 Docker Desktop 的 Linux 容器模式，并允许项目目录共享。
 
-本教程使用 `v0.8.0.beta3` 候选标签，尚未正式发布。0.8 仅面向全新部署，旧数据库、索引和文件布局不提供自动升级；请用独立数据目录试用，见[0.8.0 更新说明](docs/develop-guides/releases/0.8.0.md)。
+本教程使用 `v0.8.0.beta5` 测试版本。0.8 仅面向全新部署，旧数据库、索引和文件布局不提供自动升级；请用独立数据目录试用，见[0.8.0 更新说明](docs/develop-guides/releases/0.8.0.md)。
 
-### 1. 准备 Cube 执行节点
+Container 适合本地试用和单租户可信代码，共享宿主内核。需要 VM 隔离或持久用户环境时，在[快速开始](docs/intro/quick-start.md)选择 Cube 并准备 Linux/KVM 执行节点。
 
-在专用节点按[沙盒配置与运维](docs/advanced/sandbox-operations.md#原生执行节点)运行 `docker/cube/setup-node.sh` 并构建 `yuxi-user` 模板。同一台 Linux 机器既运行应用又提供 `/dev/kvm` 时，可以直接在这台机器上安装；需要把开发节点放进独立容器或虚拟机时，按[嵌套开发节点](docs/advanced/sandbox-operations.md#当前机器的嵌套开发节点)启动独立 Cube Compose。
-
-Yuxi 启动时会检查 Cube 控制面、用户模板和数据代理，检查失败不会进入就绪状态。节点安装、共享目录和平台要求见[快速开始](docs/intro/quick-start.md)。
-
-### 2. 获取代码并初始化
+### 1. 获取代码并初始化
 
 ```bash
-git clone --branch v0.8.0.beta3 --depth 1 https://github.com/xerrors/Yuxi.git
+git clone --branch v0.8.0.beta5 --depth 1 https://github.com/xerrors/Yuxi.git
 cd Yuxi
+./scripts/init.sh
 ```
 
-先按[快速开始](docs/intro/quick-start.md)的步骤 3 准备 `.env`、Cube 连接值和共享目录。初始化使用 `./scripts/init.sh`（Linux/macOS）或 `.\scripts\init.ps1`（Windows；需先填写 `.env`，因为 `init.ps1` 不会从进程环境复制 `CUBE_*`）。
+Windows 在 PowerShell 中运行 `.\scripts\init.ps1`。脚本提示填写 SiliconFlow API Key，生成独立的应用安全密钥、runner 认证密钥和实例标识，并准备基础镜像。其他模型供应商可在登录后配置。已有 `.env` 时保留原密钥；切换到 Container 需设置 `SANDBOX_BACKEND=container` 后重新运行初始化。
 
-初始化脚本创建 `.env`、读取 SiliconFlow API Key，并为 JWT 与 API Key 派生生成独立安全密钥。也可以手动复制 `.env.template`。脚本不部署 Cube 节点；`CUBE_API_URL`、`CUBE_PROXY_NODE_IP`、`CUBE_NODE_USER_DATA_DIR` 和 `CUBE_NODE_SKILL_PROJECTION_DIR` 必须在运行前配置，控制面启用认证时填写 `CUBE_API_KEY`。启动前运行 `docker compose config --quiet` 检查配置。
-
-### 3. 启动开发环境
+### 2. 启动服务
 
 ```bash
-docker compose up --build -d
+docker compose --profile container config --quiet
+docker compose --profile container up --build -d
 ```
 
-查看服务状态：
+`container` profile 会构建沙盒镜像并启动 runner。默认禁止沙盒联网，适用范围与配置见[Container 沙盒](docs/advanced/container-sandbox.md)。
+
+### 3. 验证部署
 
 ```bash
-docker compose ps
+docker compose --profile container ps
 curl --fail http://localhost:5050/api/system/ready
 ```
 
-返回的 `status` 为 `ready` 后，打开 [http://localhost:5173](http://localhost:5173)，按页面提示初始化超级管理员并登录。API 文档位于 [http://localhost:5050/docs](http://localhost:5050/docs)。
+返回的 `status` 为 `ready` 后，打开 [http://localhost:5173](http://localhost:5173)，初始化超级管理员并登录。在智能体中执行创建 `hello.txt` 的任务，并在工作区核对文件内容；完整操作见[快速开始](docs/intro/quick-start.md)。API 文档位于 [http://localhost:5050/docs](http://localhost:5050/docs)。
 
 ## 文档导航
 
 - [项目介绍](https://xerrors.github.io/Yuxi/intro/project-overview)：了解能力、概念和系统边界。
-- [快速开始](https://xerrors.github.io/Yuxi/intro/quick-start)：准备执行节点并启动开发环境。
+- [快速开始](https://xerrors.github.io/Yuxi/intro/quick-start)：选择沙盒并启动开发环境。
 - [命令行工具](docs/intro/cli.md)：登录实例、对话、发送附件和查询知识库。
 - [公开 Agent API 入门](docs/intro/agents-api-quickstart.md)：外部应用创建会话、提交消息和读取结果。
 - [模型配置](https://xerrors.github.io/Yuxi/intro/model-config)：接入聊天、嵌入和重排模型。

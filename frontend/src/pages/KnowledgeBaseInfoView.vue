@@ -35,6 +35,16 @@
               <span>复制 ID</span>
             </a-button>
             <a-button
+              type="text"
+              aria-label="MCP 接入"
+              title="MCP 接入"
+              class="lucide-icon-btn extension-detail-action"
+              @click="mcpModalVisible = true"
+            >
+              <Plug :size="14" />
+              <span>MCP 接入</span>
+            </a-button>
+            <a-button
               v-if="canManageKnowledgeBase"
               type="text"
               aria-label="配置知识库"
@@ -167,6 +177,8 @@
       :kb-id="kbId"
       @select="onFileSearchSelect"
     />
+
+    <KnowledgeMcpModal v-model:open="mcpModalVisible" :knowledge-base-id="kbId" />
 
     <a-modal
       v-model:open="editModalVisible"
@@ -316,6 +328,7 @@ import {
   ChevronDown,
   ChevronRight,
   Copy,
+  Plug,
   FileText,
   FolderPlus,
   FolderUp,
@@ -332,6 +345,7 @@ import KnowledgeFileSummary from '@/modules/knowledge/ui/KnowledgeFileSummary.vu
 import FileDetailModal from '@/modules/knowledge/ui/FileDetailModal.vue'
 import FileUploadModal from '@/modules/knowledge/ui/FileUploadModal.vue'
 import FileSearchModal from '@/modules/knowledge/ui/FileSearchModal.vue'
+import KnowledgeMcpModal from '@/modules/knowledge/ui/KnowledgeMcpModal.vue'
 import QuerySection from '@/modules/knowledge/ui/QuerySection.vue'
 import SearchConfigPanel from '@/modules/knowledge/ui/SearchConfigPanel.vue'
 import AiTextarea from '@/modules/agents/ui/AiTextarea.vue'
@@ -470,6 +484,7 @@ const searchConfigPanelRef = ref(null)
 
 const addFilesModalVisible = ref(false)
 const fileSearchModalVisible = ref(false)
+const mcpModalVisible = ref(false)
 
 const onFileSearchSelect = (file) => {
   if (file?.file_id) {
@@ -987,7 +1002,7 @@ onUnmounted(() => {
   background: var(--gray-0);
   border: 1px solid var(--gray-200);
   border-radius: 8px;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.08);
+  box-shadow: 0 4px 16px var(--shadow-2);
 }
 
 .file-action-menu-item {

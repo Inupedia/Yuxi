@@ -694,10 +694,10 @@ onBeforeUnmount(() => {
           <div v-reveal class="yx-quickstart__copy">
             <p class="yx-kicker">快速开始</p>
             <h2>用 Docker Compose 启动完整拓扑</h2>
-            <p>准备 Docker、模型 API，以及已配置用户模板和共享目录的 Linux/KVM Cube 节点。0.8 使用独立数据目录全新部署。</p>
+            <p>准备 Docker 和模型 API，默认使用 Container 沙盒，无需额外执行节点。0.8 使用独立数据目录全新部署。</p>
             <div class="yx-inline-links">
               <a :href="withBase('/intro/quick-start')">阅读完整教程</a>
-              <a :href="withBase('/advanced/sandbox-operations')">配置 Cube 执行节点</a>
+              <a :href="withBase('/advanced/container-sandbox')">了解 Container 沙盒</a>
               <a :href="withBase('/develop-guides/releases/0.8.0')">0.8.0 更新说明</a>
               <a :href="withBase('/advanced/deployment')">生产部署与升级</a>
             </div>
@@ -708,16 +708,16 @@ onBeforeUnmount(() => {
               <span>Terminal</span>
               <span>Docker Compose</span>
             </div>
-            <pre><code><span># 获取 0.8.0.beta3 候选源码</span>
-git clone --branch v0.8.0.beta3 --depth 1 \
+            <pre><code><span># 获取 0.8.0.beta5 候选源码</span>
+git clone --branch v0.8.0.beta5 --depth 1 \
   https://github.com/xerrors/Yuxi.git
 cd Yuxi
 
 <span># 初始化配置</span>
 ./scripts/init.sh
-<span># 按执行节点指南在 .env 填写 CUBE_* 配置</span>
-docker compose config --quiet
-docker compose up --build -d</code></pre>
+<span># 默认 Container 沙盒</span>
+docker compose --profile container config --quiet
+docker compose --profile container up --build -d</code></pre>
           </div>
         </div>
       </section>

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from sqlalchemy import exists, func, select, update
+from sqlalchemy import exists, func, select, tuple_, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from yuxi.modules.agents.input_messages import deserialize_input_message
@@ -12,6 +12,7 @@ from yuxi.modules.agents.models.messages import Message
 from yuxi.modules.agents.models.runs import AgentRun
 from yuxi.modules.agents.models.turns import AgentTurn
 from yuxi.modules.agents.repositories.attachments import AttachmentRepository
+from yuxi.modules.identity.models import User
 from yuxi.shared.datetime import utc_now
 
 
@@ -133,6 +134,23 @@ class AgentInputRepository:
         for run_id, input_id in rows:
             result[run_id].append(input_id)
         return result
+
+    async def count_by_owner_app(self, scopes: list[tuple[int, str]]) -> dict[tuple[int, str], int]:
+        """按凭据所属用户与 APP 统计外部持久输入，排除内部协作。"""
+        if not scopes:
+            return {}
+        rows = await self.db.execute(
+            select(User.owner_user_id, User.app_id, func.count(AgentInput.id))
+            .join(User, User.uid == AgentInput.uid)
+            .where(
+                User.user_kind == "end_user",
+                tuple_(User.owner_user_id, User.app_id).in_(scopes),
+                AgentInput.app_id == User.app_id,
+                AgentInput.source != "cooperation",
+            )
+            .group_by(User.owner_user_id, User.app_id)
+        )
+        return {(owner_id, app_id): total for owner_id, app_id, total in rows}
 
     async def consume(self, *, inputs: list[AgentInput], turn_id: str, run_id: str) -> list[Message]:
         """同一事务固定消费归属、创建消息并绑定附件，失败全部回滚。"""

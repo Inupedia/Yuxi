@@ -13,15 +13,15 @@
 
 ## 开发环境
 
-先按[快速开始](docs/intro/quick-start.md)准备环境配置与 Cube 执行节点，再用 Docker Compose 启动开发环境：
+先按[快速开始](docs/intro/quick-start.md)选择并准备 Container 或 Cube 沙盒，再用 Docker Compose 启动开发环境。默认 Container 命令需启用 profile：
 
 ```bash
-docker compose up -d
+docker compose --profile container up -d
 docker compose ps
 docker compose logs --tail=100 api
 ```
 
-前端保留 Vite 热更新。API 与 worker 挂载源码，修改后执行 `docker compose restart api worker` 生效；环境变量变化需要重新创建容器。共享定义与数据库初始化按[开发贡献指南](docs/develop-guides/contributing.md#_2-开发环境)处理，完整服务拓扑以 `docker-compose.yml` 为准。
+选择 Cube 时，按快速开始配置执行节点，并从启动命令中移除 `--profile container`。前端保留 Vite 热更新。API 与 worker 挂载源码，修改后执行 `docker compose restart api worker` 生效；环境变量变化需要重新创建容器。共享定义与数据库初始化按[开发贡献指南](docs/develop-guides/contributing.md#_2-开发环境)处理，完整服务拓扑以 `docker-compose.yml` 为准。
 
 ## 常用检查
 

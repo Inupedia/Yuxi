@@ -352,8 +352,8 @@ defineExpose({
   align-items: center;
   justify-content: center;
   cursor: pointer;
-  background: var(--primary-purple, #6b4fd8);
-  color: #fff;
+  background: var(--main-color);
+  color: var(--color-on-primary);
 }
 
 .attachment-preview-list {
@@ -387,6 +387,16 @@ defineExpose({
   flex-shrink: 0;
   color: var(--main-700);
   background: var(--main-30);
+}
+
+:global(:root.dark .agent-composer .attachment-file-card) {
+  border-color: transparent;
+  box-shadow: none;
+}
+
+
+:global(:root.dark .composer-extra-region) {
+  background: var(--gray-10);
 }
 
 .attachment-file-body {
@@ -447,7 +457,7 @@ defineExpose({
   height: 30px;
   border-radius: 8px;
   font-size: 13px;
-  color: var(--gray-600);
+  color: var(--gray-500);
   cursor: pointer;
   transition: all 0.2s ease;
   user-select: none;

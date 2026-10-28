@@ -87,10 +87,12 @@ test_agent_bubble_sort_run_creates_expected_artifacts
 先启动开发环境：
 
 ```bash
-docker compose up -d
-docker compose ps
-docker compose logs --tail=100 api
+docker compose --profile container up -d
+docker compose --profile container ps
+docker compose --profile container logs --tail=100 api
 ```
+
+默认 Container 需启用 `container` profile；显式选择 Cube 时去掉该参数并先准备执行节点。Make 会读取当前环境的 `SANDBOX_BACKEND`，未设置时按 Container 处理；因此 Cube 配置不会启动 Container runner。
 
 后端按 unit、integration/api、其余 integration 子树、E2E 分批运行。各套件的模块和 helper 按当前目录加载；脚本的 `integration` 与 `all` 同样分批执行。确定性 E2E 的用例集合由 `backend/test/run_tests.sh` 唯一维护，CI 复用此入口，避免重复执行相同文件。涉及不兼容 Schema 时，先使用[独立槽位](./parallel-worktree-environments.md)装配完整环境，再运行测试；脚本只负责选择和执行套件。
 

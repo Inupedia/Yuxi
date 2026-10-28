@@ -12,13 +12,13 @@ Yuxi 的配置分成两类：启动进程时读取的环境变量，以及运行
 
 字符串字段使用数据库非空值，保存为空会恢复环境变量或默认值。列表字段保留明确保存的空列表；整数按字段定义校验并保留合法的 `0`。各字段的类型、默认值与可选项由所属模块的 `Option` 定义，不把所有字段都按字符串的空值规则处理。
 
-启动期环境变量由 Docker Compose 注入 API、worker 和依赖服务。它们决定服务地址、密钥、存储位置和沙盒承载方式。修改环境变量后需要重新创建读取它的容器；只执行 `docker compose restart` 不会更新容器环境：
+启动期环境变量由 Docker Compose 注入 API、worker 和依赖服务。它们决定服务地址、密钥、存储位置和沙盒承载方式。`SANDBOX_BACKEND` 缺省时按 Container 处理，`container` 后端需要启用 `container` profile 才会启动 sandbox-runner。修改环境变量后需要重新创建读取它的容器；只执行 `docker compose restart` 不会更新容器环境：
 
 ```bash
-docker compose up -d --force-recreate api worker
+docker compose --profile container up -d --force-recreate api worker sandbox-runner
 ```
 
-Cube 连接参数供 API/worker 使用，节点挂载目录必须与 Yuxi 共享同一份文件；生产环境还要带上 `--env-file .env.prod -f docker-compose.prod.yml`。
+示例覆盖 Container 的 API、worker 和 runner；只改 API/worker 专用变量时可省略 runner。修改 `SANDBOX_RUNNER_TOKEN`、沙盒镜像或 runner 资源配置时，必须重建 `sandbox-runner`；存储挂载路径变更后重新执行一次 `storage-init`。显式使用 Cube 时，移除命令中的 `--profile container` 和 `sandbox-runner`；Cube 连接参数供 API/worker 使用，节点挂载目录必须与 Yuxi 共享同一份文件。生产环境将相同的 profile 和服务选择与 `--env-file .env.prod -f docker-compose.prod.yml` 一起使用。
 
 ## 管理员系统配置
 

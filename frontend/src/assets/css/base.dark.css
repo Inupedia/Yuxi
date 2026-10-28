@@ -1,6 +1,6 @@
 /* 深色模式 */
 :root.dark {
-  --shadow-popover: 0 8px 24px rgba(0, 0, 0, 0.35), 0 1px 4px rgba(0, 0, 0, 0.2);
+  --shadow-popover: none;
   --color-on-primary: var(--gray-0);
 
   --main-1000: #e1f6fb;
@@ -57,14 +57,23 @@
   --gray-600: #d7d9d9;
   --gray-500: #bdbfbf;
   --gray-400: #979999;
-  --gray-300: #697070;
-  --gray-200: #4c4d4d;
-  --gray-150: #323333;
-  --gray-100: #1e1f1f;
-  --gray-50: #151616;
-  --gray-25: #0c0d0d;
-  --gray-10: #080808;
-  --gray-0: #030303;
+  --gray-300: #70767c;
+  /* 低阶灰提供表面与交互过渡，优先通过背景区分区域。 */
+  --gray-200: #4a5056;
+  --gray-150: #3d4247;
+  --gray-100: #34383d;
+  --gray-50: #2d3135;
+  --gray-40: #2b2f33;
+  --gray-30: #292d31;
+  --gray-25: #272b2f;
+  --gray-20: #25292d;
+  --gray-10: #222529;
+  --gray-0: #1d2024;
+
+  /* 页面底色独立于表面色，避免页面、卡片、输入框同色。 */
+  --bg-page: #141619;
+  --border-surface: transparent;
+  --border-surface-hover: transparent;
 
   /* 语义色阶：主色与次要色继承基础别名，状态色在此适配深色模式。 */
   --color-success-10: #0f1810; /* 微弱背景 */
@@ -124,7 +133,9 @@
   --chart-palette-9: #d9abc8;
   --chart-palette-10: #a8a8a8;
 
-  --bg-sider: #141414;
+  /* 侧栏与主区同层但可区分，避免 main-5 在深色下退化成近纯黑。 */
+  --bg-sider: #17191d;
+  --bg-sider-hover: var(--gray-25);
   --color-text: #ffffff;
 
   --dark-98: rgba(255, 255, 255, 0.98);
@@ -155,17 +166,17 @@
 
   /* Ant Design 兼容变量 - 深色模式 */
   --color-bg-container: #1f1f1f;
-  --color-bg-elevated: #262626;
+  --color-bg-elevated: var(--gray-30);
   --color-text-secondary: rgba(255, 255, 255, 0.65);
   --color-text-tertiary: rgba(255, 255, 255, 0.45);
 
-  /* Shadow System - 深色模式阴影系统 */
-  --shadow-0: rgba(255, 255, 255, 0.02);
-  --shadow-1: rgba(255, 255, 255, 0.05);
-  --shadow-2: rgba(255, 255, 255, 0.08);
-  --shadow-3: rgba(255, 255, 255, 0.12);
-  --shadow-4: rgba(255, 255, 255, 0.16);
-  --shadow-5: rgba(255, 255, 255, 0.2);
+  /* 兼容仍使用阴影的浮层，避免白色光晕；普通表面不依赖阴影分层。 */
+  --shadow-0: rgba(0, 0, 0, 0.02);
+  --shadow-1: rgba(0, 0, 0, 0.03);
+  --shadow-2: rgba(0, 0, 0, 0.04);
+  --shadow-3: rgba(0, 0, 0, 0.06);
+  --shadow-4: rgba(0, 0, 0, 0.08);
+  --shadow-5: rgba(0, 0, 0, 0.12);
 
   --color-trans-light: rgba(0, 0, 0, 0.85);
   --color-trans-dark: rgba(255, 255, 255, 0.85);

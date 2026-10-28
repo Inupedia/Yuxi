@@ -422,7 +422,7 @@ watch(
   font-variant-numeric: tabular-nums;
 }
 .step-divider {
-  color: var(--gray-350, #b4b8be);
+  color: var(--gray-400);
   font-size: 10px;
 }
 .step-indicator-label {

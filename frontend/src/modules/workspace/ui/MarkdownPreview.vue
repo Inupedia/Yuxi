@@ -830,15 +830,15 @@ const showCopiedFeedback = (btn) => {
       padding: 8px 12px;
       border-radius: 6px;
       transform: translateX(-50%);
-      background-color: #222;
-      color: #fff;
+      background-color: var(--gray-1000);
+      color: var(--gray-0);
       font-size: 13px;
       line-height: 1.5;
       text-align: center;
       white-space: normal;
       word-break: break-word;
       pointer-events: none;
-      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+      box-shadow: 0 2px 8px var(--shadow-3);
     }
 
     &:hover::before {
@@ -923,7 +923,7 @@ const showCopiedFeedback = (btn) => {
     border-radius: 5px;
     background: var(--gray-0);
     color: var(--gray-600);
-    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.06);
+    box-shadow: 0 1px 4px var(--shadow-2);
     font-size: 12px;
     line-height: 1;
     cursor: pointer;
@@ -951,14 +951,14 @@ const showCopiedFeedback = (btn) => {
   }
 
   &.is-dark .markdown-code-copy-btn {
-    border-color: rgba(255, 255, 255, 0.12);
-    background: rgba(12, 13, 13, 0.92);
+    border-color: var(--gray-200);
+    background: var(--gray-0);
     color: var(--gray-500);
 
     &:hover,
     &:focus-visible,
     &.is-copied {
-      border-color: rgba(255, 255, 255, 0.2);
+      border-color: var(--gray-300);
       color: var(--gray-900);
     }
   }
@@ -1121,18 +1121,18 @@ const showCopiedFeedback = (btn) => {
   }
 
   &.is-dark .svg-inline-render {
-    background: rgba(255, 255, 255, 0.03);
+    background: var(--gray-10);
     border-radius: 4px;
   }
 
   &.is-dark .svg-actions .svg-action-btn {
-    background: rgba(255, 255, 255, 0.08);
-    border-color: rgba(255, 255, 255, 0.12);
-    color: var(--gray-300);
+    background: var(--gray-30);
+    border-color: var(--border-surface);
+    color: var(--gray-600);
 
     &:hover {
-      background: rgba(255, 255, 255, 0.15);
-      color: var(--gray-100);
+      background: var(--gray-50);
+      color: var(--gray-900);
     }
   }
 }

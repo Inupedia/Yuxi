@@ -13,10 +13,10 @@
 只运行 `Yuxi` 时无需增加配置，继续使用：
 
 ```bash
-docker compose up -d
+docker compose --profile container up -d
 ```
 
-Compose 会按 project 自动隔离容器、网络、命名 volume 和本地镜像。其他 worktree 只需额外隔离数据目录和宿主端口。
+默认 Container 需要 `container` profile 启动 sandbox-runner；显式使用 Cube 时，设置 `SANDBOX_BACKEND=cube` 并移除命令中的 profile。Compose 会按 project 自动隔离容器、网络、命名 volume 和本地镜像。其他 worktree 只需额外隔离数据目录和宿主端口。
 
 ## 创建分支环境
 
@@ -56,8 +56,10 @@ YUXI_NEO4J_BOLT_PORT=27687
 
 ```bash
 docker compose config
-docker compose up -d --build
+docker compose --profile container up -d --build
 ```
+
+使用 Cube 的 worktree 设置 `SANDBOX_BACKEND=cube`，并从启动命令中移除 `--profile container`。
 
 常用命令：
 

@@ -16,6 +16,7 @@
 
 <script setup>
 import { computed } from 'vue'
+import { useThemeStore } from '@/shared/model/theme'
 import FallbackAvatar from '@/shared/ui/FallbackAvatar.vue'
 import { getExtensionIconColor } from '@/shared/lib/extensionIconColor'
 import { getSkillIcon } from '@/shared/lib/skill_icon_utils'
@@ -23,7 +24,9 @@ import { getKbTypeIcon } from '@/modules/knowledge'
 import { getMentionIconComponent } from '@/modules/session/model/mention_icon_utils'
 
 const props = defineProps({ item: { type: Object, required: true } })
-const color = computed(() => getExtensionIconColor(props.item.resourceId || props.item.value))
+const themeStore = useThemeStore()
+// 图标色卡分浅深两套，缺省参数会恒取浅色卡，深色下对比不足。
+const color = computed(() => getExtensionIconColor(props.item.resourceId || props.item.value, themeStore.isDark))
 const icon = computed(() => {
   if (props.item.type === 'knowledge') return getKbTypeIcon(props.item.kbType || 'milvus')
   if (props.item.type === 'skill') return getSkillIcon(props.item.value)

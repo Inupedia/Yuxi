@@ -14,7 +14,7 @@ assignees: ''
 - 预期结果：您期望看到什么？
 - 实际结果：实际发生了什么？
 
-例如："执行 `docker compose up -d` 后，api-dev 服务一直重启，查看日志显示无法连接到 Milvus"
+例如："执行 `docker compose --profile container up -d` 后，api 服务一直重启，查看日志显示无法连接到 Milvus"
 
 
 ## 2️⃣ 环境信息
@@ -31,10 +31,12 @@ assignees: ''
 请提供您使用的完整启动命令：
 ```bash
 # 例如
-docker compose up -d
+docker compose --profile container up -d
 # 或
 make up
 ```
+
+若使用 Cube，请记录 `SANDBOX_BACKEND=cube`，并在 Compose 命令中去掉 `--profile container`。
 
 
 ## 4️⃣ 日志信息

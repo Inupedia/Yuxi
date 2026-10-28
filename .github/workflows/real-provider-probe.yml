@@ -37,7 +37,7 @@ jobs:
       - name: Prepare isolated Compose environment
         run: bash scripts/ci_prepare_system_tests_env.sh
       - name: Start shipping topology
-        run: docker compose up -d --build postgres redis minio api worker
+        run: docker compose up -d --build postgres redis minio api worker sandbox-runner
       - name: Wait for readiness
         run: |
           for attempt in $(seq 1 90); do

@@ -50,5 +50,5 @@ async function disconnect() {
 .mcp-personal-connection { display: flex; align-items: center; justify-content: flex-end; gap: 8px; flex-wrap: wrap; margin-inline-start: auto; }
 .mcp-personal-connection > span { color: var(--gray-700); font-size: 13px; }
 @media (max-width: 600px) { .mcp-personal-connection :deep(.ant-btn) { min-height: 44px; } }
-.mcp-personal-connection > p { color: var(--color-error-600); flex-basis: 100%; margin: 0; text-align: end; }
+.mcp-personal-connection > p { color: var(--color-error-700); flex-basis: 100%; margin: 0; text-align: end; }
 </style>

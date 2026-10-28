@@ -30,13 +30,13 @@ set -euo pipefail
 #
 # 3. 脚本运行后必须检查:
 #    - git diff，确认只有预期版本文件变化。
-#    - backend/pyproject.toml、backend/pyproject.toml、frontend/package.json、
+#    - backend/pyproject.toml、frontend/package.json、
 #      docker-compose*.yml、backend/uv.lock 中的 Yuxi 版本一致。
 #    - dev 模式下 README.md、README.en.md、docs/intro/quick-start.md 和文档首页
 #      不应被更新。
 #
-# 4. 必须先提交版本更新，再创建 tag。tag 要指向包含版本更新的提交:
-#    git add backend/pyproject.toml backend/pyproject.toml backend/uv.lock docker-compose.yml docker-compose.prod.yml frontend/package.json
+# 4. 先提交并推送版本更新，等待该提交的 CI 全部通过，再创建 tag。tag 必须指向通过检查的同一提交:
+#    git add backend/pyproject.toml backend/uv.lock docker-compose.yml docker-compose.prod.yml frontend/package.json
 #    git commit -m 'chore(release): 升级版本到 0.7.1.dev2'
 #    git tag v0.7.1.dev2
 #
@@ -151,7 +151,7 @@ perl -pi -e "s/\\\$\\{YUXI_VERSION:-[^}]+\\}/\\\${YUXI_VERSION:-${NEW_VERSION}}/
     "${PROJECT_ROOT}/backend/test/e2e/web-tools.compose.yml"
 
 echo "→ 更新 sandbox runner 与集成测试的默认镜像"
-for sandbox_source in backend/yuxi/sandbox_runner/settings.py backend/test/integration/sandbox/test_container_sandbox.py; do
+for sandbox_source in .env.template backend/yuxi/sandbox_runner/settings.py backend/test/integration/sandbox/test_container_sandbox.py; do
     perl -pi -e "s/(yuxi-sandbox:)[0-9]+\\.[0-9]+\\.[0-9]+(\\.[a-zA-Z0-9]+)?/\${1}${NEW_VERSION}/g" \
         "${PROJECT_ROOT}/${sandbox_source}"
 done

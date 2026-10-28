@@ -410,6 +410,20 @@ watch(
 }
 
 /* Content Area */
+:root.dark .settings-modal .settings-sider {
+  background: var(--gray-25);
+  border-right-color: transparent;
+}
+
+:root.dark .settings-modal .ant-modal-content {
+  border-color: transparent;
+  box-shadow: none;
+}
+
+:root.dark .settings-modal .settings-content-wrapper {
+  background: transparent;
+}
+
 .settings-content-wrapper {
   flex: 1;
   height: 100%;

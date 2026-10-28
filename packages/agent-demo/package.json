@@ -15,9 +15,9 @@
     "test:live": "node test/live-smoke.mjs"
   },
   "dependencies": {
-    "dompurify": "^3.4.16",
+    "dompurify": "^3.4.17",
     "lucide-vue-next": "^1.0.0",
-    "markdown-it": "^15.0.2",
+    "markdown-it": "^15.0.3",
     "vue": "^3.5.43"
   },
   "devDependencies": {

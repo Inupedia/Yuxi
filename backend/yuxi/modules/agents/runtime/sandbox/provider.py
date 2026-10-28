@@ -38,7 +38,7 @@ async def check_sandbox_provider() -> None:
 
 def validate_sandbox_configuration() -> str:
     """只校验业务进程连接当前执行后端所需的部署配置。"""
-    backend = os.environ.get("SANDBOX_BACKEND", "cube").strip().lower()
+    backend = os.environ.get("SANDBOX_BACKEND", "container").strip().lower()
     if backend == "cube":
         from yuxi.modules.agents.runtime.sandbox.cube_provider import validate_cube_configuration
 

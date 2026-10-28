@@ -331,8 +331,19 @@ def test_factory_selects_backend_and_rejects_none(monkeypatch):
         provider_module.get_sandbox_provider()
 
 
+def test_factory_defaults_to_container_and_requires_token(monkeypatch):
+    """未选择后端时使用 container，缺认证仍明确失败。"""
+    monkeypatch.setattr(provider_module, "_sandbox_provider", None)
+    monkeypatch.delenv("SANDBOX_BACKEND", raising=False)
+    monkeypatch.delenv("SANDBOX_RUNNER_TOKEN", raising=False)
+    with pytest.raises(RuntimeError, match="SANDBOX_RUNNER_TOKEN"):
+        provider_module.get_sandbox_provider()
+    monkeypatch.setenv("SANDBOX_RUNNER_TOKEN", "t" * 32)
+    assert provider_module.get_sandbox_provider().backend == "container"
+
+
 def test_cube_health_requires_real_node_configuration(monkeypatch):
-    """默认 cube 模式缺节点配置时启动失败，不静默回退或使用 localhost。"""
+    """显式 cube 模式缺节点配置时启动失败，不静默回退或使用 localhost。"""
     monkeypatch.setenv("SANDBOX_BACKEND", "cube")
     for name in ("CUBE_API_URL", "CUBE_PROXY_NODE_IP", "CUBE_NODE_USER_DATA_DIR", "CUBE_NODE_SKILL_PROJECTION_DIR"):
         monkeypatch.delenv(name, raising=False)

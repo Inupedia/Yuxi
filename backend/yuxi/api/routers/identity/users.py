@@ -148,6 +148,15 @@ async def list_api_keys(
     return await api_key_service.list_api_keys(db, actor=current_user, skip=skip, limit=limit)
 
 
+@user_router.get("/apikey/apps", response_model=dict)
+async def list_api_app_overview(
+    current_user: User = Depends(get_required_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """按凭据所属用户与 APP 汇总对外凭据、影子用户与持久化输入数。"""
+    return await api_key_service.list_app_overview(db, actor=current_user)
+
+
 @user_router.post("/apikey/", response_model=APIKeyCreateResponse)
 async def create_api_key(
     data: APIKeyCreate,

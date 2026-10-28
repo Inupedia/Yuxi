@@ -32,7 +32,7 @@ check_server() {
     fi
 
     echo "✗ 测试服务未就绪或无法访问"
-    echo "  请先执行 docker compose up -d 并确认 api 服务 readiness"
+    echo "  请先执行 make up 并确认 api 服务 readiness（Make 会按 SANDBOX_BACKEND 选择 Compose profile）"
     return 1
 }
 

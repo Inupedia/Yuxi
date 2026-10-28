@@ -61,6 +61,18 @@ async page => {
   await page.setViewportSize({ width: 1440, height: 1000 })
   await page.goto(origin + '/agent')
   const panel = page.locator('#sidebar-session-navigation:visible, .agent-view #sidebar-session-panel')
+  /** 遮罩终色必须来自所在列表的实际背景，覆盖主侧栏与浮动/固定面板。 */
+  const checkMaskSurface = async () => {
+    const sample = await panel.locator('.session-item:not(.active):not(:hover) .actions-mask').first().evaluate(mask => {
+      let surface = mask.parentElement
+      while (surface && getComputedStyle(surface).backgroundColor === 'rgba(0, 0, 0, 0)') surface = surface.parentElement
+      return {
+        gradient: getComputedStyle(mask).backgroundImage,
+        background: surface ? getComputedStyle(surface).backgroundColor : ''
+      }
+    })
+    check(sample.background && sample.gradient.includes(sample.background), `会话遮罩与所在表面不一致：${JSON.stringify(sample)}`)
+  }
   const workspace = page.locator('.agent-view > .agent-session-workspace')
   const trigger = page.getByRole('button', { name: '显示对话列表', exact: true })
   const showPanel = async () => {
@@ -79,6 +91,7 @@ async page => {
   await panel.getByText(project.name, { exact: true }).waitFor()
   await panel.locator('.project-toggle').click()
   await panel.getByText(sessions[0].yuxi.title, { exact: true }).waitFor()
+  await checkMaskSurface()
   await page.evaluate(() => { window.__sidebarOriginal = document.querySelector('.sidebar-sessions') })
   const brandStyle = await page.locator('.sidebar-brand .brand-name').evaluate(el => {
     const style = getComputedStyle(el)
@@ -169,7 +182,12 @@ async page => {
   check(await panel.isVisible(), '固定列不应在指针移出后消失')
   await page.waitForFunction(() => Math.abs(document.querySelector('.agent-view > .agent-session-workspace').getBoundingClientRect().x - 302) < 1)
   const fixed = await panel.boundingBox()
-  check(await panel.evaluate(el => getComputedStyle(el).borderLeftStyle) === 'solid', '固定列表左侧必须有可见分界')
+  const seam = await page.locator('.header').evaluate(el => ({
+    width: parseFloat(getComputedStyle(el).borderRightWidth),
+    style: getComputedStyle(el).borderRightStyle,
+    right: el.getBoundingClientRect().right
+  }))
+  check(seam.width > 0 && seam.style === 'solid' && Math.abs(seam.right - fixed.x) < 2, '固定列表左侧必须由紧邻导航栏提供可见分界')
   check(Math.abs((await workspace.boundingBox()).x - fixed.x - fixed.width) < 2, '固定列必须给正文让位')
   check(await page.locator('.header .nav-text').first().evaluate(el => getComputedStyle(el).opacity) === '0', '固定列表不能展开主导航')
   const unpin = page.getByRole('button', { name: '收起对话侧栏', exact: true })
@@ -225,6 +243,7 @@ async page => {
       await showPanel()
       await panel.waitFor()
       await page.waitForTimeout(220)
+      await checkMaskSurface()
       const box = await panel.boundingBox()
       check(box.x >= 52 && box.x + box.width <= width && box.y >= 0 && box.y + box.height <= 1000, '卡片超出支持视口')
       check(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), '页面横向溢出')
@@ -240,6 +259,7 @@ async page => {
       check(await panel.isVisible(), '点击正文不能关闭固定列表')
       await page.waitForFunction(() => Math.abs(document.querySelector('.agent-view > .agent-session-workspace').getBoundingClientRect().x - 302) < 1)
       check(Math.abs((await workspace.boundingBox()).x - 302) < 2, '不同宽度的固定布局错误')
+      await checkMaskSurface()
       if (width === 1440 && theme === 'light') {
         const path = '/tmp/yuxi-session-sidebar-pinned.png'
         await page.screenshot({ path })

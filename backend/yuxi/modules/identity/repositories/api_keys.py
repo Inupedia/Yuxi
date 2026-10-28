@@ -4,8 +4,9 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import func, select, text
+from sqlalchemy import func, select, text, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from yuxi.modules.identity.models import APIKey, User
 from yuxi.shared.datetime import utc_now
@@ -157,6 +158,32 @@ class APIKeyRepository:
         await self.db_session.flush()
         await self.db_session.refresh(api_key)
         return api_key
+
+    async def count_end_users_by_app_scope(self, scopes: list[tuple[int, str]]) -> dict[tuple[int, str], int]:
+        """按凭据所属用户与 APP 统计有效终端用户数。"""
+        if not scopes:
+            return {}
+        result = await self.db_session.execute(
+            select(User.owner_user_id, User.app_id, func.count(User.id))
+            .where(
+                User.user_kind == "end_user",
+                User.is_deleted == 0,
+                tuple_(User.owner_user_id, User.app_id).in_(scopes),
+            )
+            .group_by(User.owner_user_id, User.app_id)
+        )
+        return {(owner_id, app_id): count for owner_id, app_id, count in result.all()}
+
+    async def list_app_keys(self) -> list[APIKey]:
+        """读取所有 APP 的未撤销凭据，排除已删除的所属用户。"""
+        result = await self.db_session.scalars(
+            select(APIKey)
+            .options(selectinload(APIKey.user))
+            .join(User, APIKey.user_id == User.id)
+            .where(APIKey.app_id.is_not(None), APIKey.revoked_at.is_(None), User.is_deleted == 0, User.user_kind == "human")
+            .order_by(APIKey.user_id, APIKey.app_id, APIKey.created_at.desc(), APIKey.id)
+        )
+        return list(result)
 
     async def delete(self, api_key: APIKey) -> None:
         """撤销 API Key 并保留幂等 tombstone，阻止同一请求复活凭据。"""

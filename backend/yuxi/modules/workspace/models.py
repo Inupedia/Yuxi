@@ -17,8 +17,6 @@ from yuxi.infrastructure.postgres.base import BusinessBase as Base
 from yuxi.shared.datetime import format_utc_datetime, utc_now
 
 PROJECT_STATUS_CONSTRAINT_NAME = "ck_projects_status"
-
-
 PROJECT_STATUS_CONSTRAINT_SQL = "status IN ('active', 'deleted')"
 
 

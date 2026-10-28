@@ -232,6 +232,25 @@ YUXI_INSTANCE_ID=$YUXI_INSTANCE_ID
     Remove-Variable -Name "YUXI_INSTANCE_ID" -ErrorAction SilentlyContinue
 }
 
+# 默认 container；已有显式后端和 runner 凭据保持不变。
+$sandboxBackend = Get-EnvValue "SANDBOX_BACKEND"
+if ([string]::IsNullOrWhiteSpace($sandboxBackend)) {
+    $sandboxBackend = "container"
+    Set-EnvValue "SANDBOX_BACKEND" $sandboxBackend
+}
+if ($sandboxBackend -notin @("container", "cube")) {
+    throw "SANDBOX_BACKEND must be cube or container."
+}
+if ($sandboxBackend -eq "container") {
+    $runnerToken = Get-EnvValue "SANDBOX_RUNNER_TOKEN"
+    if ([string]::IsNullOrEmpty($runnerToken)) {
+        Set-EnvValue "SANDBOX_RUNNER_TOKEN" (New-RandomHex 32)
+    } elseif (-not (Test-SecuritySecretValue $runnerToken)) {
+        throw "SANDBOX_RUNNER_TOKEN must be at least 32 characters without surrounding whitespace or quotes."
+    }
+    Remove-Variable runnerToken
+}
+
 Write-Host ""
 Write-Host "Configure Search and Fetch after login in Settings -> 网络搜索." -ForegroundColor Blue
 Write-Host "📦 Pulling Docker images..." -ForegroundColor Cyan
@@ -285,5 +304,9 @@ if ($LASTEXITCODE -ne 0) {
 Write-Host ""
 Write-Host "🎉 Initialization complete!" -ForegroundColor Green
 Write-Host "==========================" -ForegroundColor Green
-Write-Host "You can now run: docker compose up -d --build" -ForegroundColor Cyan
+if ($sandboxBackend -eq "container") {
+    Write-Host "You can now run: docker compose --profile container up -d --build" -ForegroundColor Cyan
+} else {
+    Write-Host "You can now run: docker compose up -d --build" -ForegroundColor Cyan
+}
 Write-Host "Backend code changes require an explicit service restart; frontend hot-reload remains enabled." -ForegroundColor Cyan

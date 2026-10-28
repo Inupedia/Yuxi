@@ -1,6 +1,6 @@
 # 沙盒配置与运维
 
-本页供部署管理员准备和维护默认的 Cube 用户 VM。没有 Linux/KVM 节点时，使用 [Container 沙盒](container-sandbox.md)；它提供单租户轻量执行环境，不替代 Cube 的强隔离。Yuxi 固定使用 CubeSandbox v0.7.3，应用服务使用 Compose，执行节点需要专用 Linux/KVM；Yuxi 与 Cube 的 Workspace/Skills 挂载必须指向同一份文件。运行时只装配当前 `SANDBOX_BACKEND`，节点或实例故障会明确失败。
+本页供部署管理员准备和维护显式选择的 Cube 用户 VM（`SANDBOX_BACKEND=cube`）。默认部署使用 [Container 沙盒](container-sandbox.md)；它提供单租户轻量执行环境，不替代 Cube 的强隔离。Yuxi 固定使用 CubeSandbox v0.7.3，应用服务使用 Compose，执行节点需要专用 Linux/KVM；Yuxi 与 Cube 的 Workspace/Skills 挂载必须指向同一份文件。运行时只装配当前 `SANDBOX_BACKEND`，节点或实例故障会明确失败。
 
 ## 原生执行节点
 

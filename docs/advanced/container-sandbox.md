@@ -1,6 +1,6 @@
 # Container 沙盒（轻量执行后端）
 
-本页只覆盖 `SANDBOX_BACKEND=container`。默认的 Cube 模式见[沙盒配置与运维](sandbox-operations.md)。Container 模式用独立 `sandbox-runner` 为每个 Run 懒创建一个临时容器，Run 结束后销毁；它不改变 Agent 的文件工具、`execute` 工具、审批、审计和 Run 生命周期。
+本页覆盖默认的 `SANDBOX_BACKEND=container`。需要 VM 隔离时选择 Cube，见[沙盒配置与运维](sandbox-operations.md)。Container 模式用独立 `sandbox-runner` 为每个 Run 懒创建一个临时容器，Run 结束后销毁；它不改变 Agent 的文件工具、`execute` 工具、审批、审计和 Run 生命周期。
 
 ## 安全定位
 
@@ -12,7 +12,7 @@ API、worker 和 Agent 进程都不持有 Docker socket。只有 `sandbox-runner
 
 ```dotenv
 SANDBOX_BACKEND=container
-# 至少 32 个字符；生产由 scripts/init.sh 生成
+# 至少 32 个字符；初始化脚本自动生成
 SANDBOX_RUNNER_TOKEN=<random-secret>
 # 预构建或预拉取的单一镜像；建议使用 digest
 SANDBOX_CONTAINER_IMAGE=registry.example/yuxi-sandbox@sha256:<digest>
@@ -32,8 +32,8 @@ docker compose --profile container up -d
 开发环境可以先构建本地镜像：
 
 ```bash
-docker build -f docker/sandbox.Dockerfile -t yuxi-sandbox:0.8.0.beta3 .
-docker image inspect yuxi-sandbox:0.8.0.beta3 --format '{{.Id}}'
+docker build -f docker/sandbox.Dockerfile -t yuxi-sandbox:0.8.0.beta5 .
+docker image inspect yuxi-sandbox:0.8.0.beta5 --format '{{.Id}}'
 ```
 
 `SANDBOX_CONTAINER_IMAGE` 保留可拉取的 `name:tag` 或 `name@sha256:<manifest-digest>`；把本机镜像 ID（`sha256:...`）写入 `SANDBOX_CONTAINER_IMAGE_DIGEST` 用于校验。生产初始化要求 image 与 digest 非空，runner 在 `YUXI_ENV=production` 时拒绝未固定 digest 的镜像；本地开发允许只配置 tag，runner 会在启动时固定当前镜像 ID，但重启后不会继承该固定值。
@@ -123,11 +123,11 @@ docker compose --profile container logs --tail=100 sandbox-runner
 该测试必须在能访问 Docker daemon、Docker CLI 和宿主数据路径的机器上运行；API 容器不持有 Docker socket，不能通过 `docker compose exec api` 执行：
 
 ```bash
-docker build -f docker/sandbox.Dockerfile -t yuxi-sandbox:0.8.0.beta3 .
+docker build -f docker/sandbox.Dockerfile -t yuxi-sandbox:0.8.0.beta5 .
 cd backend
 SANDBOX_CONTAINER_TEST=1 \
-SANDBOX_CONTAINER_IMAGE=yuxi-sandbox:0.8.0.beta3 \
-SANDBOX_CONTAINER_IMAGE_DIGEST="$(docker image inspect yuxi-sandbox:0.8.0.beta3 --format '{{.Id}}')" \
+SANDBOX_CONTAINER_IMAGE=yuxi-sandbox:0.8.0.beta5 \
+SANDBOX_CONTAINER_IMAGE_DIGEST="$(docker image inspect yuxi-sandbox:0.8.0.beta5 --format '{{.Id}}')" \
 uv run --no-sync --group test pytest test/integration/sandbox/test_container_sandbox.py -q
 ```
 

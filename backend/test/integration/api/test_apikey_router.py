@@ -7,14 +7,19 @@ from __future__ import annotations
 import asyncio
 import os
 import uuid
+from datetime import timedelta
 from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
+from yuxi.modules.agents.models.inputs import AgentInput
+from yuxi.modules.agents.models.sessions import Session
 from yuxi.modules.identity.models import APIKey, OIDCIdentity, User
 from yuxi.modules.identity.repositories.oidc import OIDCRepository
+from yuxi.modules.workspace.models import Project
+from yuxi.shared.datetime import utc_now
 from yuxi.shared.errors import PermissionDeniedError
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.integration]
@@ -323,5 +328,250 @@ async def test_api_key_auto_binds_to_current_user(test_client, admin_headers):
         saved = next(key for key in response.json()["api_keys"] if key["id"] == created["id"])
         assert saved["user_id"] == creator_id
     finally:
+        deleted = await test_client.delete(f"{API_KEYS_PATH}{created['id']}", headers=admin_headers)
+        assert deleted.status_code == 200, deleted.text
+
+
+APP_OVERVIEW_PATH = "/api/user/apikey/apps"
+
+
+async def test_app_overview_requires_auth(test_client):
+    """APP 概览只对已认证用户开放。"""
+    response = await test_client.get(APP_OVERVIEW_PATH)
+    assert response.status_code == 401, response.text
+
+
+@pytest.mark.self_managed_resources
+@pytest.mark.parametrize("role", ["user", "admin"])
+async def test_app_overview_rejects_non_superadmin(test_client, admin_headers, role):
+    """已绑定部门的普通用户和管理员都在超管权限边界被拒绝。"""
+    suffix = uuid.uuid4().hex[:8]
+    me = await test_client.get("/api/auth/me", headers=admin_headers)
+    assert me.status_code == 200, me.text
+    created_user = await test_client.post(
+        "/api/auth/users",
+        json={
+            "username": f"overview_{suffix}",
+            "password": "overviewTest123!",
+            "role": role,
+            "department_id": me.json()["department_id"],
+        },
+        headers=admin_headers,
+    )
+    assert created_user.status_code == 200, created_user.text
+    user_id = created_user.json()["id"]
+    uid = created_user.json()["uid"]
+
+    try:
+        login = await test_client.post(
+            "/api/auth/token",
+            data={"username": uid, "password": "overviewTest123!"},
+        )
+        assert login.status_code == 200, login.text
+        user_headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
+        allowed = await test_client.get(API_KEYS_PATH, headers=user_headers)
+        assert allowed.status_code == 200, allowed.text
+
+        response = await test_client.get(APP_OVERVIEW_PATH, headers=user_headers)
+        assert response.status_code == 403, response.text
+        assert response.json()["detail"] == "仅超级管理员可查看 API 集成概览"
+    finally:
+        deleted = await test_client.delete(f"/api/auth/users/{user_id}", headers=admin_headers)
+        assert deleted.status_code == 200, deleted.text
+
+
+@pytest.mark.self_managed_resources
+async def test_app_overview_counts_app_keys_and_end_users(test_client, admin_headers, postgres_sessions):
+    """真实 HTTP 汇总超过 500 个 Key，精确排除无效凭据、停用用户和协作输入。"""
+    app_id = f"overview-app-{uuid.uuid4().hex[:8]}"
+    older_app_id = f"{app_id}-older"
+    baseline = await test_client.get(APP_OVERVIEW_PATH, headers=admin_headers)
+    assert baseline.status_code == 200, baseline.text
+    create_response = await test_client.post(
+        API_KEYS_PATH,
+        json={**_create_payload("Overview App Key"), "access_level": "agents", "app_id": app_id},
+        headers=admin_headers,
+    )
+    assert create_response.status_code == 200, create_response.text
+    created = create_response.json()["api_key"]
+    request_prefix = uuid.uuid4().hex
+    user_uids = [f"overview-user-{request_prefix}-{index}" for index in range(6)]
+    second_owner_uid = f"overview-owner-{request_prefix}"
+    user_uids.append(second_owner_uid)
+    thread_ids = [uuid.uuid4().hex for _ in range(3)]
+    project_ids = [uuid.uuid4().hex for _ in range(3)]
+
+    try:
+        async with postgres_sessions() as db:
+            # 首次签发经真实 HTTP；批量凭据和已取消输入只准备只读统计样本，不启动 worker。
+            second_owner = User(
+                username=second_owner_uid,
+                uid=second_owner_uid,
+                password_hash="not-a-login-credential",
+                role="user",
+                user_kind="human",
+            )
+            db.add(second_owner)
+            await db.flush()
+            db.add(
+                APIKey(
+                    key_hash=uuid.uuid4().hex + uuid.uuid4().hex,
+                    key_prefix="yxkey_fixture",
+                    request_id=f"{request_prefix}-second-owner",
+                    name="second-owner",
+                    user_id=second_owner.id,
+                    app_id=app_id,
+                    access_level="agents",
+                    created_by="pytest",
+                )
+            )
+            for index in range(502):
+                db.add(
+                    APIKey(
+                        key_hash=uuid.uuid4().hex + uuid.uuid4().hex,
+                        key_prefix="yxkey_fixture",
+                        request_id=f"{request_prefix}-{index}",
+                        name=f"Overview fixture {index}",
+                        user_id=created["user_id"],
+                        app_id=older_app_id if index == 0 else app_id,
+                        access_level="agents",
+                        created_by="pytest",
+                        created_at=utc_now() - timedelta(days=1) if index == 0 else utc_now(),
+                    )
+                )
+            for label, updates in [
+                ("disabled", {"is_enabled": False}),
+                ("expired", {"expires_at": utc_now() - timedelta(days=1)}),
+                ("revoked", {"revoked_at": utc_now(), "is_enabled": False}),
+                ("unbound", {"app_id": None}),
+            ]:
+                db.add(
+                    APIKey(
+                        key_hash=uuid.uuid4().hex + uuid.uuid4().hex,
+                        key_prefix="yxkey_fixture",
+                        request_id=f"{request_prefix}-{label}",
+                        name=label,
+                        user_id=created["user_id"],
+                        app_id=updates.pop("app_id", app_id),
+                        access_level="full",
+                        created_by="pytest",
+                        **updates,
+                    )
+                )
+            user_specs = [
+                ("end_user", app_id, False, created["user_id"]),
+                ("end_user", app_id, False, created["user_id"]),
+                ("end_user", app_id, True, created["user_id"]),
+                ("end_user", older_app_id, False, created["user_id"]),
+                ("human", None, True, None),
+                ("end_user", app_id, False, second_owner.id),
+            ]
+            for index, (user_kind, user_app_id, is_deleted, owner_user_id) in enumerate(user_specs):
+                uid = user_uids[index]
+                db.add(
+                    User(
+                        username=uid,
+                        uid=uid,
+                        password_hash="not-a-login-credential",
+                        role="user",
+                        user_kind=user_kind,
+                        owner_user_id=owner_user_id,
+                        app_id=user_app_id,
+                        end_user_id=str(index) if user_kind == "end_user" else None,
+                        is_deleted=int(is_deleted),
+                    )
+                )
+            await db.flush()
+            deleted_owner = await db.scalar(select(User).where(User.uid == user_uids[4]))
+            db.add(
+                APIKey(
+                    key_hash=uuid.uuid4().hex + uuid.uuid4().hex,
+                    key_prefix="yxkey_fixture",
+                    request_id=f"{request_prefix}-deleted-owner",
+                    name="deleted-owner",
+                    user_id=deleted_owner.id,
+                    app_id=app_id,
+                    access_level="agents",
+                    created_by="pytest",
+                )
+            )
+            thread_by_user_index = {user_index: thread_ids[index] for index, user_index in enumerate([0, 3, 5])}
+            for index, user_index in enumerate([0, 3, 5]):
+                db.add(
+                    Project(
+                        id=project_ids[index],
+                        uid=user_uids[user_index],
+                        name="Overview fixture",
+                        selection_status="implicit",
+                        workdir_path="projects/overview-fixture",
+                        directory_mode="managed",
+                    )
+                )
+                await db.flush()
+                db.add(
+                    Session(
+                        thread_id=thread_ids[index],
+                        uid=user_uids[user_index],
+                        app_id=app_id if index == 0 else older_app_id,
+                        agent_id="overview-fixture",
+                        project_id=project_ids[index],
+                    )
+                )
+            await db.flush()
+            input_specs = [
+                (0, app_id, "chat"),
+                (0, app_id, "public_api"),
+                (0, app_id, "cooperation"),
+                (3, older_app_id, "chat"),
+                (5, app_id, "public_api"),
+                # 脏输入的 APP 身份与终端用户的规范身份不同，不能污染另一个 APP 统计。
+                (0, older_app_id, "public_api"),
+            ]
+            for user_index, input_app_id, source in input_specs:
+                db.add(
+                    AgentInput(
+                        id=uuid.uuid4().hex,
+                        thread_id=thread_by_user_index[user_index],
+                        uid=user_uids[user_index],
+                        app_id=input_app_id,
+                        agent_slug="overview-fixture",
+                        kind="follow_up",
+                        status="cancelled",
+                        messages=[{"type": "text", "text": "fixture"}],
+                        source=source,
+                        channel="internal" if source == "cooperation" else "api",
+                        cancelled_at=utc_now(),
+                    )
+                )
+            await db.commit()
+
+        response = await test_client.get(APP_OVERVIEW_PATH, headers=admin_headers)
+        assert response.status_code == 200, response.text
+        data = response.json()
+        app_row = next(row for row in data["apps"] if row["app_id"] == app_id and row["owner_user_id"] == created["user_id"])
+        second_app_row = next(row for row in data["apps"] if row["app_id"] == app_id and row["owner_user_id"] != created["user_id"])
+        older_app = next(row for row in data["apps"] if row["app_id"] == older_app_id)
+        assert app_row["end_user_count"] == 2
+        assert app_row["input_count"] == 2
+        assert len(app_row["keys"]) == 504
+        assert sum(key["is_valid"] for key in app_row["keys"]) == 502
+        assert {key["name"] for key in app_row["keys"] if not key["is_valid"]} == {"disabled", "expired"}
+        assert second_app_row["owner_user_id"] != app_row["owner_user_id"]
+        assert second_app_row["owner_username"] == second_owner_uid
+        assert second_app_row["end_user_count"] == second_app_row["input_count"] == 1
+        assert len(second_app_row["keys"]) == 1
+        assert len(older_app["keys"]) == 1
+        assert older_app["end_user_count"] == older_app["input_count"] == 1
+        expected = {"app_count": 3, "key_count": 504, "end_user_count": 4, "input_count": 4}
+        for name, increase in expected.items():
+            assert data["totals"][name] == baseline.json()["totals"][name] + increase
+    finally:
+        async with postgres_sessions() as db:
+            await db.execute(delete(AgentInput).where(AgentInput.thread_id.in_(thread_ids)))
+            await db.execute(delete(Session).where(Session.thread_id.in_(thread_ids)))
+            await db.execute(delete(Project).where(Project.id.in_(project_ids)))
+            await db.execute(delete(APIKey).where(APIKey.request_id.startswith(request_prefix)))
+            await db.execute(delete(User).where(User.uid.in_(user_uids)))
+            await db.commit()
         deleted = await test_client.delete(f"{API_KEYS_PATH}{created['id']}", headers=admin_headers)
         assert deleted.status_code == 200, deleted.text

@@ -1,6 +1,14 @@
 
 .PHONY: up down logs lint format seed reset test verify-trust audit-dependencies audit-licenses
 
+COMPOSE_PROFILE := $(shell python3 scripts/compose_profile.py)
+ifeq ($(COMPOSE_PROFILE),invalid)
+$(error SANDBOX_BACKEND must be cube or container)
+endif
+
+# Cube 配置不启用持有 Docker socket 的 Container runner。
+COMPOSE ?= docker compose$(if $(COMPOSE_PROFILE), $(COMPOSE_PROFILE))
+
 PYTEST_ARGS ?=
 BACKEND_PYTHON ?= $(shell cat backend/.python-version)
 
@@ -9,10 +17,10 @@ up:
 		echo "Error: .env file not found. Please create it from .env.template"; \
 		exit 1; \
 	fi
-	docker compose up -d
+	$(COMPOSE) up -d
 
 down:
-	docker compose down
+	$(COMPOSE) down
 
 reset:
 	@if [ ! -f .env ]; then \
@@ -23,21 +31,21 @@ reset:
 		echo "Refusing to delete an external YUXI_STATE_DIR; stop the slot and remove its exact state directory explicitly." >&2; \
 		exit 1; \
 	fi
-	docker compose down
+	$(COMPOSE) down
 	rm -rf docker/volumes
-	docker compose up -d
+	$(COMPOSE) up -d
 	@echo "Waiting for api to be ready..."
-	@until docker compose exec -T api true >/dev/null 2>&1; do sleep 2; done
+	@until $(COMPOSE) exec -T api true >/dev/null 2>&1; do sleep 2; done
 	$(MAKE) seed
 
 logs:
-	@docker compose logs --tail=50 api
+	@$(COMPOSE) logs --tail=50 api
 	@echo "\n\nBranch: $$(git branch --show-current)"
 	@echo "Commit ID: $$(git rev-parse HEAD)"
 	@echo "System: $$(uname -a)"
 
 seed:
-	docker compose exec api uv run python scripts/seed_initial_users.py
+	$(COMPOSE) exec api uv run python scripts/seed_initial_users.py
 
 ######################
 # LINTING AND FORMATTING

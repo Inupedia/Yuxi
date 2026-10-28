@@ -15,7 +15,7 @@ from yuxi.modules.workspace.preview import preview_workspace_file
 from yuxi.modules.workspace.runtime_paths import is_runtime_path, runtime_path_for_workdir_scope
 from yuxi.modules.workspace.services.bindings import AuthorizedWorkdir, resolve_authorized_workdir
 from yuxi.modules.workspace.services.file_entries import file_entry, sort_file_entries
-from yuxi.shared.datetime import utc_isoformat_from_timestamp
+from yuxi.modules.workspace.workdir import Workdir
 from yuxi.shared.errors import ContentTooLargeError, InvalidOperationError, PermissionDeniedError, ResourceNotFoundError, StateConflictError
 from yuxi.shared.files import MAX_FILE_PREVIEW_BYTES, FileInput, PreparedFile, PreviewResult, detect_media_type
 
@@ -25,50 +25,9 @@ MAX_VIEWER_UPLOAD_BYTES = 100 * 1024 * 1024
 MAX_VIEWER_DOWNLOAD_BYTES = 1024 * 1024 * 1024
 
 
-async def _viewer_state(*, thread_id: str, current_user, db) -> AuthorizedWorkdir:
-    return await resolve_authorized_workdir(
-        thread_id=thread_id,
-        uid=str(current_user.uid),
-        db=db,
-    )
-
-
-def _validate_viewer_path(access: AuthorizedWorkdir, path: str) -> None:
-    """Viewer 只接受 Workdir scope，不接受 Backend runtime 绝对路径。"""
-    if is_runtime_path(path):
-        raise PermissionDeniedError("Access denied")
-    try:
-        access.workdir.resolve_path(path)
-    except ValueError as exc:
-        raise PermissionDeniedError("Access denied") from exc
-
-
-def _entry(access: AuthorizedWorkdir, parent_scope: str, item: dict) -> dict:
-    scope = f"{parent_scope.rstrip('/')}/{item['name']}"
-    if not scope.startswith("/"):
-        scope = f"/{scope}"
-    entry = file_entry(scope, item)
-    runtime_path = runtime_path_for_workdir_scope(access.workdir_path, scope)
-    entry["artifact_url"] = None if entry["is_dir"] else f"/api/v1/agents/sessions/{access.thread_id}/artifacts/{runtime_path.lstrip('/')}"
-    return entry
-
-
-async def _list_directory(access: AuthorizedWorkdir, scope: str) -> list[dict]:
-    try:
-        items = await asyncio.to_thread(
-            access.workdir.list_directory,
-            scope,
-        )
-    except PermissionError as exc:
-        raise PermissionDeniedError("Access denied") from exc
-    except (FileNotFoundError, NotADirectoryError, ValueError) as exc:
-        raise ResourceNotFoundError("目录不存在") from exc
-    return sort_file_entries(_entry(access, scope, item) for item in items)
-
-
 async def list_viewer_filesystem_tree(*, thread_id: str, path: str, current_user, db) -> dict:
     """列出实时 Project Workdir；根路径 `/` 直接表示 Workdir 根。"""
-    access = await _viewer_state(thread_id=thread_id, current_user=current_user, db=db)
+    access = await resolve_authorized_workdir(thread_id=thread_id, uid=str(current_user.uid), db=db)
     _validate_viewer_path(access, path)
     return {"entries": await _list_directory(access, path)}
 
@@ -78,7 +37,7 @@ async def search_viewer_files(*, thread_id: str, query: str, current_user, db) -
     normalized_query = str(query or "").strip().lower()
     if not normalized_query:
         return {"entries": []}
-    access = await _viewer_state(thread_id=thread_id, current_user=current_user, db=db)
+    access = await resolve_authorized_workdir(thread_id=thread_id, uid=str(current_user.uid), db=db)
     try:
         matches = await asyncio.to_thread(
             access.workdir.search,
@@ -95,30 +54,12 @@ async def search_viewer_files(*, thread_id: str, query: str, current_user, db) -
     return {"entries": entries}
 
 
-async def _download_to_temp(workdir, path: str, max_bytes: int) -> str:
-    descriptor, temp_path = tempfile.mkstemp(prefix="yuxi-viewer-", suffix=PurePosixPath(path).suffix)
-    os.close(descriptor)
-    try:
-        await asyncio.to_thread(workdir.copy_file_to_path, path, temp_path, max_bytes)
-    except Exception:
-        try:
-            os.unlink(temp_path)
-        except FileNotFoundError:
-            pass
-        raise
-    return temp_path
-
-
 async def read_viewer_file_content(*, thread_id: str, path: str, current_user, db) -> dict | PreviewResult:
     """从实时 Workdir 读取预览，不经过 MinIO revision。"""
-    access = await _viewer_state(thread_id=thread_id, current_user=current_user, db=db)
+    access = await resolve_authorized_workdir(thread_id=thread_id, uid=str(current_user.uid), db=db)
     _validate_viewer_path(access, path)
     try:
-        raw_content = await asyncio.to_thread(
-            access.workdir.read_file,
-            path,
-            MAX_FILE_PREVIEW_BYTES,
-        )
+        raw_content = await asyncio.to_thread(access.workdir.read_file, path, MAX_FILE_PREVIEW_BYTES)
     except PermissionError as exc:
         raise PermissionDeniedError("Access denied") from exc
     except IsADirectoryError as exc:
@@ -139,7 +80,7 @@ async def read_viewer_file_content(*, thread_id: str, path: str, current_user, d
 
 async def download_viewer_file(*, thread_id: str, path: str, current_user, db) -> PreparedFile:
     """从实时 Workdir 流式下载普通文件。"""
-    access = await _viewer_state(thread_id=thread_id, current_user=current_user, db=db)
+    access = await resolve_authorized_workdir(thread_id=thread_id, uid=str(current_user.uid), db=db)
     _validate_viewer_path(access, path)
     try:
         temp_path = await _download_to_temp(access.workdir, path, MAX_VIEWER_DOWNLOAD_BYTES)
@@ -162,7 +103,7 @@ async def download_viewer_file(*, thread_id: str, path: str, current_user, db) -
 
 async def delete_viewer_file(*, thread_id: str, path: str, current_user, db) -> dict:
     """实时删除 Workdir 内文件或目录。"""
-    access = await _viewer_state(thread_id=thread_id, current_user=current_user, db=db)
+    access = await resolve_authorized_workdir(thread_id=thread_id, uid=str(current_user.uid), db=db)
     normalized = PurePosixPath(path).as_posix()
     _validate_viewer_path(access, normalized)
     if normalized == "/":
@@ -176,48 +117,35 @@ async def delete_viewer_file(*, thread_id: str, path: str, current_user, db) -> 
 
 async def create_viewer_directory(*, thread_id: str, parent_path: str, name: str, current_user, db) -> dict:
     """实时创建 Workdir 目录。"""
-    access = await _viewer_state(thread_id=thread_id, current_user=current_user, db=db)
+    access = await resolve_authorized_workdir(thread_id=thread_id, uid=str(current_user.uid), db=db)
     _validate_viewer_path(access, parent_path)
+    clean_name = str(name or "").strip()
     try:
-        metadata = await asyncio.to_thread(
-            access.workdir.create_directory,
-            parent_path,
-            str(name or "").strip(),
-        )
+        metadata = await asyncio.to_thread(access.workdir.create_directory, parent_path, clean_name)
     except ValueError as exc:
         raise InvalidOperationError(str(exc)) from exc
-    return {
-        "entry": {
-            "path": f"{parent_path.rstrip('/')}/{str(name or '').strip()}/",
-            "name": str(name or "").strip(),
-            "is_dir": True,
-            "size": int(metadata.get("size") or 0),
-            "modified_at": utc_isoformat_from_timestamp(float(metadata.get("modified_at") or 0)) or "",
-        }
-    }
+    # create_directory 已验证名称为单个普通组件，条目字段直接复用共享规范化。
+    return {"entry": file_entry(f"{parent_path.rstrip('/')}/{clean_name}/", metadata)}
 
 
 async def upload_viewer_files(*, thread_id: str, parent_path: str, files: list[FileInput], current_user, db) -> dict:
     """把用户上传直接写入实时 Workdir。"""
-    access = await _viewer_state(thread_id=thread_id, current_user=current_user, db=db)
+    access = await resolve_authorized_workdir(thread_id=thread_id, uid=str(current_user.uid), db=db)
     _validate_viewer_path(access, parent_path)
     file_names = [PurePosixPath(str(upload.filename or "")).name for upload in files]
     if any(not name or name in {".", ".."} for name in file_names):
         raise InvalidOperationError("无法识别的文件名")
     if len(file_names) != len(set(file_names)):
         raise StateConflictError("同一次上传不能包含重名文件")
+    # 冲突预检只取原始 name：目录里可能存在沙盒命令直接创建的非常规文件名，
+    # 构建完整 Viewer 条目会引入额外的规范化失败面。
     try:
-        existing_names = {
-            str(item["name"])
-            for item in await asyncio.to_thread(
-                access.workdir.list_directory,
-                parent_path,
-            )
-        }
+        items = await asyncio.to_thread(access.workdir.list_directory, parent_path)
     except PermissionError as exc:
         raise PermissionDeniedError("Access denied") from exc
     except (FileNotFoundError, NotADirectoryError, ValueError) as exc:
         raise ResourceNotFoundError("目录不存在") from exc
+    existing_names = {item["name"] for item in items}
     collisions = existing_names.intersection(file_names)
     if collisions:
         raise StateConflictError(f"文件已存在: {', '.join(sorted(collisions))}")
@@ -245,3 +173,50 @@ async def upload_viewer_files(*, thread_id: str, parent_path: str, files: list[F
             raise ResourceNotFoundError("目录不存在") from exc
         entries.append(_entry(access, parent_path, {"name": file_name, **metadata}))
     return {"entries": entries}
+
+
+def _validate_viewer_path(access: AuthorizedWorkdir, path: str) -> None:
+    """Viewer 只接受 Workdir scope，不接受 Backend runtime 绝对路径。"""
+    if is_runtime_path(path):
+        raise PermissionDeniedError("Access denied")
+    try:
+        access.workdir.resolve_path(path)
+    except ValueError as exc:
+        raise PermissionDeniedError("Access denied") from exc
+
+
+def _entry(access: AuthorizedWorkdir, parent_scope: str, item: dict) -> dict:
+    """规范化目录项，并为文件补充 Viewer 的 artifact 下载地址。"""
+    scope = f"{parent_scope.rstrip('/')}/{item['name']}"
+    if not scope.startswith("/"):
+        scope = f"/{scope}"
+    entry = file_entry(scope, item)
+    runtime_path = runtime_path_for_workdir_scope(access.workdir_path, scope)
+    entry["artifact_url"] = None if entry["is_dir"] else f"/api/v1/agents/sessions/{access.thread_id}/artifacts/{runtime_path.lstrip('/')}"
+    return entry
+
+
+async def _list_directory(access: AuthorizedWorkdir, scope: str) -> list[dict]:
+    """列出目录并规范化为 Viewer 条目，统一映射目录访问错误。"""
+    try:
+        items = await asyncio.to_thread(access.workdir.list_directory, scope)
+    except PermissionError as exc:
+        raise PermissionDeniedError("Access denied") from exc
+    except (FileNotFoundError, NotADirectoryError, ValueError) as exc:
+        raise ResourceNotFoundError("目录不存在") from exc
+    return sort_file_entries(_entry(access, scope, item) for item in items)
+
+
+async def _download_to_temp(workdir: Workdir, path: str, max_bytes: int) -> str:
+    """把 Workdir 文件限量复制到临时文件，失败时负责清理临时文件。"""
+    descriptor, temp_path = tempfile.mkstemp(prefix="yuxi-viewer-", suffix=PurePosixPath(path).suffix)
+    os.close(descriptor)
+    try:
+        await asyncio.to_thread(workdir.copy_file_to_path, path, temp_path, max_bytes)
+    except Exception:
+        try:
+            os.unlink(temp_path)
+        except FileNotFoundError:
+            pass
+        raise
+    return temp_path

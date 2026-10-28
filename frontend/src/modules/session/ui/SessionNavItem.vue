@@ -254,6 +254,7 @@ const renameChat = () => {
 
     .session-title {
       text-overflow: clip;
+      /* 遮罩只取 alpha，黑色表示不透明区，不参与界面配色。 */
       mask-image: linear-gradient(to right, #000 calc(100% - 16px), transparent);
     }
   }
@@ -361,7 +362,8 @@ const renameChat = () => {
   position: absolute;
   inset: 0 0 0 auto;
   width: 56px;
-  background: linear-gradient(to right, transparent, var(--main-5) 28px);
+  /* 主侧栏与浮动面板底色不同，由导航容器提供遮罩背景。 */
+  background: linear-gradient(to right, transparent, var(--session-navigation-bg) 28px);
   opacity: 0;
   pointer-events: none;
   transition: opacity 0.2s ease;

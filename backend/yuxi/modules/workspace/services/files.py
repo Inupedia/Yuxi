@@ -1,3 +1,5 @@
+"""个人工作区文件的浏览、搜索、编辑、上传与下载用例。"""
+
 from __future__ import annotations
 
 import asyncio
@@ -39,6 +41,8 @@ MAX_WORKSPACE_DOWNLOAD_SIZE_BYTES = 1024 * 1024 * 1024
 
 # 搜索返回条数上限，避免超大工作区一次性返回过多结果
 WORKSPACE_SEARCH_MAX_RESULTS = 100
+# 递归列目录复用同一条有界扫描通道，浏览场景需要比关键词搜索更大的可见上限。
+WORKSPACE_TREE_MAX_RESULTS = 5000
 WORKSPACE_SCOPE_ROOT = "/"
 
 
@@ -71,6 +75,7 @@ async def list_workspace_tree(
     current_user: User,
     db,
 ) -> dict:
+    """列出个人工作区目录树，默认隐藏未归属可选 Project 的 projects 子树。"""
     backend = _workspace_backend(current_user)
     workspace_path = _workspace_path(path)
     try:
@@ -80,7 +85,7 @@ async def list_workspace_tree(
                 workspace_path,
                 "",
                 include_directories=not files_only,
-                max_results=5000,
+                max_results=WORKSPACE_TREE_MAX_RESULTS,
             )
             entries = [_entry_from_metadata(item["path"], item) for item in scanned]
         else:
@@ -99,26 +104,6 @@ async def list_workspace_tree(
     if not include_unbound_project_dirs:
         entries = await _filter_project_tree_entries(entries, uid=str(current_user.uid), db=db)
     return {"entries": entries}
-
-
-async def _filter_project_tree_entries(entries: list[dict], *, uid: str, db) -> list[dict]:
-    """隐藏未归属 selectable Project 的 projects 子树。"""
-    entries_with_paths = [(entry, PurePosixPath(str(entry.get("path") or "/").strip("/"))) for entry in entries]
-    if not any(path.parts[:1] == ("projects",) and path.as_posix() != "projects" for _, path in entries_with_paths):
-        return entries
-
-    visible_paths = await ProjectRepository(db).list_selectable_workdir_paths_for_user(uid)
-    selected_project_paths = [PurePosixPath(path) for path in visible_paths if PurePosixPath(path).parts[:1] == ("projects",)]
-
-    def is_visible(candidate: PurePosixPath) -> bool:
-        if candidate.parts[:1] != ("projects",) or candidate.as_posix() == "projects":
-            return True
-        return any(
-            candidate == selected or candidate.is_relative_to(selected) or selected.is_relative_to(candidate)
-            for selected in selected_project_paths
-        )
-
-    return [entry for entry, path in entries_with_paths if is_visible(path)]
 
 
 async def read_workspace_file_bytes(*, path: str, current_user: User) -> tuple[str, bytes]:
@@ -143,6 +128,7 @@ async def read_workspace_file_bytes(*, path: str, current_user: User) -> tuple[s
 
 
 async def read_workspace_file_content(*, path: str, current_user: User) -> dict | PreviewResult:
+    """读取工作区文件并渲染预览；超出预览预算时返回不支持结果而不是抛错。"""
     backend = _workspace_backend(current_user)
     workspace_path = _workspace_path(path)
     try:
@@ -171,6 +157,7 @@ async def read_workspace_file_content(*, path: str, current_user: User) -> dict 
 
 
 async def write_workspace_file_content(*, path: str, content: str, current_user: User) -> dict:
+    """覆盖写入文本类工作区文件，内容或类型不可编辑时显式拒绝。"""
     backend = _workspace_backend(current_user)
     workspace_path = _workspace_path(path)
     if PurePosixPath(workspace_path).suffix.lower() not in EDITABLE_WORKSPACE_SUFFIXES:
@@ -189,6 +176,7 @@ async def write_workspace_file_content(*, path: str, content: str, current_user:
     except (PermissionError, NotADirectoryError, ValueError) as exc:
         raise PermissionDeniedError("Access denied") from exc
     preview_type, supported, _message = detect_preview_type(path, raw_content)
+    # 后缀可编辑不代表内容可编辑：按字节识别为图片/PDF 等其他类型的文件仍拒绝覆盖。
     if preview_type not in {"markdown", "text"} or not supported:
         raise InvalidOperationError("当前文件类型不支持编辑")
     try:
@@ -213,6 +201,7 @@ async def write_workspace_file_content(*, path: str, content: str, current_user:
 
 
 async def delete_workspace_path(*, path: str, current_user: User) -> dict:
+    """删除工作区内的文件或目录，根目录不可删除。"""
     backend = _workspace_backend(current_user)
     workspace_path = _workspace_path(path)
     if workspace_path == WORKSPACE_SCOPE_ROOT:
@@ -233,6 +222,7 @@ async def delete_workspace_path(*, path: str, current_user: User) -> dict:
 
 
 async def create_workspace_directory(*, parent_path: str, name: str, current_user: User) -> dict:
+    """在指定父目录下创建单个工作区文件夹。"""
     backend = _workspace_backend(current_user)
     directory_name = _validate_child_name(name, field_name="文件夹名")
     virtual_parent = _workspace_path(parent_path)
@@ -283,25 +273,14 @@ async def upload_workspace_files(
     parent_depth = len(PurePosixPath(parent).parts) - 1
     if parent_depth >= MAX_WORKSPACE_UPLOAD_PATH_DEPTH:
         raise InvalidInputError("目标目录层级过深")
-    seen_targets: set[str] = set()
-    upload_targets: list[tuple[FileInput, str]] = []
 
-    for index, file in enumerate(files):
-        if relative_paths is None:
-            file_name = _validate_child_name(Path(file.filename or "").name, field_name="文件名")
-            target = f"{parent.rstrip('/')}/{file_name}"
-        else:
-            relative_path = _normalize_upload_relative_path(relative_paths[index], parent_depth=parent_depth)
-            target = f"{parent.rstrip('/')}/{relative_path}"
-        if target in seen_targets:
-            raise InvalidOperationError(f"上传目标重复: {target}")
-        seen_targets.add(target)
-        upload_targets.append((file, target))
-
-    for _file, target in upload_targets:
-        if any(str(ancestor) in seen_targets for ancestor in PurePosixPath(target).parents):
-            raise InvalidOperationError(f"文件与文件夹路径冲突: {target}", code="workspace_upload_path_conflict")
-
+    # 写入前完整规划目标并预检，保证校验阶段不产生文件副作用。
+    upload_targets = _plan_upload_targets(
+        parent=parent,
+        files=files,
+        relative_paths=relative_paths,
+        parent_depth=parent_depth,
+    )
     await _ensure_upload_targets_available(backend, upload_targets)
 
     completed_entries: list[tuple[str, dict]] = []
@@ -310,6 +289,7 @@ async def upload_workspace_files(
             item = await _write_workspace_upload(file, backend, target)
             completed_entries.append((target, item))
     except DomainError:
+        # 批次任一失败即回收已写入文件；单点回收失败不掩盖原始错误。
         for target, _item in completed_entries:
             with contextlib.suppress(OSError):
                 await asyncio.to_thread(
@@ -324,12 +304,14 @@ async def upload_workspace_files(
 
 
 async def download_workspace_file(*, path: str, current_user: User) -> PreparedFile:
+    """把工作区文件有界复制到服务临时文件，失败时回收临时文件。"""
     backend = _workspace_backend(current_user)
     workspace_path = _workspace_path(path)
     file_name = PurePosixPath(workspace_path).name or "download"
     media_type = detect_media_type(file_name)
     descriptor, temp_path = tempfile.mkstemp(prefix="yuxi-workspace-download-", suffix=PurePosixPath(file_name).suffix)
     os.close(descriptor)
+    completed = False
     try:
         await asyncio.to_thread(
             backend.download_authorized_file_to_path,
@@ -337,18 +319,18 @@ async def download_workspace_file(*, path: str, current_user: User) -> PreparedF
             temp_path,
             MAX_WORKSPACE_DOWNLOAD_SIZE_BYTES,
         )
+        completed = True
     except FileNotFoundError as exc:
-        with contextlib.suppress(FileNotFoundError):
-            os.unlink(temp_path)
         raise ResourceNotFoundError("文件不存在") from exc
     except FileTransferLimitError as exc:
-        with contextlib.suppress(FileNotFoundError):
-            os.unlink(temp_path)
         raise ContentTooLargeError("文件超过下载大小限制") from exc
     except (PermissionError, IsADirectoryError, NotADirectoryError, ValueError) as exc:
-        with contextlib.suppress(FileNotFoundError):
-            os.unlink(temp_path)
         raise PermissionDeniedError("Access denied") from exc
+    finally:
+        # 下载失败时回收服务临时文件；成功时其所有权移交给 PreparedFile。
+        if not completed:
+            with contextlib.suppress(FileNotFoundError):
+                os.unlink(temp_path)
     return PreparedFile(
         path=temp_path,
         media_type=media_type,
@@ -408,6 +390,7 @@ def _normalize_upload_relative_path(value: str, *, parent_depth: int = 0) -> str
         raise InvalidInputError("相对路径无效") from exc
     if len(raw_bytes) > MAX_WORKSPACE_UPLOAD_PATH_BYTES:
         raise InvalidInputError("相对路径过长")
+    # 拒绝 "C:" 形态的 Windows 盘符首段；validate_directory_name 不拦截冒号。
     if len(parts[0]) == 2 and parts[0][1] == ":" and parts[0][0].isalpha():
         raise InvalidInputError("相对路径无效")
     for part in parts:
@@ -446,6 +429,54 @@ def _list_workspace_directory(
         if not files_only or not child["is_dir"]:
             entries.append(_entry_from_metadata(child_path, child))
     return sort_file_entries(entries)
+
+
+async def _filter_project_tree_entries(entries: list[dict], *, uid: str, db) -> list[dict]:
+    """隐藏未归属 selectable Project 的 projects 子树。"""
+    entries_with_paths = [(entry, PurePosixPath(str(entry.get("path") or "/").strip("/"))) for entry in entries]
+    if not any(path.parts[:1] == ("projects",) and path.as_posix() != "projects" for _, path in entries_with_paths):
+        return entries
+
+    visible_paths = await ProjectRepository(db).list_selectable_workdir_paths_for_user(uid)
+    selected_project_paths = [PurePosixPath(path) for path in visible_paths if PurePosixPath(path).parts[:1] == ("projects",)]
+
+    def is_visible(candidate: PurePosixPath) -> bool:
+        if candidate.parts[:1] != ("projects",) or candidate.as_posix() == "projects":
+            return True
+        return any(
+            candidate == selected or candidate.is_relative_to(selected) or selected.is_relative_to(candidate)
+            for selected in selected_project_paths
+        )
+
+    return [entry for entry, path in entries_with_paths if is_visible(path)]
+
+
+def _plan_upload_targets(
+    *,
+    parent: str,
+    files: list[FileInput],
+    relative_paths: list[str] | None,
+    parent_depth: int,
+) -> list[tuple[FileInput, str]]:
+    """解析每个上传文件的目标虚拟路径，拒绝重复目标与同批文件/文件夹路径冲突。"""
+    upload_targets: list[tuple[FileInput, str]] = []
+    seen_targets: set[str] = set()
+    for index, file in enumerate(files):
+        if relative_paths is None:
+            child_name = _validate_child_name(Path(file.filename or "").name, field_name="文件名")
+        else:
+            child_name = _normalize_upload_relative_path(relative_paths[index], parent_depth=parent_depth)
+        target = f"{parent.rstrip('/')}/{child_name}"
+        if target in seen_targets:
+            raise InvalidOperationError(f"上传目标重复: {target}")
+        seen_targets.add(target)
+        upload_targets.append((file, target))
+
+    # 祖先冲突在全部去重通过后整批检查，两段遍历保持与校验顺序绑定的错误优先级。
+    for _file, target in upload_targets:
+        if any(str(ancestor) in seen_targets for ancestor in PurePosixPath(target).parents):
+            raise InvalidOperationError(f"文件与文件夹路径冲突: {target}", code="workspace_upload_path_conflict")
+    return upload_targets
 
 
 async def _ensure_upload_targets_available(backend: Workspace, upload_targets: list[tuple[FileInput, str]]) -> None:

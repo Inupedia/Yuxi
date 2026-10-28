@@ -1890,7 +1890,7 @@ import FallbackAvatar from '@/shared/ui/FallbackAvatar.vue'
   .ant-popover-inner {
     border-radius: 8px;
     border: 1px solid var(--gray-150);
-    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+    box-shadow: 0 4px 12px var(--shadow-2);
     overflow: hidden;
   }
 
@@ -1948,7 +1948,7 @@ import FallbackAvatar from '@/shared/ui/FallbackAvatar.vue'
     border-radius: 8px;
     border: 1px solid var(--gray-150);
     background: var(--gray-0);
-    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
+    box-shadow: 0 4px 16px var(--shadow-3);
     overflow: hidden;
   }
 

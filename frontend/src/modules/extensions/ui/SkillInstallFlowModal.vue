@@ -715,7 +715,7 @@ watch(
 }
 
 .step-divider {
-  color: var(--gray-350, #b4b8be);
+  color: var(--gray-400);
   font-size: 10px;
 }
 
@@ -1123,7 +1123,7 @@ watch(
 
 .flow-alert {
   padding: 9px 11px;
-  border: 1px solid var(--color-error-200);
+  border: 1px solid var(--color-error-100);
   border-radius: 6px;
   background: var(--color-error-50);
   color: var(--color-error-700);

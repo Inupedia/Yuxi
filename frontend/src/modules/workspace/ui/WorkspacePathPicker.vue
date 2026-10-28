@@ -493,7 +493,7 @@ watch(
 }
 
 .picker-empty.error {
-  color: var(--color-error-600);
+  color: var(--color-error-700);
 }
 
 @media (max-width: 520px) {

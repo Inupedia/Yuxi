@@ -5,6 +5,7 @@ import { onBeforeRouteUpdate, useRoute, useRouter } from 'vue-router'
 import PageHeader from '@/shared/ui/PageHeader.vue'
 import AgentManagePanel from '@/modules/agents/ui/AgentManagePanel.vue'
 import ModelProviderManagePanel from '@/modules/settings/ui/ModelProviderManagePanel.vue'
+import ApiIntegrationPanel from '@/modules/settings/ui/ApiIntegrationPanel.vue'
 import ScheduledAgentsView from '@/modules/agents/ui/ScheduledAgents.vue'
 import { useUserStore } from '@/modules/identity/model/user'
 
@@ -15,17 +16,20 @@ const userStore = useUserStore()
 const activeTab = ref('agents')
 const agentPanelRef = ref(null)
 const providerPanelRef = ref(null)
+const apiIntegrationPanelRef = ref(null)
 const schedulePanelRef = ref(null)
 
 const modelManageTabs = computed(() => {
   const tabs = [{ key: 'agents', label: '智能体' }]
   if (userStore.isAdmin) tabs.push({ key: 'providers', label: '模型供应商' })
-  tabs.push({ key: 'schedules', label: '定时任务 (beta)' })
+  tabs.push({ key: 'schedules', label: '定时任务' })
+  if (userStore.isSuperAdmin) tabs.push({ key: 'integration', label: 'API 集成' })
   return tabs
 })
 
 const activePanel = computed(() => {
   if (activeTab.value === 'schedules') return schedulePanelRef.value
+  if (activeTab.value === 'integration') return apiIntegrationPanelRef.value
   if (activeTab.value === 'providers') return providerPanelRef.value
   return agentPanelRef.value
 })
@@ -37,12 +41,13 @@ const activeStats = computed(() => activePanel.value?.stats || {})
 
 const normalizeTab = (tab) => {
   if (tab === 'providers' && userStore.isAdmin) return 'providers'
+  if (tab === 'integration' && userStore.isSuperAdmin) return 'integration'
   if (tab === 'schedules') return 'schedules'
   return 'agents'
 }
 
 watch(
-  () => [route.query.tab, userStore.isAdmin],
+  () => [route.query.tab, userStore.isAdmin, userStore.isSuperAdmin],
   ([tab]) => {
     const nextTab = normalizeTab(tab)
     if (activeTab.value !== nextTab) activeTab.value = nextTab
@@ -98,6 +103,9 @@ onBeforeRouteUpdate((to) => canChangeTab(normalizeTab(to.query.tab)))
       <div v-if="userStore.isAdmin && activeTab === 'providers'" class="tab-panel">
         <ModelProviderManagePanel ref="providerPanelRef" />
       </div>
+      <div v-if="userStore.isSuperAdmin && activeTab === 'integration'" class="tab-panel">
+        <ApiIntegrationPanel ref="apiIntegrationPanelRef" />
+      </div>
       <div v-if="activeTab === 'schedules'" class="tab-panel schedule-tab-panel">
         <ScheduledAgentsView ref="schedulePanelRef" />
       </div>
@@ -110,7 +118,7 @@ onBeforeRouteUpdate((to) => canChangeTab(normalizeTab(to.query.tab)))
   display: flex;
   flex-direction: column;
   min-height: 100%;
-  background: var(--gray-0);
+  background: var(--bg-page);
   color: var(--gray-1000);
 }
 

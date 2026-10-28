@@ -52,7 +52,7 @@
           <a-alert type="error" :message="userManagement.error" show-icon />
         </div>
 
-        <template v-if="userManagement.users.length > 0">
+        <template v-if="userManagement.users.length > 0 || hasActiveFilters">
           <div class="settings-table-wrapper">
             <a-table
               :dataSource="userManagement.users"
@@ -66,22 +66,19 @@
                 <template v-if="column.key === 'role' && showHeaderFilter">
                   <div class="header-filter-cell">
                     <span>角色</span>
-                    <a-popover trigger="click" placement="bottomRight">
-                      <template #content>
-                        <div class="yuxi-header-filter-panel">
+                    <a-dropdown :trigger="['click']" placement="bottomRight" :open="filterOpen.role" @open-change="(open) => setFilterOpen('role', open)">
+                      <template #overlay>
+                        <div class="yuxi-header-filter-panel" @click.stop>
                           <a-checkbox-group
-                            v-model:value="userManagement.roleFilterValues"
+                            v-model:value="filterDraft.role"
                             class="header-filter-options"
                             :options="roleFilterOptions"
                           />
-                          <button
-                            type="button"
-                            class="header-filter-clear"
-                            :disabled="!userManagement.roleFilterValues.length"
-                            @click="userManagement.roleFilterValues = []"
-                          >
-                            清空筛选
-                          </button>
+                          <div class="header-filter-actions">
+                            <button type="button" class="header-filter-clear" :disabled="!filterDraft.role.length" @click="filterDraft.role = []">清空</button>
+                            <a-button size="small" @click="filterOpen.role = false">取消</a-button>
+                            <a-button type="primary" size="small" @click="applyFilter('role')">确认</a-button>
+                          </div>
                         </div>
                       </template>
                       <button
@@ -89,22 +86,24 @@
                         class="header-filter-btn"
                         :class="{ active: userManagement.roleFilterValues.length }"
                         :aria-label="`筛选角色（已选 ${userManagement.roleFilterValues.length} 项）`"
+                        :aria-expanded="filterOpen.role"
                       >
                         <ListFilter :size="14" />
                       </button>
-                    </a-popover>
+                    </a-dropdown>
                   </div>
                 </template>
                 <template v-else-if="column.key === 'department' && showHeaderFilter">
                   <div class="header-filter-cell">
                     <span>所属部门/实例</span>
-                    <a-popover
-                      trigger="click"
+                    <a-dropdown
+                      :trigger="['click']"
                       placement="bottomRight"
-                      @open-change="(open) => open && (departmentFilterKeyword = '')"
+                      :open="filterOpen.department"
+                      @open-change="(open) => setFilterOpen('department', open)"
                     >
-                      <template #content>
-                        <div class="yuxi-header-filter-panel">
+                      <template #overlay>
+                        <div class="yuxi-header-filter-panel department-filter-panel" @click.stop>
                           <template v-if="departmentFilterOptions.length">
                             <a-input
                               v-if="departmentFilterOptions.length > 8"
@@ -115,10 +114,19 @@
                               allow-clear
                             />
                             <a-checkbox-group
-                              v-model:value="userManagement.departmentFilterValues"
+                              v-model:value="filterDraft.department"
                               class="header-filter-options"
-                              :options="visibleDepartmentOptions"
-                            />
+                            >
+                              <!-- 保留隐藏项的注册，避免 Ant 在勾选搜索结果时丢弃此前已选部门。 -->
+                              <a-checkbox
+                                v-for="option in departmentFilterOptions"
+                                v-show="visibleDepartmentOptions.includes(option)"
+                                :key="option.value"
+                                :value="option.value"
+                              >
+                                {{ option.label }}
+                              </a-checkbox>
+                            </a-checkbox-group>
                             <div
                               v-if="departmentFilterOptions.length && !visibleDepartmentOptions.length"
                               class="header-filter-empty"
@@ -127,14 +135,11 @@
                             </div>
                           </template>
                           <div v-else class="header-filter-empty">暂无可筛选的部门</div>
-                          <button
-                            type="button"
-                            class="header-filter-clear"
-                            :disabled="!userManagement.departmentFilterValues.length"
-                            @click="userManagement.departmentFilterValues = []"
-                          >
-                            清空筛选
-                          </button>
+                          <div class="header-filter-actions">
+                            <button type="button" class="header-filter-clear" :disabled="!filterDraft.department.length" @click="filterDraft.department = []">清空</button>
+                            <a-button size="small" @click="filterOpen.department = false">取消</a-button>
+                            <a-button type="primary" size="small" @click="applyFilter('department')">确认</a-button>
+                          </div>
                         </div>
                       </template>
                       <button
@@ -142,10 +147,11 @@
                         class="header-filter-btn"
                         :class="{ active: userManagement.departmentFilterValues.length }"
                         :aria-label="`筛选部门（已选 ${userManagement.departmentFilterValues.length} 项）`"
+                        :aria-expanded="filterOpen.department"
                       >
                         <ListFilter :size="14" />
                       </button>
-                    </a-popover>
+                    </a-dropdown>
                   </div>
                 </template>
               </template>
@@ -430,7 +436,22 @@ watch(showHeaderFilter, (visible) => {
   userManagement.roleFilterValues = []
 })
 
-// 部门候选可能很多，弹层内按关键词本地过滤，选择仍然即时生效。
+// 打开菜单时复制已应用的筛选，只有确认才发布草稿。
+const filterOpen = reactive({ role: false, department: false })
+const filterDraft = reactive({ role: [], department: [] })
+const setFilterOpen = (kind, open) => {
+  if (open) {
+    filterDraft[kind] = [...userManagement[`${kind}FilterValues`]]
+    if (kind === 'department') departmentFilterKeyword.value = ''
+  }
+  filterOpen[kind] = open
+}
+const applyFilter = (kind) => {
+  userManagement[`${kind}FilterValues`] = [...filterDraft[kind]]
+  filterOpen[kind] = false
+}
+
+// 部门候选可能很多，菜单内按关键词本地过滤。
 const departmentFilterKeyword = ref('')
 const visibleDepartmentOptions = computed(() => {
   const keyword = departmentFilterKeyword.value.trim().toLowerCase()
@@ -1063,36 +1084,51 @@ onUnmounted(() => {
 </style>
 
 <style lang="less">
-// 表头筛选弹层由 a-popover 挂载到 body，脱离组件 scoped 祖先链，样式需要全局提供。
+// 表头筛选菜单挂载到 body，脱离组件 scoped 祖先链，样式需要全局提供。
 .yuxi-header-filter-panel {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  min-width: 160px;
+  width: 224px;
+  max-width: calc(100vw - 48px);
+  padding: 8px;
+  border: 1px solid var(--gray-150);
+  border-radius: 8px;
+  background: var(--gray-0);
+  box-shadow: var(--shadow-popover);
+
+  &.department-filter-panel {
+    width: 280px;
+  }
 
   .header-filter-options {
     display: flex;
     flex-direction: column;
+    flex-wrap: nowrap;
+    align-self: stretch;
     gap: 2px;
     max-height: 264px;
     overflow-y: auto;
     scrollbar-width: thin;
 
     .ant-checkbox-wrapper {
+      display: flex;
+      align-items: flex-start;
+      min-width: 0;
       margin-inline-start: 0;
       padding: 3px 4px;
       border-radius: 6px;
       font-size: 13px;
       color: var(--gray-700);
-      white-space: nowrap;
+      white-space: normal;
 
       &:hover {
         background: var(--gray-50);
       }
 
       .ant-checkbox + span {
-        overflow: hidden;
-        text-overflow: ellipsis;
+        min-width: 0;
+        overflow-wrap: anywhere;
       }
     }
   }
@@ -1108,7 +1144,7 @@ onUnmounted(() => {
   }
 
   .header-filter-clear {
-    align-self: flex-end;
+    margin-right: auto;
     padding: 0;
     border: 0;
     background: transparent;
@@ -1129,6 +1165,14 @@ onUnmounted(() => {
       outline: 2px solid var(--main-300);
       outline-offset: 2px;
     }
+  }
+
+  .header-filter-actions {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding-top: 8px;
+    border-top: 1px solid var(--gray-100);
   }
 }
 </style>

@@ -295,7 +295,7 @@ onBeforeUnmount(() => {
   flex-direction: column;
   width: 100%;
   min-height: 100%;
-  background: var(--gray-50, #f8fafc);
+  background: var(--gray-50);
   position: relative;
   user-select: text;
   box-sizing: border-box;
@@ -310,16 +310,16 @@ onBeforeUnmount(() => {
   justify-content: center;
   gap: 12px;
   padding: 40px;
-  color: var(--gray-600, #64748b);
+  color: var(--gray-600);
 }
 
 .pdf-spinner {
   animation: pdf-spin 1s linear infinite;
-  color: var(--primary-color, #2563eb);
+  color: var(--main-color);
 }
 
 .pdf-error-view {
-  color: var(--color-danger, #ef4444);
+  color: var(--color-error-700);
 }
 
 .pdf-error-icon {
@@ -347,17 +347,18 @@ onBeforeUnmount(() => {
   align-items: center;
   max-width: 100%;
   box-shadow:
-    0 4px 14px rgba(0, 0, 0, 0.07),
-    0 1px 3px rgba(0, 0, 0, 0.03);
-  background: #ffffff;
+    0 4px 14px var(--shadow-2),
+    0 1px 3px var(--shadow-0);
+  /* 文档白纸使用不随明暗反转的白色，避免透明 PDF 背景透出深色界面。 */
+  background: var(--color-text-inverse);
   border-radius: 4px;
   transition: box-shadow 0.2s ease;
 }
 
 .pdf-page-card:hover {
   box-shadow:
-    0 6px 18px rgba(0, 0, 0, 0.1),
-    0 2px 5px rgba(0, 0, 0, 0.05);
+    0 6px 18px var(--shadow-3),
+    0 2px 5px var(--shadow-1);
 }
 
 .pdf-canvas {
@@ -365,7 +366,7 @@ onBeforeUnmount(() => {
   max-width: 100%;
   height: auto;
   border-radius: 4px;
-  background: #ffffff;
+  background: var(--color-text-inverse);
 }
 
 .pdf-page-number-tag {
@@ -373,7 +374,7 @@ onBeforeUnmount(() => {
   bottom: -18px;
   right: 2px;
   font-size: 11px;
-  color: var(--gray-400, #94a3b8);
+  color: var(--gray-600);
   user-select: none;
 }
 

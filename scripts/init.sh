@@ -277,7 +277,7 @@ if [ -z "$(get_env_value YUXI_INSTANCE_ID)" ]; then
 fi
 
 sandbox_backend=$(get_env_value SANDBOX_BACKEND)
-sandbox_backend="${sandbox_backend:-cube}"
+sandbox_backend="${sandbox_backend:-container}"
 case "$sandbox_backend" in
     cube|container) ;;
     *) fail "SANDBOX_BACKEND must be cube or container." ;;

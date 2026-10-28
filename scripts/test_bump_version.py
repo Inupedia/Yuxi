@@ -15,6 +15,7 @@ class BumpVersionScriptTests(unittest.TestCase):
         shutil.copy2(Path(__file__).with_name("bump-version.sh"), script)
 
         fixtures = {
+            ".env.template": "# SANDBOX_CONTAINER_IMAGE=yuxi-sandbox:0.7.2.beta1\n",
             "backend/pyproject.toml": 'version = "0.7.2.beta1"\n',
             "backend/uv.lock": ('name = "yuxi"\nversion = "0.7.2b1"\n'),
             "frontend/package.json": '{\n  "version": "0.7.2.beta1"\n}\n',
@@ -80,6 +81,7 @@ class BumpVersionScriptTests(unittest.TestCase):
             )
 
             current_paths = [
+                ".env.template",
                 "backend/pyproject.toml",
                 "frontend/package.json",
                 "backend/yuxi/sandbox_runner/settings.py",
@@ -127,6 +129,7 @@ class BumpVersionScriptTests(unittest.TestCase):
                 (root / "backend/pyproject.toml").read_text(),
             )
             for relative_path in (
+                ".env.template",
                 "backend/yuxi/sandbox_runner/settings.py",
                 "backend/test/integration/sandbox/test_container_sandbox.py",
             ):

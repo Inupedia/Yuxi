@@ -14,7 +14,7 @@
   justify-content: center;
   min-height: 100vh;
   padding: 24px;
-  background: var(--gray-0);
+  background: var(--bg-page);
   color: var(--color-text);
   text-align: center;
 }

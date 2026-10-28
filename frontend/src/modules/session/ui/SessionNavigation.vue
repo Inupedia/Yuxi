@@ -365,6 +365,7 @@ const handleDeleteProject = async (projectId) => {
   min-height: 0;
 }
 .session-navigation-content {
+  --session-navigation-bg: var(--bg-sider);
   display: flex;
   flex-direction: column;
   flex: 1;
@@ -385,13 +386,14 @@ const handleDeleteProject = async (projectId) => {
   pointer-events: none;
 }
 .session-panel-shell .session-navigation-content {
+  --session-navigation-bg: var(--gray-0);
   position: absolute;
   top: 0;
   bottom: 0;
   left: 0;
   width: 250px;
   pointer-events: auto;
-  background: var(--gray-0);
+  background: var(--session-navigation-bg);
   // 左缘紧贴图标栏的 border-right，不再自绘 border-left，避免出现双层边框
   border-right: 1px solid var(--gray-100);
   transition:

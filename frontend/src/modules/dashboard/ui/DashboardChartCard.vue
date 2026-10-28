@@ -14,7 +14,7 @@ defineProps({ title: { type: String, required: true }, loading: Boolean })
 .dashboard-chart-summary {
   padding-bottom: 18px;
   margin-bottom: 18px;
-  border-bottom: 1px solid var(--gray-150);
+  border-bottom: 1px solid var(--border-surface);
 }
 .dashboard-chart-content {
   min-width: 0;

@@ -7,7 +7,7 @@ settings:
 overrides:
   '@vscode/markdown-it-katex>katex': 0.18.4
   source-map-js: 1.2.2
-  brace-expansion: 5.0.9
+  brace-expansion: 5.0.12
   esbuild: 0.28.2
   eslint-scope: 9.1.2
   flatted: 3.4.2
@@ -15,6 +15,7 @@ overrides:
   lodash-es: 4.18.1
   nanoid: 3.3.18
   postcss: 8.5.26
+  postcss-selector-parser: 7.1.6
   undici: 6.28.0
   yaml: 2.8.3
 
@@ -992,8 +993,8 @@ packages:
   boolbase@1.0.0:
     resolution: {integrity: sha512-JZOSA7Mo9sNGB8+UjSgzdLtokWAky1zbztM3WRLCbZ70/3cTANmQmOdR7y2g+J0e2WXywy1yS468tY+IruqEww==}
 
-  brace-expansion@5.0.9:
-    resolution: {integrity: sha512-ScQ4IuvIEF1TMlP7Zt+vjJ//9zlPb2SDcxWxM3bk8s6t6GGdJ7KO1dCcTidOPJKePW30LE/2cT7wCyPho9/Wxg==}
+  brace-expansion@5.0.12:
+    resolution: {integrity: sha512-YovQ3rzhaLMIrDjNDMkNS01tea93qhEhG5xy8f6+R0l+dw3Ki+5sCoIoI942iuLZTHWogWktgwVDhU09iNEimQ==}
     engines: {node: 20 || >=22}
 
   bubblesets-js@2.3.4:
@@ -1773,8 +1774,8 @@ packages:
   pkg-types@2.3.1:
     resolution: {integrity: sha512-y+ichcgc2LrADuhLNAx8DFjVfgz91pRxfZdI3UDhxHvcVEZsenLO+7XaU5vOp0u/7V/wZ+plyuQxtrDlZJ+yeg==}
 
-  postcss-selector-parser@7.1.5:
-    resolution: {integrity: sha512-KvvtD7SrlBP7dlgkBghEE3r84CABm5SmV2aNcG4oCA+qDnJ/tvKonFVvwWAyyWUEwxuNawdfEAZKP9zM3oZ2Uw==}
+  postcss-selector-parser@7.1.6:
+    resolution: {integrity: sha512-7qASPzhKF2l2KLboRZux8CCTRMdGiV08vWmyKzPz22qZ7ZjQBOeY7rNzNoCLSUiftJ7HUq0GERHmxw/t0dCdMw==}
     engines: {node: '>=4'}
 
   postcss@8.5.26:
@@ -2976,7 +2977,7 @@ snapshots:
 
   boolbase@1.0.0: {}
 
-  brace-expansion@5.0.9:
+  brace-expansion@5.0.12:
     dependencies:
       balanced-match: 4.0.4
 
@@ -3229,7 +3230,7 @@ snapshots:
       eslint: 10.9.1
       natural-compare: 1.4.0
       nth-check: 2.1.1
-      postcss-selector-parser: 7.1.5
+      postcss-selector-parser: 7.1.6
       semver: 7.8.5
       vue-eslint-parser: 10.4.1(eslint@10.9.1)
       xml-name-validator: 5.0.0
@@ -3592,7 +3593,7 @@ snapshots:
 
   minimatch@10.2.6:
     dependencies:
-      brace-expansion: 5.0.9
+      brace-expansion: 5.0.12
 
   ml-array-max@2.0.0:
     dependencies:
@@ -3723,7 +3724,7 @@ snapshots:
       exsolve: 1.1.1
       pathe: 2.0.3
 
-  postcss-selector-parser@7.1.5:
+  postcss-selector-parser@7.1.6:
     dependencies:
       cssesc: 3.0.0
       util-deprecate: 1.0.2

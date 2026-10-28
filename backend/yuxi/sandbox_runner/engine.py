@@ -149,22 +149,25 @@ class DockerEngine:
         output = bytearray()
         truncated = False
         decoder = _FrameDecoder()
-        with self._client(read_timeout=read_timeout) as client:
-            with client.stream(
+        with (
+            self._client(read_timeout=read_timeout) as client,
+            client.stream(
                 "POST",
                 f"/exec/{quote(exec_id, safe='')}/start",
                 json={"Detach": False, "Tty": False},
-            ) as response:
-                self._check(response)
-                for chunk in response.iter_raw():
-                    if deadline is not None and time.monotonic() >= deadline:
-                        raise ExecDeadlineExceeded(bytes(output), truncated)
-                    for payload in decoder.feed(chunk):
-                        remaining = max(0, output_budget - len(output))
-                        if remaining:
-                            output.extend(payload[:remaining])
-                        if len(payload) > remaining:
-                            truncated = True
+            ) as response,
+        ):
+            self._check(response)
+            for chunk in response.iter_raw():
+                # 先查期限再消费帧：超期时立即携带已收输出中断流。
+                if deadline is not None and time.monotonic() >= deadline:
+                    raise ExecDeadlineExceeded(bytes(output), truncated)
+                for payload in decoder.feed(chunk):
+                    remaining = max(0, output_budget - len(output))
+                    if remaining:
+                        output.extend(payload[:remaining])
+                    if len(payload) > remaining:
+                        truncated = True
         decoder.finish()
         return bytes(output), truncated
 
@@ -221,7 +224,8 @@ class DockerEngine:
             payload = response.json()
             if isinstance(payload, dict) and isinstance(payload.get("message"), str):
                 detail = payload["message"].strip()
-        except (json.JSONDecodeError, ValueError):
+        except ValueError:
+            # JSONDecodeError 等解析失败均视为无 message，回退到 HTTP 状态描述。
             pass
         raise EngineError(detail[:300] or f"Docker API 返回 HTTP {response.status_code}", response.status_code)
 
@@ -253,4 +257,4 @@ class _FrameDecoder:
             raise EngineError("exec 输出流包含不完整帧")
 
 
-__all__ = ["DockerEngine", "EngineError"]
+__all__ = ["DockerEngine", "EngineError", "ExecDeadlineExceeded"]

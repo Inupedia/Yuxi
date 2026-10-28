@@ -44,10 +44,12 @@ chore/<topic>     工程辅助
 Yuxi 的开发拓扑以 Docker Compose 为准。首次启动前，根据 `.env.template` 准备 `.env`，再运行：
 
 ```bash
-docker compose up -d
-docker compose ps
-docker compose logs --tail=100 api
+docker compose --profile container up -d
+docker compose --profile container ps
+docker compose --profile container logs --tail=100 api
 ```
+
+默认 Container 需启用 `container` profile；显式选择 Cube 时去掉该参数并先准备执行节点。Make 会读取当前环境的 `SANDBOX_BACKEND`，未设置时按 Container 处理；因此 Cube 配置不会启动 Container runner。
 
 `frontend` 使用 Vite 热更新。`api` 与 `worker` 保留源码挂载，源码修改通过显式重启生效。重启前检查活动任务，避免中断正在执行的 Run；按改动范围选择服务，例如后端公共代码修改后运行：
 

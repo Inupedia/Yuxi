@@ -306,7 +306,7 @@ const displayAnswer = computed(() => {
 
     &.is-recommended {
       border-color: var(--main-200);
-      background: var(--main-25);
+      background: var(--main-30);
     }
   }
 

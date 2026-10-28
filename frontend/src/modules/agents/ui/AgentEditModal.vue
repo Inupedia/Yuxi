@@ -1091,7 +1091,7 @@ defineExpose({
   width: 7px;
   height: 7px;
   border-radius: 50%;
-  background: var(--color-warning-600);
+  background: var(--color-warning-500);
 }
 
 .agent-modal-main {
@@ -1518,6 +1518,11 @@ defineExpose({
 :global(.agent-edit-modal .ant-modal-content) {
   overflow: hidden;
   padding: 0;
+}
+
+:global(:root.dark .agent-edit-modal .ant-modal-content) {
+  border: 0;
+  box-shadow: none;
 }
 
 :global(.agent-edit-modal .ant-modal-header) {

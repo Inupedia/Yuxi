@@ -1191,7 +1191,7 @@ const chunkData = async () => {
 
   &.warning {
     background: var(--color-warning-50);
-    border: 1px solid var(--color-warning-200);
+    border: 1px solid var(--color-warning-100);
     color: var(--color-warning-700);
   }
 }
@@ -1235,7 +1235,7 @@ const chunkData = async () => {
 .zip-tip {
   margin-top: 8px;
   font-size: 12px;
-  color: var(--color-warning-600);
+  color: var(--color-warning-700);
   background: var(--color-warning-50);
   display: inline-block;
   padding: 2px 8px;
@@ -1317,14 +1317,14 @@ const chunkData = async () => {
 
   &.success {
     background: var(--color-success-50);
-    border-color: var(--color-success-200);
-    color: var(--color-success-600);
+    border-color: var(--color-success-100);
+    color: var(--color-success-700);
   }
 
   &.error {
     background: var(--color-error-50);
-    border-color: var(--color-error-200);
-    color: var(--color-error-600);
+    border-color: var(--color-error-100);
+    color: var(--color-error-700);
   }
 }
 
@@ -1369,7 +1369,7 @@ const chunkData = async () => {
 .detail-error {
   margin-top: 2px;
   font-size: 11px;
-  color: var(--color-error-600);
+  color: var(--color-error-700);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;

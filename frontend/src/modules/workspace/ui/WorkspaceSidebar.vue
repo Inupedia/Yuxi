@@ -286,7 +286,7 @@ const sharedKnowledgeBases = computed(() =>
   background: var(--gray-0);
   border: 1px solid var(--gray-200);
   border-radius: 8px;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.08);
+  box-shadow: 0 4px 16px var(--shadow-2);
 }
 
 .file-action-menu-item {

@@ -68,7 +68,7 @@ defineEmits(['click'])
   width: 100%;
   min-width: 0;
   padding: 16px;
-  border: 1px solid var(--gray-150);
+  border: 1px solid var(--border-surface);
   border-radius: 8px;
   background: var(--gray-0);
   color: inherit;
@@ -189,6 +189,14 @@ defineEmits(['click'])
 
 .compact .dashboard-metric-label {
   font-size: 10px;
+}
+
+:root.dark .dashboard-metric-card.compact {
+  background: var(--gray-10);
+
+  &:hover {
+    background: var(--gray-20);
+  }
 }
 
 .compact .dashboard-metric-content {

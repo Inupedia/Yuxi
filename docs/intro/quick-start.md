@@ -11,10 +11,10 @@ const sandbox = ref('container')
 
 ## 1. 下载代码
 
-本文固定使用 `v0.8.0.beta3` 候选标签，尚未正式发布。
+本文固定使用 `v0.8.0.beta5` 测试版本。
 
 ```bash
-git clone --branch v0.8.0.beta3 --depth 1 https://github.com/xerrors/Yuxi.git
+git clone --branch v0.8.0.beta5 --depth 1 https://github.com/xerrors/Yuxi.git
 cd Yuxi
 ```
 
@@ -30,8 +30,8 @@ cd Yuxi
 
 | 方式 | 适用场景 | 环境要求 |
 | --- | --- | --- |
-| **Container** | 本地试用、单租户可信代码，需要基本命令执行 | Docker，无需 KVM 或额外执行节点 |
-| **Cube（默认）** | 需要 VM 隔离和持久用户环境 | 已准备好的 Linux/KVM 执行节点 |
+| **Container（默认）** | 本地试用、单租户可信代码，需要基本命令执行 | Docker，无需 KVM 或额外执行节点 |
+| **Cube** | 需要 VM 隔离和持久用户环境 | 已准备好的 Linux/KVM 执行节点 |
 
 Container 与宿主共享内核，不适合不可信多租户代码。后端由配置显式选择，Cube 不可用时不会自动切换。
 
@@ -51,29 +51,16 @@ Windows 下的 Docker Desktop 不支持启动 Cube。可以选择 Container；�
 ::: code-group
 
 ```bash [Linux / macOS]
-export SANDBOX_BACKEND=container
 ./scripts/init.sh
 ```
 
 ```powershell [Windows PowerShell]
-Copy-Item .env.template .env
-# 编辑 .env，将 SANDBOX_BACKEND=cube 改为 SANDBOX_BACKEND=container
-
-# 生成 runner 认证密钥并保存到 .env
-$bytes = New-Object byte[] 32
-$rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
-$rng.GetBytes($bytes)
-$rng.Dispose()
-$token = [System.BitConverter]::ToString($bytes).Replace('-', '').ToLowerInvariant()
-Add-Content .env "SANDBOX_RUNNER_TOKEN=$token"
-Remove-Variable token, bytes
-
 .\scripts\init.ps1
 ```
 
 :::
 
-Linux/macOS 脚本会自动生成 `SANDBOX_RUNNER_TOKEN`；PowerShell 脚本需要上面的显式生成步骤。Docker Desktop 使用 Linux 容器模式，并允许项目目录共享。
+两种初始化脚本都默认选择 Container 并自动生成 `SANDBOX_RUNNER_TOKEN`。已有 `.env` 会保留原后端；如需切换，先将 `SANDBOX_BACKEND` 改为 `container` 再初始化。Docker Desktop 使用 Linux 容器模式，并允许项目目录共享。
 
 初始化完成后，直接进入步骤 3。沙盒镜像会在启动时构建，不需要填写 Cube 配置。容器默认禁止联网，每个执行段（Run）使用独立临时环境；工作目录文件保留，Home 和临时安装的软件随容器清理。更多限制见[Container 沙盒](../advanced/container-sandbox.md)。
 
