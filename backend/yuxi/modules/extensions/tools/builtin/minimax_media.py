@@ -21,12 +21,14 @@ from yuxi.modules.agents.runtime.sandbox.context import sandbox_run_env
 from yuxi.modules.extensions.tools.builtin.file_context import resolve_file_context
 from yuxi.modules.extensions.tools.registry import tool
 from yuxi.modules.knowledge.utils.url_fetcher import SSRFGuardTransport
+from yuxi.modules.workspace.errors import FileTransferLimitError
 from yuxi.modules.workspace.filesystem import Workspace
-from yuxi.modules.workspace.runtime_paths import runtime_workdir_path
+from yuxi.modules.workspace.runtime_paths import runtime_workdir_path, workdir_scope_from_runtime_path
 from yuxi.modules.workspace.workdir import Workdir
 
 _API_BASE = "https://api.minimax.cn"
 _MAX_IMAGE_BYTES = 25 * 1024 * 1024
+_MAX_VIDEO_INPUT_IMAGE_BYTES = 30 * 1024 * 1024
 _MAX_VIDEO_BYTES = 150 * 1024 * 1024
 _MAX_REDIRECTS = 3
 _TASK_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
@@ -47,9 +49,15 @@ class MinimaxGenerateImageInput(BaseModel):
 
 
 class MinimaxGenerateVideoInput(BaseModel):
-    """MiniMax H3 文生视频参数。"""
+    """MiniMax H3 文生视频或首帧图生视频参数。"""
 
     prompt: str = Field(min_length=1, max_length=2000, description="视频内容描述")
+    first_frame_path: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=1024,
+        description="可选首帧图片路径；用户上传了图片时填写附件上下文给出的完整 Workdir 路径，生成 I2V 视频",
+    )
     duration: int = Field(default=5, ge=4, le=15, description="视频时长，4 到 15 秒")
     ratio: Literal["21:9", "16:9", "4:3", "1:1", "3:4", "9:16"] = Field(default="16:9", description="视频宽高比")
     resolution: Literal["768P", "2K"] = Field(default="768P", description="视频分辨率")
@@ -128,37 +136,69 @@ async def minimax_generate_image(
     category="builtin",
     tags=["MiniMax", "视频生成"],
     display_name="MiniMax H3 视频生成",
-    description="通过 MiniMax 官方 H3 视频生成 V2 API 提交文生视频任务。任务创建后使用 minimax_check_video 查询并下载结果。",
+    description=(
+        "通过 MiniMax 官方 H3 V2 API 提交文生视频或首帧图生视频任务。"
+        "用户上传图片时，将附件上下文中的 Workdir 路径传入 first_frame_path。"
+        "任务创建后使用 minimax_check_video 查询并下载结果。"
+    ),
     config_guide=MINIMAX_MEDIA_CONFIG_GUIDE,
     args_schema=MinimaxGenerateVideoInput,
 )
 async def minimax_generate_video(
     prompt: str,
     runtime: ToolRuntime,
+    first_frame_path: str | None = None,
     duration: int = 5,
     ratio: str = "16:9",
     resolution: str = "768P",
 ) -> dict:
-    """提交 MiniMax H3 异步视频任务，返回 task_id 供后续查询。"""
+    """提交 MiniMax H3 异步视频任务，支持文生视频和首帧图生视频。"""
     key = await _get_api_key(runtime)
-    resolve_file_context(runtime)
+    uid, workdir_relative_path = resolve_file_context(runtime)
     if duration < 4 or duration > 15:
         raise ToolException("MiniMax H3 视频时长必须在 4 到 15 秒之间。")
     if not prompt.strip():
         raise ToolException("视频提示词不能为空。")
 
-    data = await _post_json(
-        "/v2/video_generation",
-        {
-            "model": "MiniMax-H3",
-            "content": [{"type": "text", "text": prompt.strip()}],
-            "resolution": resolution,
-            "duration": duration,
-            "ratio": ratio,
-        },
-        key,
-        timeout=60.0,
-    )
+    if first_frame_path:
+        workdir = Workdir(workdir_relative_path, Workspace(uid))
+        try:
+            scope_path = workdir_scope_from_runtime_path(workdir_relative_path, first_frame_path)
+            file_metadata = await asyncio.to_thread(workdir.stat, scope_path)
+            if file_metadata["is_dir"]:
+                raise ToolException("首帧路径必须指向图片文件。")
+            if file_metadata["size"] > _MAX_VIDEO_INPUT_IMAGE_BYTES:
+                raise ToolException("MiniMax 首帧图片不能超过 30 MB。")
+            image_bytes = await asyncio.to_thread(workdir.read_file, scope_path, _MAX_VIDEO_INPUT_IMAGE_BYTES)
+        except FileNotFoundError:
+            raise ToolException("首帧图片在当前 Project Workdir 中不存在。") from None
+        except FileTransferLimitError:
+            raise ToolException("MiniMax 首帧图片不能超过 30 MB。") from None
+        except ValueError:
+            raise ToolException("首帧图片必须是当前 Project Workdir 中的附件，不能读取其他路径。") from None
+        if not image_bytes:
+            raise ToolException("首帧图片为空，无法提交视频任务。")
+        if len(image_bytes) > _MAX_VIDEO_INPUT_IMAGE_BYTES:
+            raise ToolException("MiniMax 首帧图片不能超过 30 MB。")
+        file_name = Path(scope_path).name
+        mime_type = _image_mime_type(image_bytes, file_name)
+        file_id = await _upload_video_input_file(
+            file_name=file_name,
+            content=image_bytes,
+            mime_type=mime_type,
+            key=key,
+        )
+        payload = _build_video_payload(
+            prompt=prompt.strip(),
+            duration=duration,
+            ratio=ratio,
+            resolution=resolution,
+            first_frame_file_id=file_id,
+        )
+    else:
+        payload = _build_video_payload(prompt=prompt.strip(), duration=duration, ratio=ratio, resolution=resolution)
+
+    data = await _post_json("/v2/video_generation", payload, key, timeout=60.0)
     task_id = data.get("task_id")
     if not isinstance(task_id, str) or not _TASK_ID_RE.fullmatch(task_id):
         raise ToolException("MiniMax 未返回有效的视频任务 ID。")
@@ -166,6 +206,7 @@ async def minimax_generate_video(
         "task_id": task_id,
         "status": "queued",
         "model": "MiniMax-H3",
+        "input_mode": "image_to_video" if first_frame_path else "text_to_video",
         "message": "视频任务已提交。稍后调用 minimax_check_video 查询；任务完成后该工具会下载并保存 MP4 文件。",
     }
 
@@ -270,6 +311,61 @@ async def _request_json(method: str, path: str, key: str, *, json: dict | None =
         raise ToolException("MiniMax 返回的内容不是有效 JSON。") from None
 
 
+async def _upload_video_input_file(*, file_name: str, content: bytes, mime_type: str, key: str) -> str:
+    """把私有 Workdir 图片上传为 MiniMax 七天有效的首帧素材。"""
+    try:
+        async with httpx.AsyncClient(timeout=60.0, trust_env=False) as client:
+            response = await client.post(
+                f"{_API_BASE}/v1/files/upload",
+                headers={"Authorization": f"Bearer {key}"},
+                data={"purpose": "video_generation_input"},
+                files={"file": (file_name, content, mime_type)},
+            )
+            response.raise_for_status()
+            data = response.json()
+    except httpx.HTTPStatusError as exc:
+        messages = {
+            400: "MiniMax 拒绝了首帧素材，请检查图片格式、尺寸或比例。",
+            401: "MiniMax API Key 无效或已失效。",
+            402: "MiniMax 账户余额不足。",
+            403: "MiniMax 拒绝访问，请检查账户或模型权限。",
+            422: "MiniMax 首帧素材未通过内容审核。",
+            429: "MiniMax 请求过于频繁，请稍后重试。",
+        }
+        raise ToolException(messages.get(exc.response.status_code, f"MiniMax 文件上传失败（HTTP {exc.response.status_code}）。")) from None
+    except httpx.TimeoutException:
+        raise ToolException("上传 MiniMax 首帧素材超时，请稍后重试。") from None
+    except httpx.RequestError:
+        raise ToolException("连接 MiniMax 失败，请检查 Yuxi 服务器的 DNS 和外网访问。") from None
+    except ValueError:
+        raise ToolException("MiniMax 文件上传返回的内容不是有效 JSON。") from None
+
+    base_resp = data.get("base_resp") or {}
+    if base_resp.get("status_code") not in (None, 0, "0"):
+        raise ToolException("MiniMax 首帧素材上传失败，请检查图片规格或账号权限。")
+    file_record = data.get("file")
+    candidates = [
+        file_record.get("file_id") if isinstance(file_record, dict) else None,
+        file_record.get("id") if isinstance(file_record, dict) else None,
+        data.get("file_id"),
+    ]
+    for candidate in candidates:
+        if isinstance(candidate, bool) or not isinstance(candidate, (str, int)):
+            continue
+        file_id = str(candidate).strip()
+        if _TASK_ID_RE.fullmatch(file_id):
+            return file_id
+
+    id_types = [type(candidate).__name__ for candidate in candidates if candidate is not None]
+    present_candidates = [
+        label for label, candidate in zip(("file.file_id", "file.id", "file_id"), candidates, strict=True) if candidate is not None
+    ]
+    raise ToolException(
+        "MiniMax 文件上传响应缺少有效首帧素材 ID "
+        f"（候选字段：{','.join(present_candidates) or 'none'}；ID 类型：{','.join(id_types) or 'none'}）。"
+    )
+
+
 def _validate_public_https_url(url: str) -> None:
     """拒绝非 HTTPS、携带凭据、本地地址和私有 IP 字面量。"""
     parsed = urlsplit(str(url or "").strip())
@@ -284,6 +380,64 @@ def _validate_public_https_url(url: str) -> None:
         return
     if not address.is_global:
         raise ToolException("MiniMax 媒体地址必须是公网 HTTPS URL。")
+
+
+def _image_mime_type(content: bytes, file_name: str) -> str:
+    """校验图片格式、尺寸及比例，并返回上传所需的媒体类型。"""
+    from io import BytesIO
+
+    from PIL import Image, UnidentifiedImageError
+
+    try:
+        with Image.open(BytesIO(content)) as image:
+            image_format = image.format or ""
+            mime_type = Image.MIME.get(image_format) or {
+                "HEIC": "image/heic",
+                "HEIF": "image/heif",
+            }.get(image_format.upper())
+            width, height = image.size
+    except (OSError, UnidentifiedImageError, Image.DecompressionBombError):
+        extension = Path(file_name).suffix.lower()
+        file_brand = content[8:12] if len(content) >= 12 and content[4:8] == b"ftyp" else b""
+        if extension in {".heic", ".heif"} and file_brand in {b"heic", b"heix", b"hevc", b"hevx", b"mif1", b"msf1"}:
+            # Pillow 不解码 HEIF；MiniMax 上传接口会解析并校验其尺寸与比例。
+            return "image/heic" if extension == ".heic" else "image/heif"
+        raise ToolException("首帧图片格式无效；目前支持 JPEG、PNG、WebP、HEIC 和 HEIF。") from None
+
+    if mime_type not in {"image/jpeg", "image/png", "image/webp", "image/heic", "image/heif"}:
+        raise ToolException("首帧图片格式不受支持；目前支持 JPEG、PNG、WebP、HEIC 和 HEIF。")
+    if min(width, height) < 256 or max(width, height) > 5760 or not 0.4 <= width / height <= 2.5:
+        raise ToolException("MiniMax 首帧尺寸需在 256～5760 像素内，宽高比需在 0.4～2.5 之间。")
+    return mime_type
+
+
+def _build_video_payload(
+    *,
+    prompt: str,
+    duration: int,
+    ratio: str,
+    resolution: str,
+    first_frame_file_id: str | None = None,
+) -> dict:
+    """按官方 V2 content[] 协议构造文生或首帧图生视频请求。"""
+    payload = {
+        "model": "MiniMax-H3",
+        "content": [{"type": "text", "text": prompt}],
+        "resolution": resolution,
+        "duration": duration,
+    }
+    if first_frame_file_id:
+        payload["content"].append(
+            {
+                "type": "image_url",
+                "image_url": {"url": f"mm_file://{first_frame_file_id}"},
+                "role": "first_frame",
+            }
+        )
+        payload["ratio"] = "adaptive"
+    else:
+        payload["ratio"] = ratio
+    return payload
 
 
 async def _download_public_media(url: str, target_path: Path, *, kind: Literal["image", "video"], max_bytes: int) -> str:
