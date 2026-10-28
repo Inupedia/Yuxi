@@ -1,4 +1,5 @@
 # Yuxi 轻量沙盒镜像：单租户、非 root、按 Run 用完即弃。
+FROM node:24-bookworm-slim AS node
 FROM python:3.13-slim
 
 ENV DEBIAN_FRONTEND=noninteractive \
@@ -37,6 +38,13 @@ RUN pip install --no-cache-dir \
         pillow \
         pymysql \
         requests
+
+COPY --from=node /usr/local/bin/node /usr/local/bin/node
+COPY --from=node /usr/local/lib/node_modules /usr/local/lib/node_modules
+RUN ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
+    && ln -s ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx \
+    && npm install -g skills@1.7.4 \
+    && npm cache clean --force
 
 COPY --from=ghcr.io/astral-sh/uv:0.12.6 /uv /uvx /usr/local/bin/
 

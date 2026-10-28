@@ -39,6 +39,10 @@ class SandboxRunnerClient:
             raise UpstreamError("容器执行服务健康检查返回无效结果")
         return payload
 
+    def skill_cli(self, args: list[str], allowed_hosts: list[str]) -> dict:
+        """获取远程技能，不创建 Agent Run，也不传用户工作区。"""
+        return self._json("POST", "/v1/skills/cli", timeout=350, payload={"args": args, "allowed_hosts": allowed_hosts})
+
     def execute(
         self,
         *,

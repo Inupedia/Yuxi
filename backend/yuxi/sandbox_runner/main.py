@@ -88,6 +88,13 @@ class CancelRequest(BaseModel):
     owner: str
 
 
+class SkillCLIRequest(BaseModel):
+    """只传递技能 CLI 参数，不接受命令、环境变量或挂载。"""
+
+    args: list[str] = Field(min_length=2)
+    allowed_hosts: list[str] = Field(min_length=1)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """启动兜底 TTL 清理；runner 不持久化任何 Run 状态。"""
@@ -99,6 +106,7 @@ async def lifespan(app: FastAPI):
         await asyncio.gather(task, return_exceptions=True)
         try:
             await asyncio.to_thread(get_manager().remove_all)
+            await asyncio.to_thread(get_manager().skill_installer.cleanup, expired_only=False)
         except Exception:
             logger.exception("Sandbox container shutdown cleanup failed")
         if app.state.executor is not None:
@@ -110,6 +118,7 @@ async def _expiry_loop() -> None:
     while True:
         try:
             removed = await asyncio.to_thread(get_manager().remove_expired)
+            await asyncio.to_thread(get_manager().skill_installer.cleanup, expired_only=True)
             if removed:
                 logger.warning("Removed expired sandbox containers: count=%s", removed)
         except Exception:
@@ -153,6 +162,16 @@ async def execute(run_id: str, body: ExecRequest) -> dict:
         return get_manager().execute(run_id=run_id, **body.model_dump())
 
     return await loop.run_in_executor(get_executor(), operation)
+
+
+@router.post("/v1/skills/cli")
+async def skill_cli(body: SkillCLIRequest) -> dict:
+    """在请求级无挂载容器获取技能，保持 Run 的归属校验不变。"""
+    loop = asyncio.get_running_loop()
+    try:
+        return await loop.run_in_executor(get_executor(), get_manager().skill_installer.run, body.args, body.allowed_hosts)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.post("/v1/runs/{run_id}/exec/{command_id}/cancel")

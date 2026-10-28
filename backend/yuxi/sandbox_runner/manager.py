@@ -21,6 +21,7 @@ from yuxi.modules.workspace.paths import normalize_workdir_path, workspace_uid_d
 from yuxi.modules.workspace.runtime_paths import normalize_runtime_path
 from yuxi.sandbox_runner.engine import DockerEngine, EngineError, ExecDeadlineExceeded
 from yuxi.sandbox_runner.settings import RunnerSettings
+from yuxi.sandbox_runner.skill_installer import SkillInstaller
 from yuxi.shared.datetime import utc_now
 
 RUN_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
@@ -180,6 +181,7 @@ class ContainerManager:
         if not self.image_pinned and self.settings.environment == "production":
             raise SandboxError("生产环境必须固定 sandbox 镜像 digest")
         self._engine_version = self.engine.version()
+        self.skill_installer = SkillInstaller(settings, self.engine, self.image_id, self.scope)
 
     def health(self) -> dict:
         """确认 daemon 与启动时固定的镜像仍然可用。"""

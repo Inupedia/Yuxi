@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import io
+import os
 import re
 import shlex
 import shutil
 import tempfile
 import uuid
+import zipfile
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from urllib.parse import urlparse
 
 from yuxi.modules.agents.runtime.sandbox import UserSandboxBackend
@@ -174,6 +178,9 @@ class _RemoteSkillRequest:
     @classmethod
     def create(cls, uid: str) -> _RemoteSkillRequest:
         """每个请求只创建自己的共享临时目录，VM 始终属于操作者。"""
+        if os.environ.get("SANDBOX_BACKEND", "cube").strip().lower() == "container":
+            return _ContainerSkillRequest()
+
         from yuxi.modules.workspace.filesystem import Workspace
         from yuxi.modules.workspace.paths import ensure_user_workspace
 
@@ -218,6 +225,69 @@ class _RemoteSkillRequest:
     async def cleanup(self) -> None:
         """只移除本请求的临时文件，不暂停或销毁用户环境。"""
         await asyncio.to_thread(self.backend.delete_authorized_path, self.home, root=WORKSPACE_PATH)
+
+
+class _ContainerSkillRequest:
+    """通过 runner 获取技能，响应只落入请求私有目录并复用草稿校验。"""
+
+    def __init__(self):
+        """创建本请求的暂存根，CLI 容器不接触用户文件。"""
+        self.root = Path(tempfile.mkdtemp(prefix=".container-skills-"))
+
+    async def run(self, args: list[str]) -> str:
+        """固定操作端点与 CLI 前缀，不允许请求选择 shell 命令。"""
+        from yuxi.modules.agents.runtime.sandbox.container import SandboxRunnerClient
+
+        if args[:3] != ["npx", "-y", "skills"]:
+            raise ValueError("不支持的技能 CLI 操作")
+        policy = await remote_skill_source_policy.get()
+        result = await asyncio.to_thread(SandboxRunnerClient().skill_cli, args[3:], policy["allowed_hosts"])
+        self._unpack(result["archive_b64"])
+        if result["exit_code"] != 0:
+            raise ValueError("skills CLI 执行失败，请检查来源或稍后重试")
+        return str(result["output"])
+
+    def _unpack(self, value: str) -> None:
+        """仅导出普通文件，限制字节和条目，拒绝目录逃逸和重复路径。"""
+        raw = base64.b64decode(value, validate=True)
+        if len(raw) > 52 * 1024 * 1024:
+            raise ValueError("技能下载包超过大小限制")
+        with zipfile.ZipFile(io.BytesIO(raw)) as archive:
+            entries = archive.infolist()
+            if len(entries) > 2000 or sum(item.file_size for item in entries) > 50 * 1024 * 1024:
+                raise ValueError("技能下载包超过文件数或大小限制")
+            seen: set[str] = set()
+            for item in entries:
+                path = PurePosixPath(item.filename)
+                mode = (item.external_attr >> 16) & 0o170000
+                if (
+                    path.is_absolute()
+                    or ".." in path.parts
+                    or "\\" in item.filename
+                    or len(path.parts) < 2
+                    or len(path.parts) > 64
+                    or not is_valid_skill_slug(path.parts[0])
+                    or mode not in (0, 0o100000)
+                    or item.is_dir()
+                    or path.as_posix() in seen
+                ):
+                    raise ValueError("技能下载包包含非法文件路径或类型")
+                seen.add(path.as_posix())
+            for item in entries:
+                target = self.root.joinpath(*PurePosixPath(item.filename).parts)
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(archive.read(item))
+
+    async def download_skill(self, name: str, target_dir: Path) -> None:
+        """把已校验的所选技能复制到现有草稿下载边界。"""
+        source = self.root / name
+        if not source.is_dir():
+            raise ValueError("skills CLI 未生成预期的技能目录")
+        await asyncio.to_thread(shutil.copytree, source, target_dir)
+
+    async def cleanup(self) -> None:
+        """释放请求暂存目录，容器已由 runner 在返回前删除。"""
+        await asyncio.to_thread(shutil.rmtree, self.root, ignore_errors=True)
 
 
 def _normalize_source(source: str, allowed_hosts: list[str]) -> str:

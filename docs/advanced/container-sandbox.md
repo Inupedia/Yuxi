@@ -51,7 +51,7 @@ runner 直接运行在宿主机（不在 Compose 内）时，需要把 `SANDBOX_
 
 枚举、并发计数、直接删除、TTL 与关闭清理都限定到当前数据根的 scope。不同数据槽位可共享 Docker daemon；同一数据根仍只允许一个 runner。worker 对账只删除列表快照中的具体容器 ID，避免迟到的清理影响同 Run 的新容器。采用 scope 标签前，先等待该部署已有 Run 收尾并确认旧容器已清理；没有 scope 标签的容器不会被自动接管。
 
-没有活动 Run 的 `execute`（例如设置页的环境变量验证、独立远程 Skill CLI 安装）会显式失败，不会创建无主容器。
+没有活动 Run 的通用 `execute`（例如设置页的环境变量验证）会显式失败。设置页与聊天工具的远程 Skill 获取使用独立的认证技能 CLI 入口：每个请求创建一个无用户挂载、无模型凭据的一次性容器，下载后删除；文件经过边界校验后进入现有安装草稿流程。该容器不占用 Agent Run 身份，使用独立标签回收，最多并发 4 个请求，CLI 期限为 300 秒，超时或异常仍删除容器，崩溃遗留容器在 600 秒后回收。
 
 ## 挂载与镜像
 
@@ -65,7 +65,7 @@ runner 直接运行在宿主机（不在 Compose 内）时，需要把 `SANDBOX_
 
 runner 从自身容器的 `/sandbox-data`、`/sandbox-skill-projections` 挂载反查 Docker daemon 视角的宿主路径；API/worker 不传宿主路径，模型也不能选择挂载。Workdir 逐段以 `O_NOFOLLOW` 打开，拒绝 `..`、符号链接、非目录和越界。Skill 投影不存在时跳过该挂载，不创建空宿主目录。
 
-容器固定以 `SANDBOX_CONTAINER_UID:GID`（默认 1000:1000）运行；宿主 Workspace 和 Skill 投影必须允许该身份读写/读取。镜像由 [docker/sandbox.Dockerfile](https://github.com/xerrors/Yuxi/blob/main/docker/sandbox.Dockerfile) 构建，包含 bash、python3、pip、uv、git、curl、jq、ripgrep、unzip 和常用 Python 库。镜像不包含 sudo，且 root 文件系统只读。
+容器固定以 `SANDBOX_CONTAINER_UID:GID`（默认 1000:1000）运行；宿主 Workspace 和 Skill 投影必须允许该身份读写/读取。镜像由 [docker/sandbox.Dockerfile](https://github.com/xerrors/Yuxi/blob/main/docker/sandbox.Dockerfile) 构建，包含 bash、python3、pip、uv、Node.js、npm/npx、固定版本 skills CLI、git、curl、jq、ripgrep、unzip 和常用 Python 库。镜像不包含 sudo，且 root 文件系统只读。
 
 ## 资源与网络
 
@@ -100,7 +100,7 @@ Shell 命名空间只包含当前 Run 的 Workdir（挂到 `/home/user/workspace
 - `--network none` 下，需要联网的 Skill（如图片生成、在线安装依赖）会失败。
 - 设置页的“重建环境”和磁盘用量不适用；状态卡显示任务级临时环境。
 - 环境变量仍会在 Run 内注入，但设置页的“验证配置”没有活动 Run，会显式失败。
-- 远程 Skill CLI 安装没有可用的操作者 VM；Git 来源安装还会因缺少 Workdir 上下文显式失败。
+- 远程 Skill 获取需要显式启用 `bridge` 联网；仅下载技能文件，具体文档工具链和其他运行依赖仍由技能说明约定。请求不使用或修改用户 Home。
 - 不提供多镜像、模型自建沙盒、持久 Home 或多租户强隔离。
 
 ## 运维与验证

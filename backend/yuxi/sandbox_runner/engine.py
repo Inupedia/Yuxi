@@ -77,9 +77,9 @@ class DockerEngine:
             raise EngineError("容器检查返回无效结果")
         return payload
 
-    def list_containers(self, *, scope: str) -> list[dict]:
+    def list_containers(self, *, scope: str, label: str = "yuxi.managed") -> list[dict]:
         """只列出当前部署的受管容器，包括已停止实例。"""
-        filters = json.dumps({"label": ["yuxi.managed=true", f"yuxi.scope={scope}"]})
+        filters = json.dumps({"label": [f"{label}=true", f"yuxi.scope={scope}"]})
         with self._client(read_timeout=30) as client:
             response = client.get("/containers/json", params={"all": "1", "filters": filters})
             self._check(response)
