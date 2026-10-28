@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from yuxi.api.dependencies.auth import get_current_user, get_db, get_required_user
 from yuxi.api.uploads import read_upload_with_limit
 from yuxi.infrastructure.minio import upload_image_to_minio
+from yuxi.modules.agents.repositories.messages import MessageRepository
 from yuxi.modules.agents.services.environment import read_agent_env, verify_agent_env, write_agent_env
 from yuxi.modules.identity.models import User
 from yuxi.modules.identity.preferences import UserConfig, UserConfigSchema
@@ -19,6 +20,7 @@ from yuxi.shared.datetime import format_utc_datetime
 user_router = APIRouter(prefix="/user", tags=["user"])
 
 MAX_USER_IMAGE_SIZE_BYTES = 5 * 1024 * 1024
+MESSAGE_ACTIVITY_WINDOW_DAYS = 365
 
 
 class APIKeyCreate(BaseModel):
@@ -66,6 +68,20 @@ class AgentEnvUpdate(BaseModel):
 class AgentEnvResponse(BaseModel):
     env: dict[str, str]
     updated_at: str | None = None
+
+
+class MessageActivityDay(BaseModel):
+    """单日消息活动计数。"""
+
+    date: str
+    message_count: int
+
+
+class MessageActivityResponse(BaseModel):
+    """当前用户消息活动统计。"""
+
+    window_days: int
+    daily_message_counts: list[MessageActivityDay]
 
 
 async def get_logged_in_user(user: User | None = Depends(get_current_user)) -> User:
@@ -201,3 +217,13 @@ async def verify_saved_agent_env(
 ):
     """仅验证当前认证用户已保存的配置。"""
     return await verify_agent_env(db, uid=str(current_user.uid))
+
+
+@user_router.get("/message-activity", response_model=MessageActivityResponse)
+async def get_message_activity(
+    current_user: User = Depends(get_logged_in_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """统计当前用户近一年的消息活动，仅返回本人数据。"""
+    daily = await MessageRepository(db).count_daily_activity(uid=current_user.uid, days=MESSAGE_ACTIVITY_WINDOW_DAYS)
+    return {"window_days": MESSAGE_ACTIVITY_WINDOW_DAYS, "daily_message_counts": daily}

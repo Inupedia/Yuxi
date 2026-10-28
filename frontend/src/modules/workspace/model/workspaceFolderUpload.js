@@ -47,3 +47,64 @@ export function buildFolderUploadBatches(
   if (current.length) batches.push(current)
   return batches
 }
+
+/** 同步收集拖拽中的顶层文件与目录入口；目录识别依赖浏览器条目 API，缺失时退回纯文件。 */
+export function collectDragUploadRoots(dataTransfer) {
+  const files = []
+  const directories = []
+  const items = dataTransfer?.items
+  if (items && items.length) {
+    for (const item of items) {
+      if (item.kind !== 'file') continue
+      const entry = typeof item.webkitGetAsEntry === 'function' ? item.webkitGetAsEntry() : null
+      if (entry?.isDirectory) {
+        directories.push({ name: entry.name, entry })
+        continue
+      }
+      const file = item.getAsFile()
+      if (file) files.push(file)
+    }
+    return { files, directories }
+  }
+  for (const file of Array.from(dataTransfer?.files || [])) {
+    files.push(file)
+  }
+  return { files, directories }
+}
+
+const readDirectoryEntries = (reader) =>
+  new Promise((resolve, reject) => {
+    const collected = []
+    const readBatch = () => {
+      // readEntries 每次最多返回 100 条，必须循环读到空批才算遍历完。
+      reader.readEntries((batch) => {
+        if (!batch.length) {
+          resolve(collected)
+          return
+        }
+        collected.push(...batch)
+        readBatch()
+      }, reject)
+    }
+    readBatch()
+  })
+
+/** 递归读取拖拽目录入口，返回与文件夹选择同构的 {file, relativePath} 列表。 */
+export async function traverseDirectoryEntry(directoryEntry) {
+  if (!directoryEntry?.isDirectory) return []
+  const files = []
+  const walk = async (entry, prefix) => {
+    const path = prefix ? `${prefix}/${entry.name}` : entry.name
+    const children = await readDirectoryEntries(entry.createReader())
+    for (const child of children) {
+      if (child.isDirectory) {
+        await walk(child, path)
+      } else if (child.isFile) {
+        const file = await new Promise((resolve, reject) => child.file(resolve, reject))
+        files.push({ file, relativePath: `${path}/${child.name}` })
+      }
+    }
+  }
+  await walk(directoryEntry, '')
+  return files
+}

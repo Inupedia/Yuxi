@@ -1,6 +1,6 @@
 [project]
 name = "yuxi"
-version = "0.8.0.beta3"
+version = "0.8.0.beta4"
 description = "Yuxi 智能知识库与知识图谱平台核心后端包"
 readme = "README.md"
 license = { text = "MIT" }
@@ -23,6 +23,7 @@ dependencies = [
     "docling-slim[format-office,format-pdf-pypdfium2]==2.132.0",
     "pylatexenc>=2.10,<3",
     "pandas>=2.2.0",
+    "chardet>=5.0.0",
     "httpx>=0.27.0",
     # SSRFGuardTransport 依赖 httpcore 的 pool network_backend 接线，
     # 显式约束兼容版本（httpx 0.28 本身也锁定 httpcore==1.0.*）
@@ -56,7 +57,7 @@ dependencies = [
     "python-multipart>=0.0.31",
     "pyyaml>=6.0.2",
     "xlrd>=2.0.1",
-    "rapidocr>=3.0.0",
+    "rapidocr>=3.9.0",
     "redis>=5.2.0",
     "requests>=2.34.0",
     "rich>=13.7.1",

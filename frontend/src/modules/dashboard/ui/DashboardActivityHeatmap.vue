@@ -1,9 +1,9 @@
 <template>
   <div class="activity-heatmap" :aria-busy="loading">
-    <div v-if="loading" class="heatmap-loading" aria-label="正在加载活跃度">
+    <div v-if="loading" class="heatmap-loading" aria-label="正在加载活动数据">
       <span v-for="index in 126" :key="index" class="heatmap-loading-cell" />
     </div>
-    <div v-else-if="!weeks.length" class="heatmap-empty">暂无活跃记录</div>
+    <div v-else-if="!weeks.length" class="heatmap-empty">{{ emptyText }}</div>
     <template v-else>
       <div class="heatmap-body">
         <div class="heatmap-weekday-labels" aria-hidden="true">
@@ -25,7 +25,7 @@
             class="heatmap-grid"
             :style="heatmapGridStyle"
             role="grid"
-            aria-label="近 120 天用户活跃度"
+            :aria-label="ariaLabel"
           >
             <div
               v-for="(week, weekIndex) in weeks"
@@ -38,8 +38,8 @@
                 :key="cell?.date || `empty-${weekIndex}-${cellIndex}`"
                 class="heatmap-cell"
                 :class="`level-${cell?.level ?? 0}`"
-                :title="cell ? `${cell.date}：${cell.value} 位活跃用户` : ''"
-                :aria-label="cell ? `${cell.date}，${cell.value} 位活跃用户` : undefined"
+                :title="cell ? `${cell.date}：${cell.value} ${valueLabel}` : ''"
+                :aria-label="cell ? `${cell.date}，${cell.value} ${valueLabel}` : undefined"
                 role="gridcell"
               />
             </div>
@@ -55,7 +55,7 @@
           :class="`level-${level - 1}`"
         />
         <span>多</span>
-        <span class="heatmap-total">{{ totalActiveUsers }} 次活跃记录</span>
+        <span class="heatmap-total">{{ totalValue }} {{ totalUnit }}</span>
       </div>
     </template>
   </div>
@@ -73,6 +73,27 @@ const props = defineProps({
   loading: {
     type: Boolean,
     default: false
+  },
+  // 数据项中携带计数的字段名；默认兼容 Dashboard 的 active_users 口径
+  valueKey: {
+    type: String,
+    default: 'active_users'
+  },
+  valueLabel: {
+    type: String,
+    default: '位活跃用户'
+  },
+  totalUnit: {
+    type: String,
+    default: '次活跃记录'
+  },
+  ariaLabel: {
+    type: String,
+    default: '近 120 天用户活跃度'
+  },
+  emptyText: {
+    type: String,
+    default: '暂无活跃记录'
   }
 })
 
@@ -80,7 +101,7 @@ const normalizedDays = computed(() =>
   props.data
     .map((item) => ({
       date: String(item?.date || ''),
-      value: Number(item?.active_users || 0)
+      value: Number(item?.[props.valueKey] || 0)
     }))
     .filter((item) => item.date)
 )
@@ -113,9 +134,7 @@ const heatmapGridStyle = computed(() => ({
 
 const months = computed(() => buildHeatmapMonthSegments(weeks.value))
 
-const totalActiveUsers = computed(() =>
-  normalizedDays.value.reduce((sum, item) => sum + item.value, 0)
-)
+const totalValue = computed(() => normalizedDays.value.reduce((sum, item) => sum + item.value, 0))
 </script>
 
 <style lang="less" scoped>

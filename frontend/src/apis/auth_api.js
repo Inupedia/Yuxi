@@ -76,13 +76,17 @@ async function getUsersPage({
   limit = 50,
   search,
   departmentId,
+  departmentIds = [],
   role,
+  roles = [],
   userKind = 'human'
 } = {}) {
   const params = new URLSearchParams({ offset: String(offset), limit: String(limit) })
   if (search) params.set('search', search)
   if (departmentId) params.set('department_id', String(departmentId))
+  if (departmentIds.length) params.set('department_ids', departmentIds.map(String).join(','))
   if (role) params.set('role', role)
+  if (roles.length) params.set('roles', roles.join(','))
   params.set('user_kind', userKind)
   return apiAdminGet(`/api/auth/users/page?${params}`)
 }

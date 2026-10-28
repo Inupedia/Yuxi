@@ -9,6 +9,8 @@ from urllib.parse import quote, unquote, urlsplit
 
 from markdown_it import MarkdownIt
 
+from yuxi.infrastructure.document_parsing.text_encoding import decode_user_text
+
 
 def save_resource(output_dir: Path, relative_path: str, content: bytes) -> str:
     """在解析目录内保存资源，拒绝上级路径与符号链接。"""
@@ -88,7 +90,7 @@ def extract_markdown_archive(zip_path: str, output_dir: Path) -> str:
         if not md_files:
             raise ValueError("压缩包中未找到 .md 文件")
         md_file = next((name for name in md_files if PurePosixPath(name).name == "full.md"), md_files[0])
-        markdown = archive.read(md_file).decode("utf-8")
+        markdown = decode_user_text(archive.read(md_file), md_file)
 
         # 第二遍复制正文引用的图片，并改写为输出目录内的相对路径。
         mapping: dict[str, str] = {}

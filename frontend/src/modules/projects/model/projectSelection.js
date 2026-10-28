@@ -12,6 +12,20 @@ export const fillProjectNameFromFolder = (projectName, folderName) => {
   return folder.slice(0, PROJECT_NAME_MAX_LENGTH)
 }
 
+/**
+ * 项目名称留空时从所选项目目录路径派生默认名称（末段目录名），
+ * 与 fillProjectNameFromFolder 同样受名称上限约束。
+ */
+export const projectNameFromPath = (path) => {
+  const segment = String(path || '')
+    .split('/')
+    .filter(Boolean)
+    .pop()
+  const name = typeof segment === 'string' ? segment.trim() : ''
+  if (!name) return ''
+  return name.slice(0, PROJECT_NAME_MAX_LENGTH)
+}
+
 export const filterProjects = (projects, query = '') => {
   const keyword = String(query).trim().toLocaleLowerCase()
   if (!keyword) return projects

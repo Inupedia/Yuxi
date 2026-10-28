@@ -153,7 +153,7 @@
           v-model:value="projectName"
           :maxlength="PROJECT_NAME_MAX_LENGTH"
           autofocus
-          placeholder="例如：产品发布计划"
+          placeholder="留空时使用项目目录名称"
           @press-enter="canCreateProject && handleCreateProject()"
         />
       </label>
@@ -200,7 +200,8 @@ import {
   PROJECT_NAME_MAX_LENGTH,
   filterProjects,
   fillProjectNameFromFolder,
-  formatRelativeTime
+  formatRelativeTime,
+  projectNameFromPath
 } from '@/modules/projects/model/projectSelection'
 
 const props = defineProps({
@@ -242,8 +243,14 @@ const requestId = () =>
 const getErrorMessage = (error, fallback) =>
   error?.response?.data?.detail || error?.message || fallback
 
+// 项目名称可以为空：创建时用所选目录名派生默认名称，因此只要求目录已选。
 const canCreateProject = computed(
-  () => Boolean(projectName.value.trim() && linkedPath.value && !pickerLoading.value)
+  () =>
+    Boolean(
+      linkedPath.value &&
+        !pickerLoading.value &&
+        (projectName.value.trim() || projectNameFromPath(linkedPath.value))
+    )
 )
 const isAutoOrEmpty = computed(() => !props.modelValue || props.modelValue === AUTO_PROJECT_ID)
 const currentProject = computed(() =>
@@ -295,7 +302,7 @@ const handleCreateProject = async () => {
   try {
     const project = await projectApi.createProject({
       requestId: projectCreationRequestId.value,
-      name: projectName.value.trim(),
+      name: projectName.value.trim() || projectNameFromPath(linkedPath.value),
       mode: 'linked',
       path: linkedPath.value
     })

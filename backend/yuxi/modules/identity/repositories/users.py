@@ -164,7 +164,9 @@ class UserRepository:
         offset: int,
         limit: int,
         department_id: int | None = None,
+        department_ids: list[int] | None = None,
         role: str | None = None,
+        roles: list[str] | None = None,
         search: str | None = None,
         user_kind: str | None = "human",
     ) -> tuple[list[tuple[User, str | None]], int]:
@@ -175,9 +177,13 @@ class UserRepository:
             filters = [User.is_deleted == 0]
             if user_kind is not None:
                 filters.append(User.user_kind == user_kind)
-            if department_id is not None:
+            if department_ids:
+                filters.append(User.department_id.in_(department_ids))
+            elif department_id is not None:
                 filters.append(User.department_id == department_id)
-            if role is not None:
+            if roles:
+                filters.append(User.role.in_(roles))
+            elif role is not None:
                 filters.append(User.role == role)
             if search:
                 filters.append(

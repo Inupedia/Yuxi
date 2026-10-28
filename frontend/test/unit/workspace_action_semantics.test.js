@@ -36,3 +36,30 @@ test('交付物保存使用工作区路径选择器并传递目标目录', () =>
   assert.match(component, /v-model="selectedDestination"/)
   assert.match(api, /destination_path: destinationPath/)
 })
+
+test('文件列表工具栏暴露上传与新建文件夹按钮，拖拽仅在可上传时生效', () => {
+  const source = readSource('../../src/modules/workspace/ui/WorkspaceFileList.vue')
+
+  assert.match(source, /aria-label="上传文件"/)
+  assert.match(source, /aria-label="新建文件夹"/)
+  assert.match(source, /\$emit\('upload-file'\)/)
+  assert.match(source, /\$emit\('create-directory'\)/)
+  assert.match(source, /v-if="uploadable"/)
+  assert.match(source, /emit\('upload-drop', roots\)/)
+  // 不可上传（知识库/只读目录）时不得阻止默认行为或显示投放层。
+  assert.match(source, /if \(!props\.uploadable\) return/)
+  assert.match(source, /dragActive = computed\(\(\) => props\.uploadable && dragOver\.value\)/)
+  // 拖拽离开壳时必须复位，行重建丢失 leave 也不能滞留覆盖层。
+  assert.match(source, /event\.currentTarget\.contains\(related\)/)
+})
+
+test('拖拽上传在页面侧仅作用于个人空间非只读目录', () => {
+  const source = readSource('../../src/pages/WorkspaceView.vue')
+
+  assert.match(source, /:uploadable="personalUploadEnabled"/)
+  assert.match(
+    source,
+    /if \(activeSourceKey\.value !== 'personal' \|\| isReadonlyWorkspacePath\.value \|\| uploadingFile\.value\)\n {4}return/
+  )
+  assert.match(source, /traverseDirectoryEntry\(directory\.entry\)/)
+})

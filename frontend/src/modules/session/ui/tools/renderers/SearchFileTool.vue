@@ -46,6 +46,7 @@ import { FileText } from '@lucide/vue'
 import BaseToolCall from '../BaseToolCall.vue'
 import FileDetailModal from '@/modules/knowledge/ui/FileDetailModal.vue'
 import { parseToolCallArgs } from '../toolRegistry'
+import { unwrapToolResultContent } from '@/modules/session/model/toolCallProjection'
 
 const props = defineProps({
   toolCall: {
@@ -70,12 +71,8 @@ const openFileDetail = (file) => {
 }
 
 const parseResult = (content) => {
-  if (typeof content !== 'string') return content
-  try {
-    return JSON.parse(content)
-  } catch {
-    return content
-  }
+  // MCP 信封先解包；解不开的内嵌文本保持字符串以便错误分支展示提示。
+  return unwrapToolResultContent(content)
 }
 
 // 工具在缺少参数 / 知识库不可见等情况下返回字符串提示，其余返回结构化对象。

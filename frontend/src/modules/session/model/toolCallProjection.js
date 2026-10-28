@@ -106,6 +106,29 @@ export function getToolResultParts(content, { imageUrls = false } = {}) {
   })
 }
 
+/**
+ * 解开 MCP 文本信封（[{type:'text'|'input_text', text}]）并把内嵌 JSON 解析为结构化值。
+ * 知识库等经 MCP 调用的工具结果以信封持久化，专用渲染器需要先解包再读取字段。
+ */
+export function unwrapToolResultContent(content) {
+  let value = typeof content === 'string' ? parseResultValue(content, content) : content
+  if (
+    Array.isArray(value) &&
+    value.length > 0 &&
+    value.every(
+      (part) =>
+        part &&
+        typeof part === 'object' &&
+        TEXT_RESULT_TYPES.has(part.type) &&
+        typeof part.text === 'string'
+    )
+  ) {
+    const texts = value.map((part) => parseResultValue(part.text, part.text))
+    return texts.length === 1 ? texts[0] : texts
+  }
+  return value
+}
+
 /** 以调用、ToolMessage 和结果顶层的错误状态优先决定工具展示状态。 */
 export const getToolCallStatus = (toolCall) => {
   const result = parseToolCallResult(toolCall)

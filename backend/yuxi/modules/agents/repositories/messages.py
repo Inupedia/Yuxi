@@ -1,5 +1,8 @@
 """正式消息的持久写入、可见性和读取。"""
 
+from datetime import UTC, datetime, time, timedelta
+from typing import Any
+
 from sqlalchemy import and_, case, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
@@ -23,6 +26,9 @@ def state_proven_model_tool_call_condition():
 
 MESSAGE_SEARCH_ROLES = ("user", "assistant")
 MESSAGE_SEARCH_EXCLUDED_TYPES = (MODEL_AUDIT_MESSAGE_TYPE, TOOL_AUDIT_MESSAGE_TYPE, "tool_result")
+
+# 活动统计计入的角色：用户消息、模型输出与调用记录、工具执行记录；system 行不属于用户活动。
+ACTIVITY_MESSAGE_ROLES = ("user", "assistant", "tool")
 
 
 def message_search_conditions(query: str):
@@ -179,3 +185,35 @@ class MessageRepository:
         messages = list(result.scalars().unique().all())
         truncated = len(messages) > limit
         return list(reversed(messages[:limit])), truncated
+
+    async def count_daily_activity(self, uid: str, *, days: int = 120, now: datetime | None = None) -> list[dict[str, Any]]:
+        """按上海日历日统计该用户非删除会话内的消息数，并补齐窗口内无活动日期为零。"""
+        query_now = now or utc_now()
+        bind = self.db.bind
+        if bind is not None and bind.dialect.name == "sqlite":
+            day_group = func.date(Message.created_at, "+8 hours")
+        else:
+            day_group = func.date(func.timezone("Asia/Shanghai", Message.created_at))
+        # 窗口下界取最早展示上海日的零点，避免多扫一天的历史行。
+        local_today = (query_now + timedelta(hours=8)).date()
+        window_start = datetime.combine(local_today - timedelta(days=days - 1), time.min, tzinfo=UTC) - timedelta(hours=8)
+        rows = (
+            await self.db.execute(
+                select(day_group.label("date"), func.count(Message.id).label("message_count"))
+                .join(Session, Message.session_record_id == Session.id)
+                .where(
+                    Session.uid == uid,
+                    Session.status != "deleted",
+                    Message.created_at >= window_start,
+                    Message.created_at < query_now,
+                    Message.role.in_(ACTIVITY_MESSAGE_ROLES),
+                )
+                .group_by(day_group)
+            )
+        ).all()
+        counts_by_date = {str(row.date): int(row.message_count or 0) for row in rows}
+        daily = []
+        for offset in range(days - 1, -1, -1):
+            date = (local_today - timedelta(days=offset)).strftime("%Y-%m-%d")
+            daily.append({"date": date, "message_count": counts_by_date.get(date, 0)})
+        return daily

@@ -31,8 +31,8 @@
         保存中…
       </span>
       <!-- 模型名称 -->
-      <span v-if="showKey('model') && getModelName(msg)" class="item" @click="console.log(msg)">
-        <Bot size="12" /> {{ getModelName(msg) }}
+      <span v-if="showKey('model') && displayModelName" class="item" @click="console.log(msg)">
+        <Bot size="12" /> {{ displayModelName }}
       </span>
       <!-- 复制 -->
       <span v-if="showKey('copy')" class="item btn" @click="copyText(msg.content)" title="复制">
@@ -89,12 +89,12 @@
           class="item btn"
           @click="referenceStore.load(threadId, msg.turn_id)"
         >来源加载失败，重试</button>
-        <span
+        <button
           v-if="hasSources && showKey('sources')"
+          type="button"
           class="item btn sources-btn"
-          :class="{ expanded: isSourcesExpanded }"
-          @click="toggleSources"
-          :title="isSourcesExpanded ? '收起详情' : '查看来源详情'"
+          :title="'在侧边栏查看来源详情'"
+          @click="openSourcesPanel"
         >
           <BookOpen size="12" />
           <span class="sources-label">
@@ -103,8 +103,7 @@
               {{ sourceCount }}
             </template>
           </span>
-          <ChevronDown :size="12" class="expand-icon" :class="{ rotated: isSourcesExpanded }" />
-        </span>
+        </button>
       </div>
     </div>
 
@@ -130,12 +129,6 @@
     <p v-else-if="referenceEntry?.references && referenceEntry.visible && !referenceEntry.references.citations.length" class="reference-notice" role="status">
       未找到支持回答的引用片段
     </p>
-
-    <!-- 来源详情面板 -->
-    <div v-if="isSourcesExpanded" class="sources-panel-body">
-      <KnowledgeSourceSection v-if="knowledgeChunks.length > 0" :chunks="knowledgeChunks" />
-      <WebSearchSourceSection v-if="webSources.length > 0" :sources="webSources" />
-    </div>
   </div>
 
 </template>
@@ -152,17 +145,15 @@ import {
   Check,
   RotateCcw,
   BookOpen,
-  ChevronDown,
   Quote,
   LoaderCircle
 } from '@lucide/vue'
 import { formatChatTime } from '@/shared/lib/time'
-import KnowledgeSourceSection from '@/modules/agents/ui/KnowledgeSourceSection.vue'
-import WebSearchSourceSection from '@/modules/agents/ui/WebSearchSourceSection.vue'
 import UserFeedbackModal from '@/modules/session/ui/UserFeedbackModal.vue'
 import { formatRunTimingDuration, getRunTotalLatencyMs } from '@/modules/session/model/runTiming'
 import { useTurnReferencesStore } from '@/modules/session/model/turnReferences'
 import { useSessionFeedbackStore } from '@/modules/session/model/sessionFeedback'
+import { useModelDirectory } from '@/modules/settings'
 
 const emit = defineEmits(['retry', 'openRefs'])
 const props = defineProps({
@@ -211,8 +202,6 @@ watch(
 )
 
 // Sources state
-const isSourcesExpanded = ref(false)
-
 const knowledgeChunks = computed(() => {
   if (!referenceEntry.value?.loaded) {
     return Array.isArray(props.sources?.knowledgeChunks) ? props.sources.knowledgeChunks : []
@@ -242,8 +231,13 @@ const hasSources = computed(() => knowledgeChunks.value.length > 0 || webSources
 
 const sourceCount = computed(() => knowledgeChunks.value.length + webSources.value.length)
 
-const toggleSources = () => {
-  isSourcesExpanded.value = !isSourcesExpanded.value
+/** 来源详情统一在右侧栏展示，附带当前回退数据供标注接口缺失时兜底。 */
+const openSourcesPanel = () => {
+  emit('openRefs', {
+    turnId: msg.value?.turn_id || '',
+    knowledgeChunks: knowledgeChunks.value,
+    webSources: webSources.value
+  })
 }
 
 // 对话结束时间 / 执行耗时切换
@@ -332,6 +326,28 @@ const getModelName = (msg) => {
   }
   return null
 }
+
+// 模型名称：优先展示后端配置的别名，目录未就绪或未命中时回退到响应原始名称。
+const modelDirectory = useModelDirectory('chat')
+const resolvedModelName = ref('')
+const rawModelName = computed(() => msg.value?.response_metadata?.model_name || '')
+const displayModelName = computed(() => resolvedModelName.value || getModelName(msg.value) || '')
+watch(
+  rawModelName,
+  async (raw) => {
+    resolvedModelName.value = ''
+    if (!raw) return
+    try {
+      await modelDirectory.load()
+      // 目录加载期间本条消息的原始模型名已变化时放弃本次结果，由 watch 重新触发。
+      if (rawModelName.value !== raw) return
+      resolvedModelName.value = modelDirectory.resolveDisplayName({ modelId: raw })
+    } catch {
+      resolvedModelName.value = ''
+    }
+  },
+  { immediate: true }
+)
 const feedbackStore = useSessionFeedbackStore()
 // phase 来自服务端 result_run_id 与 output_message_id 的持久关联，流式 done 不足以开放评价。
 const feedbackEntry = computed(() => props.threadId && msg.value?.run_id && msg.value?.turn_id &&
@@ -371,7 +387,7 @@ async function rate(rating, event) {
 
 <style lang="less" scoped>
 .reference-action {
-  border: 0;
+  border: 1px solid transparent;
   background: transparent;
   font: inherit;
   &:disabled { cursor: wait; opacity: 0.6; }
@@ -442,24 +458,14 @@ async function rate(rating, event) {
         background: var(--gray-100);
       }
 
-      &.expanded {
-        background: var(--main-50);
-        color: var(--main-700);
-        border-color: var(--main-100);
+      &:focus-visible {
+        outline: 2px solid var(--main-500);
+        outline-offset: 2px;
       }
 
       .sources-label {
         font-weight: 500;
         margin-left: 2px;
-      }
-
-      .expand-icon {
-        margin-left: 4px;
-        transition: transform 0.2s ease;
-
-        &.rotated {
-          transform: rotate(180deg);
-        }
       }
     }
 
@@ -489,17 +495,6 @@ async function rate(rating, event) {
     opacity: 1;
     visibility: visible;
   }
-
-  .sources-panel-body {
-    background: var(--gray-25);
-    border: 1px solid var(--gray-150);
-    border-radius: 8px;
-    padding: 12px;
-    display: flex;
-    flex-direction: column;
-    gap: 12px;
-    animation: slideDown 0.2s ease-out;
-  }
 }
 
 .refs .feedback-vote {
@@ -511,15 +506,4 @@ async function rate(rating, event) {
 }
 .feedback-error { color: var(--color-error-500); margin: 0; }
 .feedback-status { font-size: 12px; }
-
-@keyframes slideDown {
-  from {
-    opacity: 0;
-    transform: translateY(-8px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
-}
 </style>

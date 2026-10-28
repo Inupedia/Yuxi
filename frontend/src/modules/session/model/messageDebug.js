@@ -208,7 +208,7 @@ export function buildMessageDebugEntries(messages) {
       const content = summarizeContent(message.content, 160)
       const summary = isError
         ? message.error_message || message.error_type || '执行异常'
-        : content || '[AI 回复]'
+        : content || (toolNames.length ? `Tool Calls: ${toolNames.join(', ')}` : '[AI 回复]')
 
       return {
         ...common,

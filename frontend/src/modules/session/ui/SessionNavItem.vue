@@ -4,7 +4,7 @@
     :class="{
       active: currentChatId === chat.id,
       nested,
-      'has-status': isRunning || Boolean(activityLabel) || chat.yuxi.unread
+      'has-status': hasStatusIndicator || Boolean(activityLabel) || chat.yuxi.unread
     }"
   >
     <button
@@ -35,20 +35,20 @@
       </span>
       <span class="actions-mask"></span>
       <span
-        v-if="isRunning"
+        v-if="hasStatusIndicator"
         class="thread-status"
         role="status"
-        aria-label="正在运行"
-        title="正在运行"
+        :aria-label="statusIndicator"
+        :title="statusIndicator"
       >
-        <span class="status-spinner" aria-hidden="true"></span>
+        <!-- 单一稳定容器承载 spinner 与未读点切换，避免状态交换时移除 DOM 造成闪烁 -->
+        <span v-show="isRunning" class="status-spinner" aria-hidden="true"></span>
+        <span
+          v-show="!isRunning && !activityLabel && chat.yuxi.unread"
+          class="thread-status-ready"
+          aria-hidden="true"
+        ></span>
       </span>
-      <span
-        v-else-if="!activityLabel && chat.yuxi.unread"
-        class="thread-status thread-status-ready"
-        role="status"
-        title="有新回复"
-      ></span>
     </button>
     <span class="session-actions" @click.stop @dblclick.stop>
       <a-dropdown :trigger="['click']">
@@ -99,6 +99,12 @@ const props = defineProps({
 const emit = defineEmits(['select-chat', 'archive-chat', 'rename-chat', 'toggle-pin'])
 const activityLabel = computed(() => SESSION_ACTIVITY_LABELS[props.chat.status] || '')
 const isRunning = computed(() => props.chat.status === 'in_progress')
+const statusIndicator = computed(() => {
+  if (isRunning.value) return '正在运行'
+  if (!activityLabel.value && props.chat.yuxi.unread) return '有新回复'
+  return ''
+})
+const hasStatusIndicator = computed(() => Boolean(statusIndicator.value))
 
 const renameChat = () => {
   let newTitle = props.chat.yuxi.title || ''
@@ -343,7 +349,8 @@ const renameChat = () => {
   animation: thread-status-spin 1s linear infinite;
 }
 
-.thread-status-ready {
+.thread-status .thread-status-ready {
+  flex: 0 0 8px;
   width: 8px;
   height: 8px;
   border-radius: 50%;

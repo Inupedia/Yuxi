@@ -553,7 +553,9 @@ watch(
   }
 
   .settings-content {
+    /* 顶部让出左上角悬浮关闭按钮区域（top 10px + 32px 高）；≤900px 由下方媒体查询保持紧凑内边距 */
     padding: 16px;
+    padding-top: 50px;
     overflow-y: scroll;
     height: auto;
     flex: 1;

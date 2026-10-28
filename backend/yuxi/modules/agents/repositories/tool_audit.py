@@ -241,6 +241,54 @@ class ToolMessageAuditRepository:
         await self.db.refresh(message)
         return message
 
+    async def record_unstarted_result(
+        self,
+        *,
+        run_id: str,
+        thread_id: str,
+        worker_id: str,
+        tool_call_id: str,
+        output: Any,
+        error_message: str | None,
+        finished_at: datetime,
+        sequence: int,
+    ) -> Message:
+        """保存中间件直接返回的结果，不把未执行的工具计为已开始。"""
+        run = await self._lock_run(run_id=run_id, thread_id=thread_id, worker_id=worker_id)
+        source = await self._find_source_model_message(run, tool_call_id)
+        if source is None:
+            raise ValueError("工具结果缺少对应的模型声明")
+        if await self._get(run_id, tool_call_id) is not None:
+            raise ValueError("未执行结果不能覆盖已有工具执行")
+        declaration = next(call for call in source.extra_metadata["tool_calls"] if call["id"] == tool_call_id)
+        message = Message(
+            session_record_id=run.session_record_id,
+            turn_id=run.turn_id,
+            run_id=run.id,
+            role="tool",
+            message_type=TOOL_AUDIT_MESSAGE_TYPE,
+            operation_id=tool_call_id,
+            content="",
+            delivery_status="complete",
+            execution_status="failed" if error_message is not None else "completed",
+            finished_at=finished_at,
+            sequence=sequence,
+            extra_metadata={
+                "audit_kind": "tool",
+                "source": "middleware",
+                "tool_name": declaration["name"],
+                "input": declaration["args"],
+                "output": output,
+                "error_message": error_message,
+                "source_model_operation_id": source.operation_id,
+                "source_model_message_id": source.id,
+                "finished_sequence": sequence,
+            },
+        )
+        self.db.add(message)
+        await self.db.flush()
+        return message
+
     async def list_for_run(self, run_id: str) -> list[Message]:
         """按 ProtocolEvent sequence 返回 Run 的 ToolMessage。"""
         result = await self.db.execute(

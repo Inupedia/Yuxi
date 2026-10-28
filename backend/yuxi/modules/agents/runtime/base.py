@@ -118,6 +118,13 @@ class BaseAgent:
             if on_prepared:
                 await on_prepared()
             async for event in run:
+                method, params = event["method"], event["params"]
+                if method == "tools" and params["data"].get("event") in {"tool-finished", "tool-error"}:
+                    # 执行图须装配最外层 Guard：保留真实开始和进度，由 Guard 发布最终结局。
+                    continue
+                payload = params.get("data")
+                if method == "custom" and isinstance(payload, dict) and payload.get("type") == "yuxi.tool_lifecycle":
+                    event = {**event, "method": "tools", "params": {**params, "data": payload["data"]}}
                 yield event
 
         yield GraphExecutionResult(checkpoint=await graph.aget_state(input_config), steer_before_model=context.steer_before_model)

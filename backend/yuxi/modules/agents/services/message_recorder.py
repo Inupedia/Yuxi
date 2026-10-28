@@ -7,14 +7,11 @@ from datetime import UTC, datetime
 from time import monotonic
 from typing import Any
 
-from langchain_core.messages import ToolMessage
-from langgraph.types import Command
-
 from yuxi.infrastructure.postgres.manager import pg_manager
 from yuxi.modules.agents.repositories.model_audit import ModelMessageAuditRepository
 from yuxi.modules.agents.repositories.tool_audit import ToolMessageAuditRepository
 from yuxi.modules.agents.runtime.base import json_safe
-from yuxi.modules.agents.tool_results import TOOL_FAILURE_MESSAGE, normalize_tool_result
+from yuxi.modules.agents.tool_results import TOOL_FAILURE_MESSAGE, normalize_tool_result, unwrap_tool_result
 
 
 @dataclass(slots=True)
@@ -49,7 +46,7 @@ class RunMessageRecorder:
                 await self._consume_model(event, message, dict(metadata or {}))
         elif method == "tools":
             data = dict(event["params"]["data"])
-            if data.get("event") == "tool-finished":
+            if data.get("event") in {"tool-finished", "tool-result"}:
                 data["output"] = tool_event_output(data)
                 data["result"] = normalize_tool_result(data["output"], message=data.get("message"))
                 event = {**event, "params": {**event["params"], "data": data}}
@@ -160,10 +157,22 @@ class RunMessageRecorder:
         self._models.pop(key, None)
 
     async def _consume_tool(self, event: dict[str, Any], data: dict[str, Any]) -> None:
-        """记录实际工具执行；裸错误等待 Run 终态裁决。"""
+        """记录逻辑工具调用；控制异常等待 Run 终态裁决。"""
         event_name = data["event"]
         if event_name == "tool-started":
             await self._start_tool(event, data)
+        elif event_name == "tool-result":
+            async with pg_manager.get_async_session_context() as db:
+                await ToolMessageAuditRepository(db).record_unstarted_result(
+                    run_id=self.run_id,
+                    thread_id=self.thread_id,
+                    worker_id=self.worker_id,
+                    tool_call_id=self._tool_call_id(data),
+                    output=data["output"],
+                    error_message=data["result"].error,
+                    finished_at=self._wall_clock(event),
+                    sequence=self._sequence(event),
+                )
         elif event_name == "tool-finished":
             output = data.get("output")
             result = data["result"]
@@ -290,17 +299,4 @@ class RunMessageRecorder:
 
 def tool_event_output(data: dict) -> Any:
     """从工具 Command 取出相同 call_id 的结果，保留执行身份。"""
-    output = data.get("output")
-    if isinstance(output, Command):
-        update = output.update if isinstance(output.update, dict) else {}
-        output = next(
-            (
-                message
-                for message in update.get("messages", [])
-                if isinstance(message, ToolMessage) and message.tool_call_id == data["tool_call_id"]
-            ),
-            None,
-        )
-        if output is None:
-            raise ValueError("工具 Command 缺少相同 call_id 的 ToolMessage")
-    return json_safe(output)
+    return json_safe(unwrap_tool_result(data.get("output"), tool_call_id=data.get("tool_call_id")))

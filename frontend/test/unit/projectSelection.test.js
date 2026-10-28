@@ -1,7 +1,13 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { fillProjectNameFromFolder, filterProjects, formatRelativeTime } from '../../src/modules/projects/model/projectSelection.js'
+import {
+  PROJECT_NAME_MAX_LENGTH,
+  fillProjectNameFromFolder,
+  filterProjects,
+  formatRelativeTime,
+  projectNameFromPath
+} from '../../src/modules/projects/model/projectSelection.js'
 
 test('Project 搜索按名称过滤且无匹配时返回空列表', () => {
   const projects = [{ name: 'Desktop' }, { name: '论文写作' }, { name: 'Agent Skills' }]
@@ -29,4 +35,17 @@ test('历史项目时间按分钟到年份显示相对时间', () => {
   assert.equal(formatRelativeTime('2026-06-22T12:00:00Z', now), '2个月前')
   assert.equal(formatRelativeTime('2024-08-22T12:00:00Z', now), '2年前')
   assert.equal(formatRelativeTime('invalid', now), '')
+})
+
+test('项目名称留空时从目录路径末段派生默认名称', () => {
+  assert.equal(projectNameFromPath('/Paper'), 'Paper')
+  assert.equal(projectNameFromPath('/a/b/我的项目'), '我的项目')
+  assert.equal(projectNameFromPath('/trailing/'), 'trailing')
+})
+
+test('目录名超长时按项目名称上限截断，无有效末段时返回空', () => {
+  const longName = 'x'.repeat(PROJECT_NAME_MAX_LENGTH + 10)
+  assert.equal(projectNameFromPath(`/${longName}`).length, PROJECT_NAME_MAX_LENGTH)
+  assert.equal(projectNameFromPath('/'), '')
+  assert.equal(projectNameFromPath(''), '')
 })

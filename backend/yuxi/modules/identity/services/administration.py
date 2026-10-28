@@ -45,16 +45,29 @@ async def list_managed_users_page(
     role: str | None,
     search: str | None,
     user_kind: str | None = "human",
+    department_ids: list[int] | None = None,
+    roles: list[str] | None = None,
 ) -> dict:
     """返回管理员可见范围内的用户分页。"""
-    effective_department_id = department_id if is_superadmin else visible_department_id
-    if not is_superadmin and effective_department_id is None:
-        return {"items": [], "total": 0, "limit": limit, "offset": offset}
+    merged_roles = list(dict.fromkeys((roles or []) + ([role] if role is not None else [])))
+    if is_superadmin:
+        merged_department_ids = set(department_ids or ())
+        if department_id is not None:
+            merged_department_ids.add(department_id)
+        effective_department_id = None
+        effective_department_ids = sorted(merged_department_ids) or None
+    else:
+        # 非超级管理员的可见范围始终固定为本部门，多选仅作用于角色。
+        effective_department_id = visible_department_id
+        effective_department_ids = None
+        if effective_department_id is None:
+            return {"items": [], "total": 0, "limit": limit, "offset": offset}
     rows, total = await UserRepository(db).list_page_with_department(
         offset=offset,
         limit=limit,
         department_id=effective_department_id,
-        role=role,
+        department_ids=effective_department_ids,
+        roles=merged_roles or None,
         search=search,
         user_kind=user_kind,
     )

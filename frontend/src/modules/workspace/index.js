@@ -2,6 +2,8 @@
 export {
   WORKSPACE_UPLOAD_MAX_FILES,
   buildFolderUploadBatches,
+  collectDragUploadRoots,
   collectFolderUploadEntries,
+  traverseDirectoryEntry,
   validateFolderUploadEntries
 } from './model/workspaceFolderUpload'

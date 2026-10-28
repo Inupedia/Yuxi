@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { readdir, readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import test from 'node:test'
+import { fileURLToPath } from 'node:url'
 import { createPinia, disposePinia, setActivePinia } from 'pinia'
 import { createTestServer } from '../helpers/createTestServer.js'
 
@@ -68,7 +69,7 @@ test('超级管理员 API 无权限时 fail-closed 且不发起请求', async ()
 })
 
 test('user_token 的持久化写入只有 identity Store 拥有', async () => {
-  const sourceFiles = await collectSourceFiles(new URL('../../src', import.meta.url).pathname)
+  const sourceFiles = await collectSourceFiles(fileURLToPath(new URL('../../src', import.meta.url)))
   const writers = []
   for (const path of sourceFiles) {
     const source = await readFile(path, 'utf8')
@@ -77,12 +78,12 @@ test('user_token 的持久化写入只有 identity Store 拥有', async () => {
 
   assert.deepEqual(
     writers,
-    [new URL('../../src/modules/identity/model/user.js', import.meta.url).pathname]
+    [fileURLToPath(new URL('../../src/modules/identity/model/user.js', import.meta.url))]
   )
 })
 
 test('API 层不直接导入 identity，HTTP 与 SSE 共用认证上下文', async () => {
-  const apiDirectory = new URL('../../src/apis', import.meta.url).pathname
+  const apiDirectory = fileURLToPath(new URL('../../src/apis', import.meta.url))
   const sourceFiles = await collectSourceFiles(apiDirectory)
   const forbiddenImports = []
   for (const path of sourceFiles) {

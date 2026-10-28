@@ -3,7 +3,8 @@ import test from 'node:test'
 import {
   getToolCallResultContent,
   getToolResultParts,
-  parseToolCallResult
+  parseToolCallResult,
+  unwrapToolResultContent
 } from '../../src/modules/session/model/toolCallProjection.js'
 
 test('正文提取保留实时优先级，结构解析继续保留零、false 与失败契约', () => {
@@ -63,4 +64,28 @@ test('无效图片来源显示失败占位，编码和危险协议不进入文�
   ]) {
     assert.deepEqual(getToolResultParts([image]), [{ image: true, src: '' }])
   }
+})
+
+test('MCP 文本信封解包为内嵌 JSON，恢复知识库工具被误判为空结果的结构', () => {
+  const kbs = [{ kb_id: 'kb_1', name: '演示库', description: '全部为虚构演示数据' }]
+  // 实时 MCP 形态：type=text；持久化形态：type=input_text
+  for (const type of ['text', 'input_text']) {
+    const envelope = [{ type, text: JSON.stringify(kbs) }]
+    assert.deepEqual(unwrapToolResultContent(envelope), kbs)
+    assert.deepEqual(unwrapToolResultContent(JSON.stringify(envelope)), kbs)
+  }
+  // 内嵌对象解析为结构化结果，普通文本信封保持字符串
+  assert.deepEqual(unwrapToolResultContent([{ type: 'text', text: '{"results":[1]}' }]), {
+    results: [1]
+  })
+  assert.equal(unwrapToolResultContent([{ type: 'text', text: '仅提示文本' }]), '仅提示文本')
+  // 多个文本块按顺序解析，保留各自的解析结果
+  assert.deepEqual(
+    unwrapToolResultContent([{ type: 'text', text: '[1]' }, { type: 'input_text', text: '"b"' }]),
+    [[1], 'b']
+  )
+  // 非信封数组与已结构化数据不被误改
+  const rows = [{ rows: [1, 2] }, { other: '保留' }]
+  assert.deepEqual(unwrapToolResultContent(rows), rows)
+  assert.deepEqual(unwrapToolResultContent({ kb_id: 'kb_1' }), { kb_id: 'kb_1' })
 })

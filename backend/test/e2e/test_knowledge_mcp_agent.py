@@ -429,8 +429,21 @@ async def test_worker_preserves_selection_and_completes_after_knowledge_error(e2
                 assert metadata["output"]["status"] == "error"
                 assert expected_error in json.dumps(metadata["output"], ensure_ascii=False)
             else:
-                # 授权在 BaseTool 之前拒绝，因此没有实际执行 lifecycle；拒绝结果由 checkpoint 拥有。
-                assert audits == [], audits
+                # 授权在 BaseTool 之前拒绝：没有真实执行生命周期，拒绝结果由中间件审计留痕，
+                # 拒绝 ToolMessage 本身仍由 checkpoint 拥有。
+                assert len(audits) == 1, audits
+                audit = audits[0]
+                assert (audit["run_id"], audit["turn_id"], audit["operation_id"]) == (
+                    accepted["run_id"],
+                    turn_id,
+                    "call-knowledge-unavailable",
+                )
+                assert audit["execution_status"] == "failed"
+                metadata = json.loads(audit["extra_metadata"])
+                assert metadata["tool_name"] == "query_kb"
+                assert metadata["source"] == "middleware"
+                assert metadata["input"] == {"kb_id": unavailable_kb_id, "query_text": "needle"}
+                assert "能力受限" in metadata["error_message"]
                 declarations = [
                     (model["operation_id"], call)
                     for model in models

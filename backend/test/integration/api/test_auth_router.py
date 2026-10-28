@@ -278,6 +278,80 @@ async def test_admin_user_page_filters_before_pagination_and_excludes_deleted(te
             await test_client.delete(f"/api/auth/users/{user['id']}", headers=admin_headers)
 
 
+async def test_admin_user_page_accepts_multi_select_role_and_department_filters(test_client, admin_headers):
+    """恢复单值相等过滤时，表头多选筛选必须在真实 HTTP 链路上失败。"""
+    await _require_superadmin(test_client, admin_headers)
+
+    created_users = []
+    department_ids: list[int] = []
+    try:
+        dept_a = await _create_department_with_admin(test_client, admin_headers, "m1")
+        dept_b = await _create_department_with_admin(test_client, admin_headers, "m2")
+        department_ids = [dept_a["department"]["id"], dept_b["department"]["id"]]
+
+        for label in ("u1", "u2"):
+            response = await test_client.post(
+                "/api/auth/users",
+                json={
+                    "username": f"mu_{uuid.uuid4().hex[:8]}_{label}",
+                    "password": "routerTest123!",
+                    "role": "user",
+                    "department_id": dept_b["department"]["id"],
+                },
+                headers=admin_headers,
+            )
+            assert response.status_code == 200, response.text
+            created_users.append(response.json())
+
+        # 超管视角：角色与部门多选同时生效。
+        multi_response = await test_client.get(
+            "/api/auth/users/page",
+            params={
+                "roles": "admin,user",
+                "department_ids": f"{dept_a['department']['id']},{dept_b['department']['id']}",
+                "limit": 100,
+            },
+            headers=admin_headers,
+        )
+        assert multi_response.status_code == 200, multi_response.text
+        multi_page = multi_response.json()
+        assert {item["id"] for item in multi_page["items"]} == {
+            dept_a["admin_id"],
+            dept_b["admin_id"],
+            created_users[0]["id"],
+            created_users[1]["id"],
+        }
+
+        single_role_response = await test_client.get(
+            "/api/auth/users/page",
+            params={"roles": "admin", "limit": 100},
+            headers=admin_headers,
+        )
+        assert single_role_response.status_code == 200, single_role_response.text
+        single_role_ids = {item["id"] for item in single_role_response.json()["items"]}
+        assert dept_a["admin_id"] in single_role_ids
+        assert {created_users[0]["id"], created_users[1]["id"]}.isdisjoint(single_role_ids)
+
+        # 部门管理员视角：多选角色生效，但可见部门始终限定本部门。
+        dept_view_response = await test_client.get(
+            "/api/auth/users/page",
+            params={
+                "roles": "admin,user",
+                "department_ids": str(dept_b["department"]["id"]),
+                "limit": 100,
+            },
+            headers=dept_a["admin_headers"],
+        )
+        assert dept_view_response.status_code == 200, dept_view_response.text
+        dept_view = dept_view_response.json()
+        assert {item["id"] for item in dept_view["items"]} == {dept_a["admin_id"]}
+    finally:
+        for user in created_users:
+            await test_client.delete(f"/api/auth/users/{user['id']}", headers=admin_headers)
+        for department_id in department_ids:
+            await delete_department_by_id(test_client, admin_headers, department_id)
+
+
 async def test_admin_password_mutations_reject_passwords_shorter_than_eight_characters(test_client, admin_headers, standard_user):
     create_response = await test_client.post(
         "/api/auth/users",

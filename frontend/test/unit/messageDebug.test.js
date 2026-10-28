@@ -113,6 +113,24 @@ test('消息调试条目保持后端数组顺序并保留独立工具消息', ()
   assert.equal(entries[2].summary, '工具: search_kb | 查询结果')
 })
 
+test('无正文的模型消息用 Tool Calls 摘要代替 [AI 回复] 占位', () => {
+  const entries = buildMessageDebugEntries([
+    {
+      id: 'ai-tools',
+      type: 'ai',
+      content: '',
+      tool_calls: [{ name: 'execute' }, { function: { name: 'write_file' } }]
+    },
+    { id: 'ai-empty', type: 'ai', content: '' },
+    { id: 'ai-text', type: 'ai', content: '直接回答' }
+  ])
+
+  assert.equal(entries[0].summary, 'Tool Calls: execute, write_file')
+  assert.equal(entries[0].roleLabel, 'AI · Tools')
+  assert.equal(entries[1].summary, '[AI 回复]')
+  assert.equal(entries[2].summary, '直接回答')
+})
+
 test('消息调试按连续 Run 分组且不猜测无 run_id 消息的归属', () => {
   const entries = buildMessageDebugEntries([
     { id: 'user-a', type: 'human', run_id: 'run-a', content: '问题 A' },

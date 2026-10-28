@@ -135,6 +135,36 @@ async def test_stream_with_state_preserves_protocol_sequence_and_timestamp():
                         "data": {"event": "tool-started", "tool_call_id": "call-1"},
                     },
                 }
+                yield {
+                    "seq": 9,
+                    "method": "custom",
+                    "params": {
+                        "timestamp": 1_777_000_123_790,
+                        "namespace": ["tools:abc"],
+                        "data": {
+                            "type": "yuxi.tool_lifecycle",
+                            "data": {"event": "tool-finished", "tool_call_id": "call-1", "output": "result"},
+                        },
+                    },
+                }
+                yield {
+                    "seq": 10,
+                    "method": "tools",
+                    "params": {
+                        "timestamp": 1_777_000_123_791,
+                        "namespace": ["tools:abc"],
+                        "data": {"event": "tool-error", "tool_call_id": "call-1", "message": "inner error"},
+                    },
+                }
+                yield {
+                    "seq": 11,
+                    "method": "tools",
+                    "params": {
+                        "timestamp": 1_777_000_123_792,
+                        "namespace": ["tools:abc"],
+                        "data": {"event": "tool-output-delta", "tool_call_id": "call-1", "delta": "progress"},
+                    },
+                }
 
             return aclosing(events())
 
@@ -166,3 +196,8 @@ async def test_stream_with_state_preserves_protocol_sequence_and_timestamp():
             "data": {"event": "tool-started", "tool_call_id": "call-1"},
         },
     }
+    assert events[2]["params"]["data"] == {"event": "tool-finished", "tool_call_id": "call-1", "output": "result"}
+    assert events[2]["seq"] == 9
+    assert events[3]["params"]["data"] == {"event": "tool-output-delta", "tool_call_id": "call-1", "delta": "progress"}
+    assert events[3]["seq"] == 11
+    assert len(events) == 5

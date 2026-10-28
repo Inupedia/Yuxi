@@ -69,6 +69,7 @@ async def ocr_parse_file(file_path: str, runtime: ToolRuntime, ocr_engine: str |
     with tempfile.TemporaryDirectory(prefix="yuxi-ocr-") as directory:
         suffix = PurePosixPath(source_virtual_path).suffix
         source_temp = f"{directory}/source{suffix}"
+        Path(source_temp).touch(mode=0o600, exist_ok=False)
         try:
             await await_io(
                 asyncio.to_thread(

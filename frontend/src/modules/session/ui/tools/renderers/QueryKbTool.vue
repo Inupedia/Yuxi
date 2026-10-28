@@ -98,6 +98,7 @@ import { getToolCallStatus } from '../toolRegistry'
 import KbResultGroupedList from '@/modules/knowledge/ui/KbResultGroupedList.vue'
 import { useKnowledgeBaseStore } from '@/modules/knowledge'
 import { parseToolCallArgs } from '../toolRegistry'
+import { unwrapToolResultContent } from '@/modules/session/model/toolCallProjection'
 
 const props = defineProps({
   toolCall: {
@@ -152,6 +153,7 @@ let lastResultContent = null
 let lastParsedResult = EMPTY_RESULT
 
 const normalizeChunks = (payload) => {
+  if (Array.isArray(payload)) return payload
   if (!payload || typeof payload !== 'object') return []
 
   if (Array.isArray(payload.results)) return payload.results
@@ -163,16 +165,8 @@ const normalizeChunks = (payload) => {
 const parseResult = (content) => {
   if (content === lastResultContent) return lastParsedResult
 
-  let payload = content
-  if (typeof content === 'string') {
-    try {
-      payload = JSON.parse(content)
-    } catch {
-      lastResultContent = content
-      lastParsedResult = EMPTY_RESULT
-      return lastParsedResult
-    }
-  }
+  // MCP 信封（[{type:'text', text: '<json>'}]）先解包再解析，避免把信封误判为空结果。
+  const payload = unwrapToolResultContent(content)
 
   if (!payload || typeof payload !== 'object') {
     lastResultContent = content

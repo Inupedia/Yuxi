@@ -4,6 +4,9 @@ import json
 from dataclasses import dataclass
 from typing import Any
 
+from langchain_core.messages import ToolMessage
+from langgraph.types import Command
+
 TOOL_FAILURE_MESSAGE = "工具执行失败"
 
 
@@ -39,3 +42,14 @@ def normalize_tool_result(output: Any, *, message: str | None = None) -> ToolRes
         public = text
     failed = isinstance(output, dict) and output.get("status") == "error"
     return ToolResult(audit_content=text, public_content=public, error=str(message or text or TOOL_FAILURE_MESSAGE) if failed else None)
+
+
+def unwrap_tool_result(output: Any, *, tool_call_id: str | None) -> Any:
+    """从 Command 提取本次调用的 ToolMessage，其他结果保持原样。"""
+    if not isinstance(output, Command):
+        return output
+    update = output.update if isinstance(output.update, dict) else {}
+    for message in update.get("messages", []):
+        if isinstance(message, ToolMessage) and message.tool_call_id == tool_call_id:
+            return message
+    raise ValueError("工具 Command 缺少相同 call_id 的 ToolMessage")

@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { fileURLToPath } from 'node:url'
 import { setImmediate } from 'node:timers'
 import { readFileSync } from 'node:fs'
 import { compileScript, parse } from 'vue/compiler-sfc'
@@ -16,8 +17,7 @@ async function renderSettings(component, api) {
         name: 'sandbox-settings-client',
         resolveId(id) {
           if (id === '../model/sandboxTiming')
-            return new URL('../../src/modules/settings/model/sandboxTiming.js', import.meta.url)
-              .pathname
+            return fileURLToPath(new URL('../../src/modules/settings/model/sandboxTiming.js', import.meta.url))
           if (id.endsWith('/McpEnvEditor.vue')) return '\0virtual:env-editor'
           if (id.endsWith('/UserSandboxSettingsCard.vue')) return '\0virtual:sandbox-child'
           if (

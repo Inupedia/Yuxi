@@ -26,6 +26,7 @@
             <FileTypeIcon v-else-if="section.type === 'file'" :name="section.path" :size="15" />
             <Bug v-else-if="section.type === 'message-debug'" :size="15" />
             <Workflow v-else-if="section.type === 'cooperation'" :size="15" />
+            <BookOpen v-else-if="section.type === 'turn-sources'" :size="15" />
             <FallbackAvatar
               v-else
               :src="section.avatar"
@@ -229,6 +230,18 @@
           :run-active="runActive"
         />
       </div>
+      <div
+        v-if="turnSourcesSection"
+        v-show="activeSectionKey === turnSourcesSection.key"
+        class="turn-sources-section"
+      >
+        <TurnSourcesPanel
+          :thread-id="threadId"
+          :turn-id="turnSourcesSection.turnId || ''"
+          :sources="turnSourcesSection.sources"
+          :active="visible && activeSectionKey === turnSourcesSection.key"
+        />
+      </div>
     </div>
 
     <GlobalSearchModal
@@ -256,6 +269,7 @@ import {
   watch
 } from 'vue'
 import {
+  BookOpen,
   Bug,
   Download,
   Folders,
@@ -275,6 +289,7 @@ import GlobalSearchModal from '@/modules/session/ui/GlobalSearchModal.vue'
 import FileTypeIcon from '@/shared/ui/FileTypeIcon.vue'
 import FallbackAvatar from '@/shared/ui/FallbackAvatar.vue'
 import MessageDebugPanel from '@/modules/session/ui/MessageDebugPanel.vue'
+import TurnSourcesPanel from '@/modules/session/ui/workspace/TurnSourcesPanel.vue'
 import {
   createFilesystemRefreshGate,
   expandedKeysAfterFilesystemRefresh,
@@ -402,6 +417,9 @@ const hasMessageDebugSection = computed(() =>
   normalizedSections.value.some(
     (section) => section.type === 'message-debug' || section.key === 'message-debug'
   )
+)
+const turnSourcesSection = computed(
+  () => normalizedSections.value.find((section) => section.type === 'turn-sources') || null
 )
 const activeSection = computed(
   () => normalizedSections.value.find((section) => section.key === props.activeSectionKey) || null
@@ -1556,10 +1574,16 @@ watch(
 }
 
 .file-section,
-.message-debug-section {
+.message-debug-section,
+.turn-sources-section {
   width: 100%;
   height: 100%;
   min-height: 0;
+}
+
+.turn-sources-section {
+  display: flex;
+  flex-direction: column;
 }
 
 .file-section {

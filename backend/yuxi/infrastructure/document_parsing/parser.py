@@ -31,6 +31,7 @@ from yuxi.infrastructure.document_parsing.artifacts import (
     save_resource,
 )
 from yuxi.infrastructure.document_parsing.pdf_utils import validate_pdf_page_tree_loadable
+from yuxi.infrastructure.document_parsing.text_encoding import decode_user_text
 from yuxi.infrastructure.filesystem import await_io
 from yuxi.infrastructure.observability.logging import logger
 
@@ -85,7 +86,7 @@ def _convert_document(source: Path, output_dir: Path, options: ParseOptions) -> 
     elif suffix in IMAGE_FILE_EXTENSIONS:
         markdown = _parse_ocr(source, output_dir, options)
     elif suffix in (".txt", ".md"):
-        markdown = source.read_text(encoding="utf-8")
+        markdown = decode_user_text(source.read_bytes(), source.name)
         if suffix == ".md":
             markdown = _copy_markdown_resources(source, output_dir, markdown)
     elif suffix in (".docx", ".pptx", ".xlsx"):
@@ -98,7 +99,7 @@ def _convert_document(source: Path, output_dir: Path, options: ParseOptions) -> 
         html_text_only = options.params.get("html_text_only", False)
         if not isinstance(html_text_only, bool):
             raise ValueError("html_text_only 必须是布尔值")
-        content = source.read_text(encoding="utf-8")
+        content = decode_user_text(source.read_bytes(), source.name)
         if html_text_only:
             document = BeautifulSoup(content, "html.parser")
             for image in document.find_all("img"):
@@ -110,7 +111,7 @@ def _convert_document(source: Path, output_dir: Path, options: ParseOptions) -> 
         if not html_text_only:
             markdown = _copy_markdown_resources(source, output_dir, markdown)
     elif suffix == ".json":
-        content = source.read_text(encoding="utf-8")
+        content = decode_user_text(source.read_bytes(), source.name)
         markdown = f"```json\n{json.dumps(json.loads(content), ensure_ascii=False, indent=2)}\n```"
     elif suffix == ".zip":
         markdown = extract_markdown_archive(str(source), output_dir)
@@ -205,9 +206,11 @@ def _convert_office_document(file_path: Path) -> DoclingDocument:
 
 def _convert_csv_to_markdown(file_path: Path) -> str:
     """把 CSV 的每一行渲染为独立 Markdown 表格，列类型由 pandas 推断。"""
+    import io
+
     import pandas as pd
 
-    dataframe = pd.read_csv(file_path)
+    dataframe = pd.read_csv(io.StringIO(decode_user_text(file_path.read_bytes(), file_path.name)))
     tables: list[str] = []
     for i in range(len(dataframe)):
         row_dataframe = dataframe.iloc[[i]]

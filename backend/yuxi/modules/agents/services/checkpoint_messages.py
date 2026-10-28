@@ -328,16 +328,35 @@ async def _reconcile_tool_error_from_state(
     if not worker_id:
         raise ValueError("ToolMessage 对账需要当前 worker 所有权")
     content = tool_result_text(msg_dict.get("content"))
+    output = json.loads(json.dumps(msg_dict, ensure_ascii=False, default=str))
     await ToolMessageAuditRepository(db).fail(
         run_id=run_id,
         thread_id=thread_id,
         worker_id=worker_id,
         tool_call_id=tool_call_id,
-        output=json.loads(json.dumps(msg_dict, ensure_ascii=False, default=str)),
+        output=output,
         error_message=content or TOOL_FAILURE_MESSAGE,
         finished_at=utc_now(),
         duration_ms=None,
         finished_sequence=None,
+    )
+    from yuxi.modules.agents.repositories.public_items import PublicItemRepository
+    from yuxi.modules.agents.tool_results import normalize_tool_result
+
+    result = normalize_tool_result(output)
+    await PublicItemRepository(db).save(
+        run_id=run_id,
+        worker_id=worker_id,
+        operation_id=tool_call_id,
+        role="tool",
+        key="output",
+        item={
+            "type": "function_call_output",
+            "call_id": tool_call_id,
+            "output": result.public_content,
+            "error": result.error,
+            "status": "failed",
+        },
     )
 
 

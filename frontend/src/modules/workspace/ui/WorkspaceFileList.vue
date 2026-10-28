@@ -1,105 +1,144 @@
 <template>
-  <FileBrowserTable
-    class="workspace-file-list"
-    :rows="entries"
-    :columns="columns"
-    row-key="path"
-    :selected-key="selectedPath"
-    :row-class-name="rowClassName"
-    :loading="loading"
-    :breadcrumbs="resolvedBreadcrumbItems"
-    :root-label="rootLabel"
-    :pagination="pagination"
-    :selection="tableSelection"
-    :scroll="{ x: 520 }"
-    empty-text="当前文件夹为空"
-    @open-row="(entry) => $emit('select-entry', entry)"
-    @breadcrumb-click="handleBreadcrumbClick"
-    @page-change="(payload) => $emit('page-change', payload)"
+  <div
+    class="workspace-list-shell"
+    @dragenter="handleDragEnter"
+    @dragover="handleDragOver"
+    @dragleave="handleDragLeave"
+    @dragend="resetDragState"
+    @drop="handleDrop"
   >
-    <template #toolbar-actions>
-      <span class="entry-count">{{ entryCountText }}</span>
-      <a-tooltip v-if="!readonly" title="多选">
+    <FileBrowserTable
+      class="workspace-file-list"
+      :rows="entries"
+      :columns="columns"
+      row-key="path"
+      :selected-key="selectedPath"
+      :row-class-name="rowClassName"
+      :loading="loading"
+      :breadcrumbs="resolvedBreadcrumbItems"
+      :root-label="rootLabel"
+      :pagination="pagination"
+      :selection="tableSelection"
+      :scroll="{ x: 520 }"
+      empty-text="当前文件夹为空"
+      @open-row="(entry) => $emit('select-entry', entry)"
+      @breadcrumb-click="handleBreadcrumbClick"
+      @page-change="(payload) => $emit('page-change', payload)"
+    >
+      <template #toolbar-actions>
+        <span class="entry-count">{{ entryCountText }}</span>
+        <a-tooltip v-if="uploadable" title="上传文件">
+          <a-button
+            size="small"
+            class="lucide-icon-btn"
+            :disabled="uploading"
+            aria-label="上传文件"
+            @click="$emit('upload-file')"
+          >
+            <Upload :size="14" />
+          </a-button>
+        </a-tooltip>
+        <a-tooltip v-if="uploadable" title="新建文件夹">
+          <a-button
+            size="small"
+            class="lucide-icon-btn"
+            :disabled="uploading"
+            aria-label="新建文件夹"
+            @click="$emit('create-directory')"
+          >
+            <FolderPlus :size="14" />
+          </a-button>
+        </a-tooltip>
+        <a-tooltip v-if="!readonly" title="多选">
+          <a-button
+            size="small"
+            class="lucide-icon-btn"
+            :type="effectiveSelectionMode ? 'primary' : 'default'"
+            aria-label="多选"
+            @click="toggleSelectionMode"
+          >
+            <ListChecks :size="14" />
+          </a-button>
+        </a-tooltip>
         <a-button
+          v-if="effectiveSelectionMode"
           size="small"
-          class="lucide-icon-btn"
-          :type="effectiveSelectionMode ? 'primary' : 'default'"
-          aria-label="多选"
-          @click="toggleSelectionMode"
+          danger
+          :disabled="!selectedPaths.length"
+          :loading="deletingPaths.length > 0"
+          @click="$emit('delete-selected')"
         >
-          <ListChecks :size="14" />
+          删除选中
         </a-button>
-      </a-tooltip>
-      <a-button
-        v-if="effectiveSelectionMode"
-        size="small"
-        danger
-        :disabled="!selectedPaths.length"
-        :loading="deletingPaths.length > 0"
-        @click="$emit('delete-selected')"
-      >
-        删除选中
-      </a-button>
-    </template>
+      </template>
 
-    <template #name="{ row }">
-      <span class="name-cell">
-        <FileTypeIcon :name="row.name || row.path" :is-dir="row.is_dir" :size="17" />
-        <span class="entry-name" :title="row.title || row.name">{{ row.title || row.name }}</span>
-      </span>
-    </template>
+      <template #name="{ row }">
+        <span class="name-cell">
+          <FileTypeIcon :name="row.name || row.path" :is-dir="row.is_dir" :size="17" />
+          <span class="entry-name" :title="row.title || row.name">{{ row.title || row.name }}</span>
+        </span>
+      </template>
 
-    <template #cell-size="{ row }">
-      <span>{{ row.is_dir ? '-' : formatFileSize(row.size) }}</span>
-    </template>
+      <template #cell-size="{ row }">
+        <span>{{ row.is_dir ? '-' : formatFileSize(row.size) }}</span>
+      </template>
 
-    <template #cell-modified_at="{ row }">
-      <span>{{ formatRelativeTime(row.modified_at) }}</span>
-    </template>
+      <template #cell-modified_at="{ row }">
+        <span>{{ formatRelativeTime(row.modified_at) }}</span>
+      </template>
 
-    <template #row-actions="{ row }">
-      <a-dropdown v-if="!row.is_dir || (!readonly && !row.readonly)" :trigger="['click']">
-        <button
-          type="button"
-          class="more-action"
-          :disabled="isDeleting(row.path)"
-          aria-label="更多操作"
-          @click.stop
-        >
-          <MoreHorizontal :size="16" />
-        </button>
-        <template #overlay>
-          <a-menu>
-            <a-menu-item v-if="!row.is_dir" key="download" @click="$emit('download-entry', row)">
-              <span class="menu-item-content">
-                <Download :size="14" />
-                <span>下载</span>
-              </span>
-            </a-menu-item>
-            <a-menu-item
-              v-if="!readonly && !row.readonly"
-              key="delete"
-              danger
-              @click="$emit('delete-entry', row)"
-            >
-              <span class="menu-item-content">
-                <Trash2 :size="14" />
-                <span>删除</span>
-              </span>
-            </a-menu-item>
-          </a-menu>
-        </template>
-      </a-dropdown>
-    </template>
-  </FileBrowserTable>
+      <template #row-actions="{ row }">
+        <a-dropdown v-if="!row.is_dir || (!readonly && !row.readonly)" :trigger="['click']">
+          <button
+            type="button"
+            class="more-action"
+            :disabled="isDeleting(row.path)"
+            aria-label="更多操作"
+            @click.stop
+          >
+            <MoreHorizontal :size="16" />
+          </button>
+          <template #overlay>
+            <a-menu>
+              <a-menu-item v-if="!row.is_dir" key="download" @click="$emit('download-entry', row)">
+                <span class="menu-item-content">
+                  <Download :size="14" />
+                  <span>下载</span>
+                </span>
+              </a-menu-item>
+              <a-menu-item
+                v-if="!readonly && !row.readonly"
+                key="delete"
+                danger
+                @click="$emit('delete-entry', row)"
+              >
+                <span class="menu-item-content">
+                  <Trash2 :size="14" />
+                  <span>删除</span>
+                </span>
+              </a-menu-item>
+            </a-menu>
+          </template>
+        </a-dropdown>
+      </template>
+    </FileBrowserTable>
+
+    <Transition name="drop-overlay">
+      <div v-if="dragActive" class="drop-overlay" aria-hidden="true">
+        <Upload :size="20" />
+        <span>松开鼠标，上传到当前文件夹</span>
+      </div>
+    </Transition>
+  </div>
 </template>
 
 <script setup>
-import { computed } from 'vue'
-import { Download, ListChecks, MoreHorizontal, Trash2 } from '@lucide/vue'
+import { computed, ref } from 'vue'
+import { Download, FolderPlus, ListChecks, MoreHorizontal, Trash2, Upload } from '@lucide/vue'
 import FileBrowserTable from '@/shared/ui/FileBrowserTable.vue'
 import FileTypeIcon from '@/shared/ui/FileTypeIcon.vue'
 import { formatFileSize, formatRelativeTime } from '@/shared/lib/file_utils'
+import { collectDragUploadRoots } from '@/modules/workspace'
 
 const props = defineProps({
   entries: { type: Array, default: () => [] },
@@ -112,7 +151,9 @@ const props = defineProps({
   readonly: { type: Boolean, default: false },
   breadcrumbItems: { type: Array, default: null },
   rootLabel: { type: String, default: '全部文件' },
-  pagination: { type: Object, default: null }
+  pagination: { type: Object, default: null },
+  uploadable: { type: Boolean, default: false },
+  uploading: { type: Boolean, default: false }
 })
 
 const emit = defineEmits([
@@ -124,7 +165,10 @@ const emit = defineEmits([
   'delete-selected',
   'delete-entry',
   'download-entry',
-  'page-change'
+  'page-change',
+  'upload-file',
+  'create-directory',
+  'upload-drop'
 ])
 
 const columns = [
@@ -200,12 +244,88 @@ const handleBreadcrumbClick = ({ item, index }) => {
   emit('breadcrumb-click', { item, index })
   emit('select-path', item.path)
 }
+
+const dragOver = ref(false)
+const dragActive = computed(() => props.uploadable && dragOver.value)
+
+const hasDragFiles = (event) => Array.from(event.dataTransfer?.types || []).includes('Files')
+
+const handleDragEnter = (event) => {
+  if (!props.uploadable || !hasDragFiles(event)) return
+  event.preventDefault()
+  dragOver.value = true
+}
+
+const handleDragOver = (event) => {
+  if (!dragActive.value) return
+  event.preventDefault()
+  event.dataTransfer.dropEffect = 'copy'
+}
+
+const handleDragLeave = (event) => {
+  // 子元素间移动会成对触发 enter/leave：relatedTarget 仍在壳内时忽略；
+  // 真正离开壳（或行重建丢失 leave 后再次离开）一律复位，避免覆盖层滞留。
+  const related = event.relatedTarget
+  if (related && event.currentTarget.contains(related)) return
+  dragOver.value = false
+}
+
+const resetDragState = () => {
+  dragOver.value = false
+}
+
+const handleDrop = (event) => {
+  resetDragState()
+  if (!props.uploadable) return
+  const roots = collectDragUploadRoots(event.dataTransfer)
+  if (!roots.files.length && !roots.directories.length) return
+  event.preventDefault()
+  emit('upload-drop', roots)
+}
 </script>
 
 <style scoped lang="less">
-.workspace-file-list {
+.workspace-list-shell {
+  position: relative;
+  display: flex;
+  flex-direction: column;
   min-width: 0;
   min-height: 0;
+}
+
+.workspace-file-list {
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 0;
+}
+
+.drop-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border: 2px dashed var(--main-color);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--main-color) 8%, var(--gray-0) 92%);
+  color: var(--main-color);
+  font-size: 14px;
+  font-weight: 500;
+  // 覆盖层不接收指针事件，drop 始终落在列表外壳上，避免拖拽闪烁。
+  pointer-events: none;
+}
+
+.drop-overlay-enter-active,
+.drop-overlay-leave-active {
+  transition: opacity 0.15s ease;
+}
+
+.drop-overlay-enter-from,
+.drop-overlay-leave-to {
+  opacity: 0;
 }
 
 .workspace-file-list :deep(.file-browser-header) {
@@ -309,6 +429,8 @@ const handleBreadcrumbClick = ({ item, index }) => {
 
 @media (prefers-reduced-motion: reduce) {
   .more-action,
+  .drop-overlay-enter-active,
+  .drop-overlay-leave-active,
   .workspace-file-list :deep(.ant-table-tbody > tr > td) {
     transition: none;
   }

@@ -8,6 +8,9 @@ services:
       traefik.http.routers.knowledge-next.rule: "Host(`knowledge-next.ai.swhisxy.cn`)"
       traefik.http.routers.knowledge-next.service: knowledge-next
       traefik.http.services.knowledge-next.loadbalancer.server.port: "80"
+      traefik.http.routers.knowledge.rule: "Host(`knowledge.ai.swhisxy.cn`)"
+      traefik.http.routers.knowledge.service: knowledge
+      traefik.http.services.knowledge.loadbalancer.server.port: "80"
   sandbox-image:
     build:
       context: .

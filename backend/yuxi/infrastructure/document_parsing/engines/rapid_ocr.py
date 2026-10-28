@@ -40,9 +40,9 @@ class RapidOCRParser(DocumentEngine):
         """报告本地组件状态，避免选择器刷新时重复加载模型。"""
         return {
             "status": "healthy",
-            "message": "RapidOCR PP-OCRv5 组件可用",
+            "message": "RapidOCR PP-OCRv6 组件可用",
             "details": {
-                "ocr_version": "PP-OCRv5",
+                "ocr_version": "PP-OCRv6",
                 "engine": "onnxruntime",
                 "det_box_thresh": self.det_box_thresh,
             },
@@ -144,20 +144,20 @@ class RapidOCRParser(DocumentEngine):
         return cache_dir
 
     def _get_model_params(self) -> dict[str, object]:
-        """返回 PP-OCRv5 ONNX 检测与识别参数。"""
+        """返回 PP-OCRv6 ONNX 检测与识别参数（模型由 rapidocr wheel 自带）。"""
         model_dir = self._resolve_model_dir()
         return {
             "Global.model_root_dir": str(model_dir),
             "Det.engine_type": EngineType.ONNXRUNTIME,
             "Det.lang_type": LangDet.CH,
-            "Det.model_type": ModelType.MOBILE,
-            "Det.ocr_version": OCRVersion.PPOCRV5,
+            "Det.model_type": ModelType.SMALL,
+            "Det.ocr_version": OCRVersion.PPOCRV6,
             "Det.box_thresh": self.det_box_thresh,
             "Cls.engine_type": EngineType.ONNXRUNTIME,
             "Rec.engine_type": EngineType.ONNXRUNTIME,
             "Rec.lang_type": LangRec.CH,
-            "Rec.model_type": ModelType.MOBILE,
-            "Rec.ocr_version": OCRVersion.PPOCRV5,
+            "Rec.model_type": ModelType.SMALL,
+            "Rec.ocr_version": OCRVersion.PPOCRV6,
         }
 
     def _load_model(self) -> None:
@@ -168,7 +168,7 @@ class RapidOCRParser(DocumentEngine):
         logger.info("加载 RapidOCR 模型...")
         try:
             self.ocr = RapidOCR(params=self._get_model_params())
-            logger.info(f"RapidOCR PP-OCRv5 模型加载成功 (det_box_thresh={self.det_box_thresh})")
+            logger.info(f"RapidOCR PP-OCRv6 模型加载成功 (det_box_thresh={self.det_box_thresh})")
         except Exception as e:
             raise OCRException(f"RapidOCR模型加载失败: {str(e)}", self.get_service_name(), "load_failed") from e
 

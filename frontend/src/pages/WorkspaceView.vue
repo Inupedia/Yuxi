@@ -106,6 +106,8 @@
               isKnowledgeSource ? knowledgeBreadcrumbItems : workspaceBreadcrumbItems
             "
             :pagination="isKnowledgeSource ? knowledgePagination : null"
+            :uploadable="personalUploadEnabled"
+            :uploading="uploadingFile"
             @select-entry="handleSelectEntry"
             @breadcrumb-click="handleListBreadcrumbClick"
             @update:selected-paths="selectedPaths = $event"
@@ -114,6 +116,9 @@
             @delete-entry="(entry) => confirmDeleteEntries([entry])"
             @download-entry="downloadEntry"
             @page-change="handleKnowledgePageChange"
+            @upload-file="openUploadFilePicker"
+            @create-directory="openCreateDirectoryModal"
+            @upload-drop="handleDropUpload"
           />
           <Transition name="workspace-preview-slide" @after-leave="handlePreviewAfterLeave">
             <aside
@@ -240,6 +245,7 @@ import {
   WORKSPACE_UPLOAD_MAX_FILES,
   buildFolderUploadBatches,
   collectFolderUploadEntries,
+  traverseDirectoryEntry,
   validateFolderUploadEntries
 } from '@/modules/workspace'
 import { knowledgeBaseApi } from '@/apis/knowledge_api'
@@ -353,6 +359,10 @@ const isAgentsWorkspacePath = computed(
     comparablePath(currentPath.value) === AGENTS_WORKSPACE_PATH
 )
 const isReadonlyWorkspacePath = computed(() => isKnowledgeSource.value)
+// 与侧边栏上传入口同一语义：仅个人空间非只读目录可上传，知识库只读。
+const personalUploadEnabled = computed(
+  () => activeSourceKey.value === 'personal' && !isReadonlyWorkspacePath.value
+)
 const selectedPreviewPath = computed(() =>
   selectedEntry.value?.source === 'knowledge'
     ? selectedEntry.value.name || ''
@@ -849,6 +859,68 @@ const formatFolderUploadFailure = (failed, batchCount, uploadedCount) => {
   return `已上传 ${uploadedCount} 个文件；第 ${failed.index + 1}/${batchCount} 批失败：${names}${remainder}。${failed.error?.message || '请重试'}${hint}`
 }
 
+const handleDropUpload = async (roots) => {
+  if (activeSourceKey.value !== 'personal' || isReadonlyWorkspacePath.value || uploadingFile.value)
+    return
+  const plainFiles = roots?.files || []
+  const directories = roots?.directories || []
+  if (!plainFiles.length && !directories.length) return
+  if (plainFiles.length > WORKSPACE_UPLOAD_MAX_FILES) {
+    message.warning(`一次最多上传 ${WORKSPACE_UPLOAD_MAX_FILES} 个文件`)
+    return
+  }
+
+  const parentPath = currentPath.value
+  uploadingFile.value = true
+  uploadError.value = ''
+  let uploadedCount = 0
+  const emptyDirectoryNames = []
+  try {
+    if (plainFiles.length) {
+      await uploadWorkspaceFiles(parentPath, plainFiles)
+      uploadedCount += plainFiles.length
+    }
+    for (const directory of directories) {
+      const entries = await traverseDirectoryEntry(directory.entry)
+      if (!entries.length) {
+        emptyDirectoryNames.push(directory.name)
+        continue
+      }
+      validateFolderUploadEntries(entries)
+      for (const batch of buildFolderUploadBatches(entries)) {
+        await uploadWorkspaceFiles(
+          parentPath,
+          batch.map((entry) => entry.file),
+          batch.map((entry) => entry.relativePath)
+        )
+        uploadedCount += batch.length
+      }
+    }
+    if (uploadedCount) {
+      message.success(`${uploadedCount} 个文件上传成功`)
+    } else if (emptyDirectoryNames.length) {
+      message.info('拖拽内容里没有可上传的文件；空文件夹不会被上传')
+    }
+  } catch (error) {
+    console.warn('拖拽上传失败:', error)
+    const subject = plainFiles.length && !uploadedCount ? plainFiles.map((file) => file.name).join('、') : '拖拽内容'
+    const hint =
+      error?.status === 413
+        ? ' 文件过大，请压缩或拆分后重试。'
+        : error?.status === 400
+          ? ' 请检查目标路径是否已存在同名文件或目录；已成功部分不会回滚。'
+          : ''
+    uploadError.value = `${subject} 上传失败：${error?.message || '请重试'}。${hint}`
+    message.error(uploadError.value)
+  } finally {
+    uploadingFile.value = false
+    if (activeSourceKey.value === 'personal' && currentPath.value === parentPath) {
+      // 部分成功也要回读最终状态，不能依赖成功分支。
+      await loadWorkspaceEntries(parentPath).catch(() => {})
+    }
+  }
+}
+
 const handleFolderUploadInputChange = async (event) => {
   const input = event.target
   const files = Array.from(input?.files || [])
@@ -1166,7 +1238,7 @@ watch([useInlinePreview, workspaceActive], ([isInline, isActive]) => {
   position: relative;
 }
 
-:deep(.workspace-file-list) {
+:deep(.workspace-list-shell) {
   flex: 1 1 0;
   min-width: 0;
   height: 100%;

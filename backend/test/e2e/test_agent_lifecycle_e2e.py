@@ -943,6 +943,32 @@ async def test_invalid_question_parameters_return_tool_error_without_waitpoint(e
         assert audit["content"] == ""
         metadata = json.loads(audit["extra_metadata"])
         assert "ValidationError" in metadata["output"]["content"] or "multi_select" in metadata["output"]["content"]
+        assert metadata["public_items"]["output"]["status"] == "failed"
+        failed_types = set()
+        saw_final_delta = False
+        async with asyncio.timeout(10):
+            async with e2e_client.stream(
+                "GET", f"/api/v1/agents/sessions/{accepted['session_id']}/events", headers=e2e_headers
+            ) as response:
+                assert response.status_code == 200
+                async for _cursor, event in read_events(response):
+                    item = event.get("item", {})
+                    if item.get("call_id") == "call-ask-user" and item.get("status") == "failed":
+                        failed_types.add(item["type"])
+                    if event["type"] == "agent.session.turn.output_text.delta":
+                        assert failed_types == {"function_call", "function_call_output"}
+                        saw_final_delta = True
+                    if event["type"] == "agent.session.turn.completed":
+                        break
+        assert saw_final_delta
+        refreshed = await e2e_client.get(
+            f"/api/v1/agents/sessions/{accepted['session_id']}/items?order=asc&limit=100",
+            headers=e2e_headers,
+        )
+        assert refreshed.status_code == 200, refreshed.text
+        assert all(
+            item["status"] == "failed" for item in refreshed.json()["data"] if item["type"] in {"function_call", "function_call_output"}
+        )
     finally:
         await delete_agent(e2e_client, e2e_headers, slug)
         deleted = await e2e_client.delete(f"/api/system/model-providers/{provider_id}", headers=e2e_headers)

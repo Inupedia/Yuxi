@@ -349,18 +349,44 @@ async def create_user(
     return await user_service.create_user(db, current_user=current_user, **user_data.model_dump())
 
 
+ALLOWED_USER_ROLES = ("superadmin", "admin", "user")
+
+
+def parse_csv_ints(raw: str | None) -> list[int] | None:
+    """把逗号分隔的整数参数解析为去重列表；空值或全部非法时视为未筛选。"""
+    if not raw:
+        return None
+    values = set()
+    for part in raw.split(","):
+        try:
+            values.add(int(part.strip()))
+        except ValueError:
+            continue
+    return sorted(values) or None
+
+
+def parse_csv_roles(raw: str | None) -> list[str] | None:
+    """把逗号分隔的角色参数收敛到合法取值；空值或全部非法时视为未筛选。"""
+    if not raw:
+        return None
+    values = [part.strip() for part in raw.split(",") if part.strip() in ALLOWED_USER_ROLES]
+    return list(dict.fromkeys(values)) or None
+
+
 @auth.get("/users/page", response_model=UserPageResponse)
 async def read_users_page(
     offset: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=100),
     search: str | None = Query(None, max_length=100),
     department_id: int | None = Query(None, ge=1),
+    department_ids: str | None = Query(None, max_length=200),
     role: Literal["superadmin", "admin", "user"] | None = None,
+    roles: str | None = Query(None, max_length=80),
     user_kind: Literal["human", "end_user", "all"] = "human",
     current_user: User = Depends(get_admin_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """分页查询当前管理员可管理的有效用户。"""
+    """分页查询当前管理员可管理的有效用户；多选参数接受逗号分隔取值。"""
     return await list_managed_users_page(
         db,
         offset=offset,
@@ -368,7 +394,9 @@ async def read_users_page(
         is_superadmin=current_user.role == "superadmin",
         visible_department_id=current_user.department_id,
         department_id=department_id,
+        department_ids=parse_csv_ints(department_ids),
         role=role,
+        roles=parse_csv_roles(roles),
         search=search.strip() if search else None,
         user_kind=None if user_kind == "all" else user_kind,
     )

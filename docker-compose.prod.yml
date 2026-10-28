@@ -60,7 +60,7 @@ services:
     build:
       context: .
       dockerfile: docker/api.Dockerfile
-    image: ${COMPOSE_PROJECT_NAME:-yuxi}-api:${YUXI_VERSION:-0.8.0.beta3}
+    image: ${COMPOSE_PROJECT_NAME:-yuxi}-api:${YUXI_VERSION:-0.8.0.beta4}
     working_dir: /app
     user: "1000:1000"
     networks:
@@ -109,7 +109,7 @@ services:
     build:
       context: .
       dockerfile: docker/api.Dockerfile
-    image: ${COMPOSE_PROJECT_NAME:-yuxi}-api:${YUXI_VERSION:-0.8.0.beta3}
+    image: ${COMPOSE_PROJECT_NAME:-yuxi}-api:${YUXI_VERSION:-0.8.0.beta4}
     working_dir: /app
     user: "1000:1000"
     networks:
@@ -157,7 +157,7 @@ services:
     build:
       context: .
       dockerfile: docker/api.Dockerfile
-    image: ${COMPOSE_PROJECT_NAME:-yuxi}-api:${YUXI_VERSION:-0.8.0.beta3}
+    image: ${COMPOSE_PROJECT_NAME:-yuxi}-api:${YUXI_VERSION:-0.8.0.beta4}
     working_dir: /app
     volumes:
       - ${YUXI_STATE_DIR:-./docker/volumes}/yuxi/skill-sources:/app/skill-sources
@@ -178,7 +178,7 @@ services:
 
   # Container 沙盒后端：镜像必须已预拉取或由部署流水线构建；runner 独占 Docker socket。
   sandbox-image:
-    image: ${SANDBOX_CONTAINER_IMAGE:-yuxi-sandbox:${YUXI_VERSION:-0.8.0.beta3}}
+    image: ${SANDBOX_CONTAINER_IMAGE:-yuxi-sandbox:${YUXI_VERSION:-0.8.0.beta4}}
     command: ["true"]
     network_mode: none
     profiles:
@@ -189,7 +189,7 @@ services:
     build:
       context: .
       dockerfile: docker/api.Dockerfile
-    image: ${COMPOSE_PROJECT_NAME:-yuxi}-api:${YUXI_VERSION:-0.8.0.beta3}
+    image: ${COMPOSE_PROJECT_NAME:-yuxi}-api:${YUXI_VERSION:-0.8.0.beta4}
     working_dir: /app
     user: "0:0"
     volumes:
@@ -208,7 +208,7 @@ services:
       YUXI_ENV: ${YUXI_ENV:-production}
       SANDBOX_RUNNER_TOKEN: ${SANDBOX_RUNNER_TOKEN:-}
       SANDBOX_CONTAINER_SOCKET: /var/run/docker.sock
-      SANDBOX_CONTAINER_IMAGE: ${SANDBOX_CONTAINER_IMAGE:-yuxi-sandbox:${YUXI_VERSION:-0.8.0.beta3}}
+      SANDBOX_CONTAINER_IMAGE: ${SANDBOX_CONTAINER_IMAGE:-yuxi-sandbox:${YUXI_VERSION:-0.8.0.beta4}}
       SANDBOX_CONTAINER_IMAGE_DIGEST: ${SANDBOX_CONTAINER_IMAGE_DIGEST:-}
       SANDBOX_CONTAINER_NETWORK: ${SANDBOX_CONTAINER_NETWORK:-none}
       SANDBOX_CONTAINER_MEMORY_BYTES: ${SANDBOX_CONTAINER_MEMORY_BYTES:-1073741824}
@@ -242,7 +242,7 @@ services:
       context: .
       dockerfile: docker/frontend.Dockerfile
       target: production
-    image: ${COMPOSE_PROJECT_NAME:-yuxi}-frontend:${YUXI_VERSION:-0.8.0.beta3}
+    image: ${COMPOSE_PROJECT_NAME:-yuxi}-frontend:${YUXI_VERSION:-0.8.0.beta4}
     ports:
       - "${YUXI_FRONTEND_PORT:-80}:80"
     depends_on:
@@ -327,7 +327,7 @@ services:
     build:
       context: .
       dockerfile: docker/storage-init.Dockerfile
-    image: ${COMPOSE_PROJECT_NAME:-yuxi}-storage-init:${YUXI_VERSION:-0.8.0.beta3}
+    image: ${COMPOSE_PROJECT_NAME:-yuxi}-storage-init:${YUXI_VERSION:-0.8.0.beta4}
     network_mode: none
     user: "0:0"
     volumes:
@@ -384,6 +384,9 @@ services:
       - "127.0.0.1:${YUXI_POSTGRES_PORT:-6432}:5432"
     image: postgres:16
     command: ["postgres", "-c", "max_connections=${POSTGRES_MAX_CONNECTIONS:-600}"]
+    # Docker 默认 /dev/shm 仅 64MiB，并行查询/hash 聚合会报
+    # could not resize shared memory segment ... No space left on device
+    shm_size: 1g
     environment:
       - POSTGRES_USER=${POSTGRES_USER:-postgres}
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env.prod}

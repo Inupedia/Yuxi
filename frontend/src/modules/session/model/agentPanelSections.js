@@ -29,3 +29,5 @@ export const shouldPollAgentPanelFilesystem = ({
 
 export const FILE_TREE_SECTION = { key: 'file-tree', type: 'file-tree', title: '文件' }
 export const MESSAGE_DEBUG_SECTION = { key: 'message-debug', type: 'message-debug', title: '调试' }
+// 来源面板复用同一标签，turnId 与回退数据由打开方写入。
+export const TURN_SOURCES_SECTION = { key: 'turn-sources', type: 'turn-sources', title: '来源' }

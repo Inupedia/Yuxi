@@ -22,6 +22,8 @@ Owner：backend/yuxi/modules/agents/repositories/tool_audit.py
 
 工具执行由 Message 的 operation_id、状态、输入输出和来源模型声明统一拥有；Memory、Dashboard 与审计读取此记录，checkpoint 只对已记录生命周期做补全。business Schema 版本提升为 3，启动拒绝旧库，空库检测识别已退役 tool_calls 表。
 
+工具回调与外层中间件之间的结束通知，以及未执行结果入口，由[工具异常终态补全](2026-10-25-ocr-tool-error-settlement.md)进一步明确。
+
 ## 替代方案
 
 - keep：保留双写，仍需维护两套状态和对账，拒绝。

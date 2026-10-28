@@ -24,6 +24,7 @@
 import { computed } from 'vue'
 import BaseToolCall from '../BaseToolCall.vue'
 import { getToolCallStatus } from '../toolRegistry'
+import { unwrapToolResultContent } from '@/modules/session/model/toolCallProjection'
 
 const props = defineProps({
   toolCall: {
@@ -34,21 +35,12 @@ const props = defineProps({
 
 const operationLabel = computed(() => '查看知识库列表')
 
-const parseData = (content) => {
-  if (typeof content === 'string') {
-    try {
-      return JSON.parse(content)
-    } catch {
-      return []
-    }
-  }
-  return content || []
-}
-
 const kbList = computed(() => {
-  const resultContent = props.toolCall.tool_call_result?.content
-  const data = parseData(resultContent)
-  return Array.isArray(data) ? data : []
+  const data = unwrapToolResultContent(props.toolCall.tool_call_result?.content)
+  // MCP 信封解包后是数组；structuredContent 形态挂在 knowledge_bases 键下。
+  if (Array.isArray(data)) return data
+  if (Array.isArray(data?.knowledge_bases)) return data.knowledge_bases
+  return []
 })
 
 const headerSummary = computed(() => {

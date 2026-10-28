@@ -212,7 +212,7 @@ class OpenAIEventAdapter:
                 )
             ]
         # 原生 tool-error 也可能是 GraphInterrupt；结局由已提交 Run 决定。
-        if kind != "tool-finished":
+        if kind not in {"tool-finished", "tool-result"}:
             return []
         result = data["result"]
         content = result.public_content

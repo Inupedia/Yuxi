@@ -153,13 +153,30 @@
       </div>
       <UserConfigSettingsCard ref="userConfigRef" />
     </div>
+
+    <div class="settings-surface-card activity-card">
+      <div class="activity-header">
+        <div class="settings-section-title">消息活动</div>
+        <p class="settings-section-description">近一年的消息数，包含用户消息、模型消息与工具消息。</p>
+      </div>
+      <DashboardActivityHeatmap
+        :data="activityData"
+        :loading="activityLoading"
+        value-key="message_count"
+        value-label="条消息"
+        total-unit="条消息"
+        aria-label="近一年消息活动"
+        empty-text="暂无消息记录"
+      />
+    </div>
   </div>
 </template>
 
 <script setup>
 import UserConfigSettingsCard from '@/modules/settings/ui/UserConfigSettingsCard.vue'
+import DashboardActivityHeatmap from '@/modules/dashboard/ui/DashboardActivityHeatmap.vue'
 
-import { computed, nextTick, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
 import { message } from 'ant-design-vue'
 import {
   Building2,
@@ -172,6 +189,7 @@ import {
 } from '@lucide/vue'
 import FallbackAvatar from '@/shared/ui/FallbackAvatar.vue'
 import { useUserStore } from '@/modules/identity'
+import { userApi } from '@/apis/user_api'
 import { copyTextToClipboard } from '@/shared/lib/clipboard'
 
 const userStore = useUserStore()
@@ -183,6 +201,8 @@ const identifierVisible = ref(false)
 const usernameInput = ref(null)
 const phoneInput = ref(null)
 const userConfigRef = ref(null)
+const activityData = ref([])
+const activityLoading = ref(false)
 const profileDraft = reactive({
   username: '',
   phone_number: ''
@@ -206,10 +226,27 @@ const syncProfileDraft = () => {
   profileDraft.phone_number = userStore.phoneNumber || ''
 }
 
+const loadMessageActivity = async () => {
+  activityLoading.value = true
+  try {
+    const res = await userApi.getMessageActivity()
+    activityData.value = res.daily_message_counts || []
+  } catch (error) {
+    console.error('加载消息活动失败:', error)
+    message.error('加载消息活动失败：' + (error.message || '请稍后重试'))
+  } finally {
+    activityLoading.value = false
+  }
+}
+
 const refreshProfile = async () => {
   refreshing.value = true
   try {
-    await Promise.all([userStore.getCurrentUser(), userConfigRef.value?.refresh?.()])
+    await Promise.all([
+      userStore.getCurrentUser(),
+      userConfigRef.value?.refresh?.(),
+      loadMessageActivity()
+    ])
     syncProfileDraft()
     message.success('账户设置已刷新')
   } catch (error) {
@@ -352,6 +389,8 @@ watch(
 )
 
 watch(() => [userStore.username, userStore.phoneNumber], syncProfileDraft, { immediate: true })
+
+onMounted(loadMessageActivity)
 </script>
 
 <style lang="less" scoped>
@@ -361,6 +400,23 @@ watch(() => [userStore.username, userStore.phoneNumber], syncProfileDraft, { imm
     flex-direction: column;
     gap: 16px;
     background: var(--gray-25);
+  }
+
+  .activity-card {
+    margin-top: 16px;
+    background: var(--gray-25);
+  }
+
+  .activity-header {
+    margin-bottom: 12px;
+
+    .settings-section-title {
+      margin-bottom: 4px;
+    }
+
+    .settings-section-description {
+      margin-bottom: 0;
+    }
   }
 
   .profile-summary {
