@@ -2,7 +2,7 @@
   <main class="cli-auth-view">
     <section class="cli-auth-panel">
       <div class="cli-auth-header">
-        <p class="eyebrow">Inupedia CLI</p>
+        <p class="eyebrow">引大济岷 CLI</p>
         <h1>确认命令行登录</h1>
       </div>
 
@@ -69,7 +69,7 @@ const userCode = computed(() =>
 
 const credentialName = computed(() => {
   const keyName = session.value?.key_name?.trim()
-  return !keyName || keyName === 'Yuxi CLI' ? 'Inupedia CLI' : keyName
+  return !keyName || keyName === 'Yuxi CLI' ? '引大济岷 CLI' : keyName
 })
 
 async function loadSession() {

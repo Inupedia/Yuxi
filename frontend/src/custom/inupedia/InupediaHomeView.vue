@@ -127,7 +127,7 @@ const organization = computed(() => ({
   logo: infoStore.branding.logo || '/inupedia-logo.svg'
 }))
 const branding = computed(() => infoStore.branding)
-const brandName = computed(() => branding.value.name || 'Inupedia')
+const brandName = computed(() => branding.value.name || '引大济岷')
 const footerCopyright = computed(
   () => infoStore.footer?.copyright || '© 四川省引大济岷水资源开发有限公司'
 )
