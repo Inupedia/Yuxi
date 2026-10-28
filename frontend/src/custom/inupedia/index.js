@@ -44,6 +44,6 @@ export function installInupediaBrand({ router, infoStore }) {
     document.title = brandTitle ? `${brandName} - ${brandTitle}` : brandName
 
     const favicon = document.querySelector('link[rel="icon"]')
-    if (favicon) favicon.href = config?.branding?.logo || '/inupedia-logo.svg'
+    if (favicon) favicon.href = config?.branding?.logo || '/favicon.svg'
   })
 }

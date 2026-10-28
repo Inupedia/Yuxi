@@ -1,9 +1,9 @@
 # 产品品牌配置
 branding:
   name: "Inupedia"           # 产品名称
-  logo: "/inupedia-logo.svg" # 产品 Logo（放在 frontend/public 目录下）
+  logo: "/favicon.svg"       # 产品 Logo（放在 frontend/public 目录下）
   title: "让知识，成为行动。"  # 首页口号
-  login_bg: "/brand-waterlines.svg" # 登录背景图片（放在 frontend/public 目录下）
+  login_bg: "/login-bg.jpg"  # 登录背景图片（放在 frontend/public 目录下）
 
 # 页脚信息
 footer:

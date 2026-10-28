@@ -124,7 +124,7 @@ let motionContext = null
 
 const organization = computed(() => ({
   name: infoStore.infoConfig.organization?.name || '四川省引大济岷水资源开发有限公司',
-  logo: infoStore.branding.logo || '/inupedia-logo.svg'
+  logo: infoStore.branding.logo || '/favicon.svg'
 }))
 const branding = computed(() => infoStore.branding)
 const brandName = computed(() => branding.value.name || '引大济岷')

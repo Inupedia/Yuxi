@@ -318,10 +318,10 @@ const agentStore = useAgentStore()
 
 // 品牌展示数据
 const loginBgImage = computed(() => {
-  return infoStore.branding.login_bg || '/brand-waterlines.svg'
+  return infoStore.branding.login_bg || '/login-bg.jpg'
 })
 const brandLogo = computed(() => {
-  return infoStore.branding.logo || '/inupedia-logo.svg'
+  return infoStore.branding.logo || '/favicon.svg'
 })
 const brandOrgName = computed(() => infoStore.infoConfig.organization?.name?.trim() || '四川省引大济岷水资源开发有限公司')
 const brandName = computed(() => infoStore.branding.name?.trim() || '引大济岷')
