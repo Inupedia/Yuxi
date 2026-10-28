@@ -5,17 +5,40 @@ from yuxi.modules.background_jobs.models import BackgroundJobRecord
 from yuxi.modules.background_jobs.service import job_tracker
 from yuxi.modules.knowledge.graphs.service import GRAPH_TASK_TYPE, KnowledgeGraphService
 from yuxi.modules.knowledge.read_models import KnowledgeBaseDetail
+from yuxi.modules.knowledge.repositories.chunks import KnowledgeChunkRepository
+from yuxi.modules.knowledge.repositories.files import KnowledgeFileRepository
 from yuxi.modules.knowledge.runtime import knowledge_base
 from yuxi.shared.errors import InvalidOperationError, ResourceNotFoundError, StateConflictError
 
 
-async def start_graph_build(kb_id: str) -> BackgroundJobRecord:
+async def get_file_graph_build_status(kb_id: str, file_id: str) -> dict[str, int]:
+    """读取文件当前可见代次中尚未完成图谱索引的分块数。"""
+    file = await KnowledgeFileRepository().get_by_file_id(file_id)
+    if file is None or file.kb_id != kb_id:
+        raise ResourceNotFoundError("文件不存在或不属于该知识库")
+    if file.is_folder:
+        raise InvalidOperationError("目录不能构建图谱")
+    pending = await KnowledgeChunkRepository().count_graph_pending_by_kb_id(kb_id, file_id=file_id)
+    return {"pending_chunks": pending}
+
+
+async def start_graph_build(kb_id: str, *, file_id: str | None = None) -> BackgroundJobRecord:
     """确认配置已经锁定后登记唯一构建任务。"""
     kb = await _require_available_knowledge_base(kb_id)
     status = await KnowledgeGraphService().get_status(kb_id)
     if not status.get("locked"):
         raise InvalidOperationError("请先确认并锁定图谱抽取配置")
-    return await _submit_graph_job(kb_id, name=f"图谱构建 ({kb.name})", payload={"kb_id": kb_id, "action": "build"})
+    payload = {"kb_id": kb_id, "action": "build"}
+    if file_id is not None:
+        file = await KnowledgeFileRepository().get_by_file_id(file_id)
+        if file is None or file.kb_id != kb_id:
+            raise ResourceNotFoundError("文件不存在或不属于该知识库")
+        if file.is_folder:
+            raise InvalidOperationError("目录不能构建图谱")
+        if not await KnowledgeChunkRepository().count_by_file_id(file_id):
+            raise InvalidOperationError("文件当前没有可构建的分块")
+        payload.update(file_id=file_id, generation=int(file.active_generation))
+    return await _submit_graph_job(kb_id, name=f"图谱构建 ({kb.name})", payload=payload)
 
 
 async def reconcile_graph_build(kb_id: str, *, mode: str) -> BackgroundJobRecord:

@@ -3,6 +3,75 @@ import pytest
 
 @pytest.mark.integration
 @pytest.mark.asyncio
+async def test_file_graph_build_status_counts_only_current_pending_chunks(
+    test_client, admin_headers, knowledge_base_resource, postgres_sessions
+):
+    """真实 HTTP 和 PG 验证文件、代次和图谱向量阶段的范围。"""
+    from uuid import uuid4
+
+    from sqlalchemy import select
+
+    from yuxi.modules.knowledge.models import KnowledgeBase, KnowledgeChunk, KnowledgeFile
+    from yuxi.shared.datetime import utc_now
+
+    kb_id = knowledge_base_resource["kb_id"]
+    other_kb, target, other, foreign, folder, deleted = [uuid4().hex for _ in range(6)]
+    async with postgres_sessions() as session:
+        session.add(KnowledgeBase(kb_id=other_kb, name=other_kb, kb_type="milvus"))
+        await session.flush()
+        session.add_all(
+            [
+                KnowledgeFile(kb_id=kb_id, file_id=target, filename="target", active_generation=2),
+                KnowledgeFile(kb_id=kb_id, file_id=other, filename="other"),
+                KnowledgeFile(kb_id=other_kb, file_id=foreign, filename="foreign"),
+                KnowledgeFile(kb_id=kb_id, file_id=folder, filename="folder", is_folder=True),
+                KnowledgeFile(kb_id=kb_id, file_id=deleted, filename="deleted", deleted_at=utc_now()),
+            ]
+        )
+        await session.flush()
+        for file_id, generation, indexed, structured, index in [
+            (target, 2, False, False, 0),
+            (target, 2, False, True, 1),
+            (target, 2, True, True, 2),
+            (target, 1, False, False, 3),
+            (other, 1, False, False, 0),
+        ]:
+            session.add(
+                KnowledgeChunk(
+                    chunk_id=uuid4().hex,
+                    kb_id=kb_id,
+                    file_id=file_id,
+                    chunk_index=index,
+                    generation=generation,
+                    content="test",
+                    graph_indexed=indexed,
+                    graph_structure_indexed=structured,
+                )
+            )
+        await session.commit()
+    base = f"/api/knowledge/knowledge-bases/{kb_id}/graph-build/files"
+    try:
+        response = await test_client.get(f"{base}/{target}/status", headers=admin_headers)
+        assert response.status_code == 200 and response.json() == {"pending_chunks": 2}, response.text
+        assert (await test_client.get(f"{base}/{target}/status")).status_code in {401, 403}
+        for file_id, expected in [(foreign, 404), (deleted, 404), (uuid4().hex, 404), (folder, 400)]:
+            response = await test_client.get(f"{base}/{file_id}/status", headers=admin_headers)
+            assert response.status_code == expected, response.text
+        async with postgres_sessions() as session:
+            file = await session.scalar(select(KnowledgeFile).where(KnowledgeFile.file_id == target))
+            file.active_generation = 3
+            await session.commit()
+        response = await test_client.get(f"{base}/{target}/status", headers=admin_headers)
+        assert response.status_code == 200 and response.json() == {"pending_chunks": 0}, response.text
+    finally:
+        async with postgres_sessions() as session:
+            kb = await session.scalar(select(KnowledgeBase).where(KnowledgeBase.kb_id == other_kb))
+            await session.delete(kb)
+            await session.commit()
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
 async def test_graph_build_status_and_failed_chunk_samples(test_client, admin_headers, knowledge_base_resource):
     kb_id = knowledge_base_resource["kb_id"]
 
@@ -147,3 +216,102 @@ async def test_graph_request_records_payload_and_worker_consumes_once(
         await asyncio.sleep(0.1)
     else:
         pytest.fail("图谱任务未在限时内结束")
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_file_graph_build_validates_scope_and_persists_generation(
+    test_client, admin_headers, knowledge_base_resource, postgres_sessions
+):
+    """非法文件不产生任务；合法文件的当前代次随任务持久化并交给 worker。"""
+    import asyncio
+    from uuid import uuid4
+
+    from sqlalchemy import delete, select
+
+    from yuxi.modules.background_jobs.models import BackgroundJobRecord
+    from yuxi.modules.knowledge.models import KnowledgeBase, KnowledgeChunk, KnowledgeFile
+
+    kb_id = knowledge_base_resource["kb_id"]
+    other_kb, target, empty, folder, foreign = [uuid4().hex for _ in range(5)]
+    async with postgres_sessions() as session:
+        session.add(KnowledgeBase(kb_id=other_kb, name=other_kb, kb_type="milvus"))
+        await session.flush()
+        session.add_all(
+            [
+                KnowledgeFile(kb_id=kb_id, file_id=target, filename="target", active_generation=2),
+                KnowledgeFile(kb_id=kb_id, file_id=empty, filename="empty"),
+                KnowledgeFile(kb_id=kb_id, file_id=folder, filename="folder", is_folder=True),
+                KnowledgeFile(kb_id=other_kb, file_id=foreign, filename="foreign"),
+            ]
+        )
+        await session.flush()
+        session.add(
+            KnowledgeChunk(
+                chunk_id=uuid4().hex,
+                kb_id=kb_id,
+                file_id=target,
+                chunk_index=0,
+                generation=2,
+                content="已索引",
+                graph_structure_indexed=True,
+                graph_indexed=True,
+            )
+        )
+        await session.commit()
+    base = f"/api/knowledge/knowledge-bases/{kb_id}/graph-build"
+    try:
+        configured = await test_client.post(
+            f"{base}/config",
+            json={"extractor_type": "llm", "extractor_options": {"model_spec": "unused/empty-graph"}},
+            headers=admin_headers,
+        )
+        assert configured.status_code == 200, configured.text
+        for file_id, status in [
+            (foreign, 404),
+            (uuid4().hex, 404),
+            (folder, 400),
+            (empty, 400),
+            (None, 400),
+            ("", 400),
+            ("  ", 400),
+            (123, 400),
+            (False, 400),
+            ([], 400),
+        ]:
+            response = await test_client.post(f"{base}/index", json={"file_id": file_id}, headers=admin_headers)
+            assert response.status_code == status, response.text
+        async with postgres_sessions() as observer:
+            assert not (
+                await observer.scalars(select(BackgroundJobRecord).where(BackgroundJobRecord.payload["kb_id"].as_string() == kb_id))
+            ).all()
+        response = await test_client.post(f"{base}/index", json={"file_id": target}, headers=admin_headers)
+        assert response.status_code == 200, response.text
+        for _ in range(100):
+            async with postgres_sessions() as observer:
+                job = await observer.get(BackgroundJobRecord, response.json()["job_id"])
+                assert job.payload == {"kb_id": kb_id, "action": "build", "file_id": target, "generation": 2}
+                if job.status in {"success", "failed", "cancelled"}:
+                    assert job.status == "success", job.error
+                    assert job.result["remaining"] == 0
+                    break
+            await asyncio.sleep(0.1)
+        else:
+            pytest.fail("单文件图谱任务未在限时内结束")
+    finally:
+        for _ in range(100):
+            async with postgres_sessions() as session:
+                jobs = list(
+                    await session.scalars(select(BackgroundJobRecord).where(BackgroundJobRecord.payload["kb_id"].as_string() == kb_id))
+                )
+                if all(job.status in {"success", "failed", "cancelled"} for job in jobs):
+                    await session.execute(delete(BackgroundJobRecord).where(BackgroundJobRecord.payload["kb_id"].as_string() == kb_id))
+                    await session.commit()
+                    break
+            await asyncio.sleep(0.1)
+        else:
+            pytest.fail("测试作业仍在执行，不能清理其数据")
+        async with postgres_sessions() as session:
+            kb = await session.scalar(select(KnowledgeBase).where(KnowledgeBase.kb_id == other_kb))
+            await session.delete(kb)
+            await session.commit()

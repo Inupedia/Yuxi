@@ -448,6 +448,10 @@
                   </a-button>
                 </template>
                 <template v-else>
+                  <a-button type="text" block @click="viewFileGraph(row)">
+                    <template #icon><component :is="h(Network)" size="14" /></template>
+                    查看图谱
+                  </a-button>
                   <a-button
                     type="text"
                     block
@@ -555,6 +559,7 @@ import {
   Database,
   Filter,
   MoreHorizontal,
+  Network,
   Pencil,
   Search,
   CircleCheck as CheckCircleFilled,
@@ -566,7 +571,7 @@ import {
 
 const store = useKnowledgeBaseStore()
 
-const emit = defineEmits(['search'])
+const emit = defineEmits(['search', 'view-graph'])
 
 const props = defineProps({
   readonly: { type: Boolean, default: false }
@@ -710,6 +715,12 @@ const closePopover = (fileId) => {
   if (fileId) {
     popoverVisibleMap.value[fileId] = false
   }
+}
+
+/** 从单个文件进入其图谱。 */
+const viewFileGraph = (row) => {
+  closePopover(row.file_id)
+  emit('view-graph', row)
 }
 
 // 新建文件夹相关
@@ -1910,6 +1921,7 @@ import FallbackAvatar from '@/shared/ui/FallbackAvatar.vue'
     font-size: 14px;
     display: flex;
     align-items: center;
+    justify-content: flex-start;
     border-radius: 6px;
     padding: 0 8px;
     border: none;
@@ -1923,11 +1935,6 @@ import FallbackAvatar from '@/shared/ui/FallbackAvatar.vue'
     &.ant-btn-dangerous:hover {
       background-color: var(--color-error-50);
       color: var(--color-error-500);
-    }
-
-    .anticon,
-    .lucide {
-      margin-right: 10px;
     }
 
     span {

@@ -86,6 +86,12 @@ test('任务请求时序与轮询生命周期', async (t) => {
           'GRAPH_BUILD_TASK_TYPE',
           'loadGraphBuildStatus',
           'getErrorDetail',
+          'graphBuildSubmitting',
+          'awaitingBuildStatus',
+          'graphSectionDisposed',
+          'isBuildActive',
+          'props',
+          'loadGraph',
           descriptor.scriptSetup.content.slice(node.start, node.end) + `; return ${name}`
         )(
           store,
@@ -94,7 +100,13 @@ test('任务请求时序与轮询生命周期', async (t) => {
           { success() {}, error: assert.fail },
           'graph-build',
           async () => {},
-          (error) => error.message
+          (error) => error.message,
+          { value: false },
+          { value: false },
+          false,
+          { value: false },
+          { active: false },
+          async () => {}
         )
         const pending = action()
         user.logout()

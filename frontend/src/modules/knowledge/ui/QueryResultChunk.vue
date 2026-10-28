@@ -113,6 +113,21 @@ const scoreLabel = computed(
 .result-item.selected {
   border-color: var(--main-color);
 }
+
+:global(:root.dark .query-section .result-item) {
+  background: var(--gray-25);
+  border-color: transparent;
+}
+
+:global(:root.dark .query-section .result-item.selected) {
+  background: var(--gray-50);
+  box-shadow: inset 3px 0 0 var(--main-color);
+}
+
+:global(:root.dark .query-section .result-header),
+:global(:root.dark .query-section .result-metadata) {
+  border-color: transparent;
+}
 .result-open {
   display: flex;
   align-items: baseline;

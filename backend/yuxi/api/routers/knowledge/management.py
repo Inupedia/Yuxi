@@ -296,6 +296,12 @@ async def get_graph_build_status(kb_id: str, current_user: User = Depends(requir
         raise HTTPException(status_code=500, detail=f"获取图谱构建状态失败: {e}")
 
 
+@knowledge.get("/knowledge-bases/{kb_id}/graph-build/files/{file_id}/status")
+async def get_file_graph_build_status(kb_id: str, file_id: str, current_user: User = Depends(require_knowledge_base_read)):
+    """读取单文件待构建图谱的分块数。"""
+    return await graph_build.get_file_graph_build_status(kb_id, file_id)
+
+
 @knowledge.post("/knowledge-bases/{kb_id}/graph-build/config")
 async def configure_graph_build(
     kb_id: str,
@@ -324,11 +330,18 @@ async def configure_graph_build(
 @knowledge.post("/knowledge-bases/{kb_id}/graph-build/index")
 async def index_graph_build(
     kb_id: str,
+    data: dict | None = Body(default=None),
     current_user: User = Depends(require_knowledge_base_manage),
 ):
     """提交图谱向量索引构建任务。"""
     try:
-        job = await graph_build.start_graph_build(kb_id)
+        if data is not None and "file_id" in data:
+            file_id = data["file_id"]
+            if not isinstance(file_id, str) or not file_id.strip():
+                raise ValueError("file_id 必须是非空字符串")
+            job = await graph_build.start_graph_build(kb_id, file_id=file_id)
+        else:
+            job = await graph_build.start_graph_build(kb_id)
         return {"message": "图谱构建任务已提交", "status": "queued", "job_id": job.id}
     except (HTTPException, DomainError):
         raise

@@ -106,7 +106,7 @@ export const documentApi = {
 
   searchDocuments: async (kbId, params = {}) => {
     const query = buildQuery(params)
-    return apiAdminGet(
+    return apiGet(
       `/api/knowledge/knowledge-bases/${kbId}/documents/search${query ? `?${query}` : ''}`
     )
   },
@@ -179,7 +179,7 @@ export const documentApi = {
    * @returns {Promise} - 文档基本信息
    */
   getDocumentBasicInfo: async (kbId, docId) => {
-    return apiAdminGet(`/api/knowledge/knowledge-bases/${kbId}/documents/${docId}/basic`)
+    return apiGet(`/api/knowledge/knowledge-bases/${kbId}/documents/${docId}/basic`)
   },
 
   /**
@@ -299,6 +299,10 @@ export const graphBuildApi = {
     return apiAdminGet(graphBuildUrl(kbId, 'status'))
   },
 
+  getFileStatus: async (kbId, fileId) => {
+    return apiGet(`${graphBuildUrl(kbId, 'files')}/${encodeURIComponent(fileId)}/status`)
+  },
+
   getFailedChunks: async (kbId, limit = 10) => {
     return apiAdminGet(`${graphBuildUrl(kbId, 'failed-chunks')}?limit=${limit}`)
   },
@@ -307,8 +311,8 @@ export const graphBuildApi = {
     return apiAdminPost(graphBuildUrl(kbId, 'config'), data)
   },
 
-  startIndex: async (kbId) => {
-    return apiAdminPost(graphBuildUrl(kbId, 'index'), {})
+  startIndex: async (kbId, fileId = null) => {
+    return apiAdminPost(graphBuildUrl(kbId, 'index'), fileId ? { file_id: fileId } : {})
   },
 
   reset: async (kbId, data) => {

@@ -124,6 +124,7 @@
             ref="fileTableRef"
             :readonly="!canManageKnowledgeBase"
             @search="fileSearchModalVisible = true"
+            @view-graph="viewFileGraph"
           />
         </div>
       </template>
@@ -144,6 +145,8 @@
             :visible="true"
             :active="activeTab === 'graph'"
             :readonly="!canManageKnowledgeBase"
+            :file-id="graphFileId"
+            @file-change="handleGraphFileChange"
             @toggle-visible="() => {}"
           />
         </div>
@@ -431,6 +434,20 @@ const handleActiveTabChange = (tab) => {
   if (route.query.section !== tab) {
     router.replace({ query: { ...route.query, section: tab } })
   }
+}
+
+const graphFileId = computed(() =>
+  typeof route.query.file_id === 'string' ? route.query.file_id : null
+)
+
+/** 通过路由保存图谱文件范围，支持刷新和返回。 */
+const handleGraphFileChange = (fileId) => {
+  router.replace({ query: { ...route.query, file_id: fileId || undefined } })
+}
+
+/** 进入文件图谱，由图谱页展示当前结果和可用操作。 */
+const viewFileGraph = (file) => {
+  router.push({ query: { ...route.query, section: 'graph', file_id: file.file_id } })
 }
 
 const refreshingStatistics = ref(false)

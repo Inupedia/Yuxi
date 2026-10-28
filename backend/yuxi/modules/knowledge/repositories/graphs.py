@@ -6,18 +6,20 @@ from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import case, delete, exists, func, or_, select, update
+from sqlalchemy import case, delete, exists, func, literal, or_, select, union_all, update
 from sqlalchemy.dialects.postgresql import insert
 
 from yuxi.infrastructure.postgres.manager import pg_manager
 from yuxi.modules.knowledge.models import (
     KnowledgeChunk,
+    KnowledgeFile,
     KnowledgeGraphEntity,
     KnowledgeGraphEntityMention,
     KnowledgeGraphTriple,
     KnowledgeGraphTripleMention,
 )
 from yuxi.modules.knowledge.repositories.chunks import KnowledgeChunkRepository
+from yuxi.modules.knowledge.repositories.projections import acquire_knowledge_projection_lock
 
 
 class KnowledgeGraphRepository:
@@ -30,6 +32,85 @@ class KnowledgeGraphRepository:
     VECTOR_MAX_ATTEMPTS = 3
 
     # ─── 构建状态读取与统计 ────────────────────────────────────────
+
+    @asynccontextmanager
+    async def file_graph_snapshot(self, kb_id: str, file_id: str):
+        """锁定文件代次，并以同一 SQL 快照读取结构分块及实体、三元组来源。"""
+        async with pg_manager.get_async_session_context() as session:
+            # 与构建、清理保持投影锁在前、文件行锁在后的顺序，且不额外占用连接。
+            await acquire_knowledge_projection_lock(session, kb_id, shared=True)
+            file = await session.scalar(
+                select(KnowledgeFile)
+                .where(KnowledgeFile.kb_id == kb_id, KnowledgeFile.file_id == file_id, KnowledgeFile.deleted_at.is_(None))
+                .with_for_update(read=True)
+            )
+            if not file or file.is_folder:
+                yield None
+                return
+            queries = []
+            for kind, model, id_column in (
+                ("entity", KnowledgeGraphEntityMention, KnowledgeGraphEntityMention.entity_id),
+                ("triple", KnowledgeGraphTripleMention, KnowledgeGraphTripleMention.triple_id),
+            ):
+                queries.append(
+                    select(literal(kind), id_column, model.chunk_id)
+                    .join(KnowledgeChunk, KnowledgeChunk.chunk_id == model.chunk_id)
+                    .where(model.kb_id == kb_id, model.file_id == file_id, KnowledgeChunkRepository.visible_scope())
+                )
+            queries.append(
+                select(literal("chunk"), KnowledgeChunk.chunk_id, KnowledgeChunk.chunk_id).where(
+                    KnowledgeChunk.kb_id == kb_id,
+                    KnowledgeChunk.file_id == file_id,
+                    KnowledgeChunk.graph_structure_indexed.is_(True),
+                    KnowledgeChunkRepository.visible_scope(),
+                )
+            )
+            entity_mentions, triple_mentions = [], []
+            chunk_ids = set()
+            for kind, identifier, chunk_id in await session.execute(union_all(*queries)):
+                if kind == "chunk":
+                    chunk_ids.add(chunk_id)
+                    continue
+                target = entity_mentions if kind == "entity" else triple_mentions
+                target.append({"id": identifier, "chunk_id": chunk_id})
+                chunk_ids.add(chunk_id)
+            yield entity_mentions, triple_mentions, list(chunk_ids)
+
+    @asynccontextmanager
+    async def file_build_scope(self, kb_id: str, file_id: str, generation: int):
+        """持有投影锁和文件读锁，防止构建期间文件代次切换。"""
+        async with pg_manager.get_async_session_context() as session:
+            await acquire_knowledge_projection_lock(session, kb_id, shared=True)
+            file = await session.scalar(
+                select(KnowledgeFile)
+                .where(KnowledgeFile.kb_id == kb_id, KnowledgeFile.file_id == file_id, KnowledgeFile.deleted_at.is_(None))
+                .with_for_update(read=True)
+            )
+            if file is None or file.is_folder or file.active_generation != generation:
+                raise ValueError("文件不存在、不可构建或文件代次已改变")
+            count = await session.scalar(
+                select(func.count())
+                .select_from(KnowledgeChunk)
+                .where(KnowledgeChunk.kb_id == kb_id, KnowledgeChunk.file_id == file_id, KnowledgeChunk.generation == generation)
+            )
+            if not count:
+                raise ValueError("文件当前没有可构建的分块")
+            yield
+
+    @staticmethod
+    def _vector_file_scope(model, file_id: str | None):
+        """按当前文件分块的提及定位共享实体或三元组。"""
+        if file_id is None:
+            return True
+        mention = KnowledgeGraphEntityMention if model is KnowledgeGraphEntity else KnowledgeGraphTripleMention
+        record_id = model.entity_id if model is KnowledgeGraphEntity else model.triple_id
+        mention_id = mention.entity_id if model is KnowledgeGraphEntity else mention.triple_id
+        return exists().where(
+            mention_id == record_id,
+            mention.file_id == file_id,
+            KnowledgeChunk.chunk_id == mention.chunk_id,
+            KnowledgeChunkRepository.visible_scope(),
+        )
 
     async def visible_graph_ids(self, kb_id: str, chunk_ids: list[str], entity_ids: list[str]) -> tuple[set[str], set[str]]:
         """图谱响应仅保留仍有 active 文件依据的节点和边。"""
@@ -66,7 +147,7 @@ class KnowledgeGraphRepository:
             )
             return int(entity_count or 0), int(triple_count or 0)
 
-    async def count_vector_statuses_by_kb_id(self, kb_id: str) -> dict[str, int]:
+    async def count_vector_statuses_by_kb_id(self, kb_id: str, *, file_id: str | None = None) -> dict[str, int]:
         """统计实体与三元组的向量状态计数，键覆盖全部已知状态。"""
         # 预置四个已知状态键让调用方可直接索引；未知状态经 get 容错累计，不因缺键失败。
         counts = {"pending": 0, "processing": 0, "indexed": 0, "failed": 0}
@@ -74,7 +155,9 @@ class KnowledgeGraphRepository:
             for model in (KnowledgeGraphEntity, KnowledgeGraphTriple):
                 rows = (
                     await session.execute(
-                        select(model.vector_status, func.count()).where(model.kb_id == kb_id).group_by(model.vector_status)
+                        select(model.vector_status, func.count())
+                        .where(model.kb_id == kb_id, self._vector_file_scope(model, file_id))
+                        .group_by(model.vector_status)
                     )
                 ).all()
                 for status, count in rows:
@@ -165,6 +248,7 @@ class KnowledgeGraphRepository:
         record_type: str,
         limit: int,
         lease_seconds: int,
+        file_id: str | None = None,
     ) -> tuple[str, list[dict[str, Any]]]:
         """按租约认领一批待向量化记录，返回锁 token 与向量化载荷。"""
         model, id_field = self._vector_model(record_type)
@@ -181,7 +265,7 @@ class KnowledgeGraphRepository:
                 (
                     await session.execute(
                         select(model)
-                        .where(model.kb_id == kb_id, claimable)
+                        .where(model.kb_id == kb_id, claimable, self._vector_file_scope(model, file_id))
                         .order_by(model.id.asc())
                         .limit(max(limit, 1))
                         .with_for_update(skip_locked=True)
@@ -258,7 +342,7 @@ class KnowledgeGraphRepository:
                 )
             )
 
-    async def finalize_graph_indexed_chunks(self, kb_id: str) -> int:
+    async def finalize_graph_indexed_chunks(self, kb_id: str, *, file_id: str | None = None) -> int:
         """把结构已写入且关联向量全部 indexed 的 chunk 推进为 graph_indexed。"""
         # 收尾条件经提及表关联：任一提及该 chunk 的实体或三元组仍未 indexed，chunk 就不能进入终态。
         entity_not_indexed = exists().where(
@@ -276,6 +360,8 @@ class KnowledgeGraphRepository:
                 update(KnowledgeChunk)
                 .where(
                     KnowledgeChunk.kb_id == kb_id,
+                    KnowledgeChunkRepository.visible_scope(),
+                    *([KnowledgeChunk.file_id == file_id] if file_id is not None else []),
                     KnowledgeChunk.graph_structure_indexed.is_(True),
                     KnowledgeChunk.graph_indexed.is_not(True),
                     ~entity_not_indexed,
@@ -284,6 +370,26 @@ class KnowledgeGraphRepository:
                 .values(graph_indexed=True)
             )
             return int(result.rowcount or 0)
+
+    async def retry_failed_file_vectors(self, kb_id: str, file_id: str) -> int:
+        """重试当前文件提及的失败向量，共享记录也按文件来源纳入。"""
+        total = 0
+        async with pg_manager.get_async_session_context() as session:
+            for model in (KnowledgeGraphEntity, KnowledgeGraphTriple):
+                result = await session.execute(
+                    update(model)
+                    .where(model.kb_id == kb_id, model.vector_status == "failed", self._vector_file_scope(model, file_id))
+                    .values(
+                        vector_status="pending",
+                        vector_attempt_count=0,
+                        vector_last_error=None,
+                        vector_next_retry_at=None,
+                        vector_locked_until=None,
+                        vector_lock_token=None,
+                    )
+                )
+                total += int(result.rowcount or 0)
+        return total
 
     # ─── 清理：向量对账重置与文件/知识库级删除 ─────────────────────
 

@@ -435,7 +435,7 @@ defineExpose({
   flex-direction: column;
   gap: 12px;
   padding: 12px 16px 8px;
-  border-radius: 12px;
+  border-radius: 16px;
   border: 1px solid var(--gray-200);
   background-color: var(--gray-0);
   box-shadow: 0 1px 3px var(--shadow-1);
@@ -469,6 +469,44 @@ defineExpose({
       color: var(--gray-500);
     }
   }
+}
+
+:global(:root.dark .query-section .search-input-wrapper) {
+  background: var(--gray-30);
+  border-color: transparent;
+  box-shadow: none;
+  transition: background-color 0.15s ease;
+}
+
+:global(:root.dark .query-section .search-input-wrapper:hover) {
+  background: var(--gray-40);
+  border-color: transparent;
+  box-shadow: none;
+}
+
+:global(:root.dark .query-section .search-input-wrapper:focus-within) {
+  background: var(--gray-50);
+}
+
+:global(:root.dark .query-section .search-input-wrapper .ant-input) {
+  background: transparent;
+}
+
+:global(:root.dark .query-section .search-button.ant-btn-icon-only) {
+  background: var(--gray-1000);
+  border-color: transparent;
+  color: var(--bg-page);
+  box-shadow: none;
+  transform: none;
+}
+
+:global(:root.dark .query-section .search-button.ant-btn-icon-only:hover:not(:disabled)) {
+  background: var(--gray-800);
+}
+
+:global(:root.dark .query-section .search-button.ant-btn-icon-only:focus-visible) {
+  outline: 2px solid var(--gray-400);
+  outline-offset: 3px;
 }
 
 .search-actions {

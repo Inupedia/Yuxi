@@ -13,50 +13,68 @@
       </div>
 
       <div class="header-controls">
-        <!-- 字符数/片段数显示在 segment 左边 -->
+        <!-- 字符数/片段数显示在视图选择器左边 -->
         <span v-if="viewInfoText" class="view-info expanded-controls">{{ viewInfoText }}</span>
 
-        <!-- 视图模式切换 -->
-        <div class="view-controls expanded-controls" v-if="file && viewModeOptions.length > 1">
-          <a-segmented v-model:value="viewMode" :options="viewModeOptions" />
-        </div>
-
-        <!-- 下载按钮下拉菜单 -->
-        <a-dropdown trigger="click" v-if="file" overlay-class-name="knowledge-file-actions">
-          <a-button type="default" class="download-btn expanded-controls" title="下载" aria-label="下载">
-            <Download :size="16" />
-            <ChevronDown :size="14" />
+        <!-- 文件视图与下载操作 -->
+        <a-dropdown
+          v-if="file"
+          v-model:open="fileActionsOpen"
+          :trigger="['click']"
+          overlay-class-name="knowledge-file-actions"
+        >
+          <a-button
+            ref="fileActionsTrigger"
+            class="view-controls expanded-controls"
+            :aria-label="currentViewOption ? `文件操作，当前视图为${currentViewOption.title}` : '文件操作'"
+            @keydown.esc="closeFileActions($event, false)"
+          >
+            <component :is="currentViewOption?.icon || FileText" :size="16" aria-hidden="true" />
+            <span>{{ currentViewOption?.title || '文件操作' }}</span>
+            <ChevronDown :size="14" aria-hidden="true" />
           </a-button>
           <template #overlay>
-            <a-menu @click="handleDownloadMenuClick">
-              <a-menu-item key="original" :disabled="!file.file_id">
-                <template #icon><Download :size="16" /></template>
+            <a-menu :selected-keys="[viewMode]" @click="finishFileAction($event, false)" @keydown.esc="closeFileActions($event, false)">
+              <a-menu-item
+                v-for="option in viewModeOptions"
+                :key="option.value"
+                @click="viewMode = option.value"
+              >
+                <template #icon><component :is="option.icon" :size="16" aria-hidden="true" /></template>
+                {{ option.title }}
+              </a-menu-item>
+              <a-menu-divider v-if="viewModeOptions.length" />
+              <a-menu-item key="download-original" :disabled="!file.file_id" @click="handleDownloadMenuClick({ key: 'original' })">
+                <template #icon><Download :size="16" aria-hidden="true" /></template>
                 下载原文
               </a-menu-item>
-              <a-menu-item key="markdown" :disabled="contentState.loading || !mergedContent">
-                <template #icon><FileText :size="16" /></template>
+              <a-menu-item key="download-markdown" :disabled="contentState.loading || !mergedContent" @click="handleDownloadMenuClick({ key: 'markdown' })">
+                <template #icon><FileText :size="16" aria-hidden="true" /></template>
                 下载 Markdown
               </a-menu-item>
             </a-menu>
           </template>
         </a-dropdown>
 
-        <a-dropdown v-if="file" :trigger="['click']" overlay-class-name="knowledge-file-actions">
+        <a-dropdown v-if="file" v-model:open="compactActionsOpen" :trigger="['click']" overlay-class-name="knowledge-file-actions">
           <a-button
+            ref="compactActionsTrigger"
             type="text"
             class="compact-controls"
             title="更多文件操作"
             aria-label="更多文件操作"
+            @keydown.esc="closeFileActions($event, true)"
           >
             <MoreHorizontal :size="18" />
           </a-button>
           <template #overlay>
-            <a-menu :selected-keys="[viewMode]">
+            <a-menu :selected-keys="[viewMode]" @click="finishFileAction($event, true)" @keydown.esc="closeFileActions($event, true)">
               <a-menu-item
                 v-for="option in viewModeOptions"
                 :key="option.value"
                 @click="viewMode = option.value"
               >
+                <template #icon><component :is="option.icon" :size="16" aria-hidden="true" /></template>
                 {{ option.title }}
               </a-menu-item>
               <a-menu-divider v-if="viewModeOptions.length" />
@@ -65,6 +83,7 @@
                 :disabled="!file.file_id"
                 @click="handleDownloadMenuClick({ key: 'original' })"
               >
+                <template #icon><Download :size="16" aria-hidden="true" /></template>
                 下载原文
               </a-menu-item>
               <a-menu-item
@@ -72,6 +91,7 @@
                 :disabled="contentState.loading || !mergedContent"
                 @click="handleDownloadMenuClick({ key: 'markdown' })"
               >
+                <template #icon><FileText :size="16" aria-hidden="true" /></template>
                 下载 Markdown
               </a-menu-item>
             </a-menu>
@@ -175,7 +195,7 @@
 </template>
 
 <script setup>
-import { computed, h, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { message, Modal } from 'ant-design-vue'
 import { documentApi } from '@/apis/knowledge_api'
 import { getWorkspaceKnowledgeFileContent } from '@/apis/workspace_api'
@@ -234,6 +254,27 @@ const containerProps = computed(() =>
 )
 
 const file = ref(null)
+const fileActionsOpen = ref(false)
+const compactActionsOpen = ref(false)
+const fileActionsTrigger = ref(null)
+const compactActionsTrigger = ref(null)
+/** 关闭文件菜单并将键盘焦点还给入口。 */
+const closeFileActions = (event, compact) => {
+  if (!(compact ? compactActionsOpen.value : fileActionsOpen.value)) return
+  event.preventDefault()
+  event.stopPropagation()
+  if (compact) compactActionsOpen.value = false
+  else fileActionsOpen.value = false
+  nextTick(() => (compact ? compactActionsTrigger.value : fileActionsTrigger.value)?.$el?.focus())
+}
+/** 完成菜单操作后仅为键盘操作恢复入口焦点。 */
+const finishFileAction = ({ domEvent }, compact) => {
+  if (compact) compactActionsOpen.value = false
+  else fileActionsOpen.value = false
+  if (domEvent?.type === 'keydown') {
+    nextTick(() => (compact ? compactActionsTrigger.value : fileActionsTrigger.value)?.$el?.focus())
+  }
+}
 const basicLoading = ref(false)
 const detailError = ref('')
 const downloadingOriginal = ref(false)
@@ -406,29 +447,16 @@ const availableViewModes = computed(() => {
 })
 const hasAvailableView = computed(() => availableViewModes.value.length > 0)
 
-const makeViewModeOption = (label, value, icon) => ({
-  label: h(
-    'span',
-    {
-      class: 'view-option-icon',
-      title: label,
-      'aria-label': label
-    },
-    [h(icon, { size: 15 })]
-  ),
-  value,
-  title: label
-})
-
 const viewModeOptions = computed(() => {
   const optionMap = {
-    source: makeViewModeOption('源文件', 'source', FileSearch),
-    markdown: makeViewModeOption('Markdown 预览', 'markdown', FileText),
-    'markdown-source': makeViewModeOption('Markdown 源码', 'markdown-source', Code2),
-    chunks: makeViewModeOption('Chunks', 'chunks', Rows3)
+    source: { title: '源文件', value: 'source', icon: FileSearch },
+    markdown: { title: 'Markdown 预览', value: 'markdown', icon: FileText },
+    'markdown-source': { title: 'Markdown 源码', value: 'markdown-source', icon: Code2 },
+    chunks: { title: 'Chunks', value: 'chunks', icon: Rows3 }
   }
   return availableViewModes.value.map((mode) => optionMap[mode])
 })
+const currentViewOption = computed(() => viewModeOptions.value.find((option) => option.value === viewMode.value))
 
 const loadBasicInfo = async () => {
   const kbId = String(props.kbId || '')
@@ -514,6 +542,8 @@ const loadParsedContent = async () => {
 watch(
   () => [props.open, props.kbId, props.fileId],
   ([open]) => {
+    fileActionsOpen.value = false
+    compactActionsOpen.value = false
     if (!open) {
       resetLocalState()
       return
@@ -763,7 +793,7 @@ onBeforeUnmount(resetLocalState)
 }
 .modal-title-wrapper {
   flex-shrink: 0;
-  padding: 12px 16px;
+  padding: 6px 16px;
   border-bottom: 1px solid var(--gray-150);
 }
 
@@ -869,6 +899,7 @@ onBeforeUnmount(resetLocalState)
   -webkit-line-clamp: 4;
   -webkit-box-orient: vertical;
 }
+
 </style>
 
 <style lang="less">
@@ -960,25 +991,6 @@ onBeforeUnmount(resetLocalState)
   }
 }
 
-/* 下载按钮样式 */
-.download-btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: auto;
-  min-width: 48px;
-  padding: 0 10px;
-  height: 28px;
-  line-height: 1;
-  border-radius: 6px;
-  gap: 4px;
-
-  svg {
-    flex: 0 0 auto;
-    vertical-align: middle;
-  }
-}
-
 /* 自定义关闭按钮 */
 .custom-close-btn {
   display: flex;
@@ -1002,35 +1014,9 @@ onBeforeUnmount(resetLocalState)
 
 /* 视图切换控件 */
 .view-controls {
-  display: flex;
-  align-items: center;
   flex: 0 0 auto;
-
-  .ant-segmented {
-    padding: 2px;
-  }
-
-  .ant-segmented-item {
-    min-width: 30px;
-  }
-
-  .ant-segmented-item-label {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    height: 24px;
-    min-height: 24px;
-    padding: 0 7px;
-    line-height: 24px;
-  }
-}
-
-.view-option-icon {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 16px;
-  height: 16px;
+  height: 28px;
+  padding: 0 10px;
 }
 
 .view-info {
@@ -1050,6 +1036,10 @@ onBeforeUnmount(resetLocalState)
     color: var(--gray-800);
   }
 
+  .ant-dropdown-menu-item-divider {
+    background: var(--gray-200);
+  }
+
   .ant-dropdown-menu-item:hover,
   .ant-dropdown-menu-item-active {
     background: var(--gray-50);
@@ -1066,6 +1056,58 @@ onBeforeUnmount(resetLocalState)
   .ant-dropdown-menu-item-disabled:hover {
     background: transparent;
     color: var(--gray-400);
+  }
+}
+
+.dark {
+  .file-detail-embedded {
+    background: var(--gray-25);
+    border-color: var(--gray-150);
+  }
+
+  .file-detail .ant-modal-content {
+    background: var(--gray-10);
+  }
+
+  .file-detail .modal-title-wrapper,
+  .file-detail-embedded .modal-title-wrapper {
+    background: var(--gray-30);
+    border-bottom-color: var(--gray-150);
+  }
+
+  .file-detail .file-detail-content,
+  .file-detail-embedded .file-detail-content {
+    background: var(--gray-25);
+  }
+
+  .file-detail .chunk-card,
+  .file-detail-embedded .chunk-card {
+    background: var(--gray-40);
+    border-color: transparent;
+
+    &:hover {
+      background: var(--gray-50);
+      box-shadow: none;
+    }
+  }
+
+  .file-detail .view-controls,
+  .file-detail-embedded .view-controls {
+    background: var(--gray-50);
+    border-color: transparent;
+
+    &:hover {
+      background: var(--gray-100);
+    }
+  }
+
+  .ant-dropdown.knowledge-file-actions .ant-dropdown-menu {
+    background: var(--gray-30);
+    border-color: var(--gray-200);
+
+    .ant-dropdown-menu-item-divider {
+      background: var(--gray-300);
+    }
   }
 }
 

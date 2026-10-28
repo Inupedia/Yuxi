@@ -71,6 +71,10 @@
                 </div>
               </div>
 
+              <div v-else-if="searchError" class="file-search-error" role="alert">
+                <p>搜索文件失败，请稍后重试。</p>
+                <button type="button" class="file-search-retry" @click="handleSearch">重试</button>
+              </div>
               <div v-else class="file-search-empty">未找到匹配的文件</div>
             </template>
 
@@ -107,6 +111,7 @@ const results = ref([])
 const loading = ref(false)
 const hasSearched = ref(false)
 const hasMore = ref(false)
+const searchError = ref(false)
 
 const resetState = () => {
   searchToken++
@@ -115,6 +120,7 @@ const resetState = () => {
   loading.value = false
   hasSearched.value = false
   hasMore.value = false
+  searchError.value = false
 }
 
 const close = () => emit('update:open', false)
@@ -132,6 +138,9 @@ const handleSearch = async () => {
   const token = ++searchToken
   loading.value = true
   hasSearched.value = true
+  searchError.value = false
+  results.value = []
+  hasMore.value = false
   try {
     const response = await documentApi.searchDocuments(props.kbId, {
       query,
@@ -144,6 +153,7 @@ const handleSearch = async () => {
   } catch (error) {
     if (token !== searchToken) return
     console.warn('搜索文件失败:', error)
+    searchError.value = true
     results.value = []
     hasMore.value = false
   } finally {
@@ -416,11 +426,26 @@ watch(
 }
 
 .file-search-empty,
-.file-search-hint {
+.file-search-hint,
+.file-search-error {
   padding: 48px 16px;
   color: var(--gray-500);
   font-size: 14px;
   text-align: center;
+}
+
+.file-search-retry {
+  padding: 5px 14px;
+  border: 1px solid var(--gray-150);
+  border-radius: 6px;
+  background: var(--gray-0);
+  color: var(--main-color);
+  cursor: pointer;
+
+  &:hover,
+  &:focus-visible {
+    border-color: var(--main-color);
+  }
 }
 
 .file-search-loading-more {

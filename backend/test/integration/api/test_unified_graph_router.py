@@ -35,6 +35,18 @@ async def test_graph_routes_require_auth(test_client):
     assert response.status_code == 401
 
 
+async def test_file_subgraph_requires_auth(test_client):
+    response = await test_client.get("/api/graph/subgraph", params={"kb_id": "missing", "file_id": "missing"})
+    assert response.status_code == 401
+
+
+async def test_standard_user_cannot_read_file_subgraph(test_client, standard_user):
+    response = await test_client.get(
+        "/api/graph/subgraph", params={"kb_id": "missing", "file_id": "missing"}, headers=standard_user["headers"]
+    )
+    assert response.status_code == 403
+
+
 async def test_standard_user_cannot_access_graph_endpoints(test_client, standard_user):
     response = await test_client.get("/api/graph/list", headers=standard_user["headers"])
     assert response.status_code == 403

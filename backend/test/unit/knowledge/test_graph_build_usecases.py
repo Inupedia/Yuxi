@@ -81,3 +81,35 @@ async def test_registration_race_still_rejects_without_executing(graph_boundary,
         {"kb_id": "kb", "action": "build"} if action == "build" else {"kb_id": "kb", "action": "reconcile", "reconcile_mode": "all_vectors"}
     )
     execution.reset.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    "file, chunk_count, error",
+    [
+        (None, 1, ResourceNotFoundError),
+        (SimpleNamespace(kb_id="other", is_folder=False), 1, ResourceNotFoundError),
+        (SimpleNamespace(kb_id="kb", is_folder=True), 1, InvalidOperationError),
+        (SimpleNamespace(kb_id="kb", is_folder=False, active_generation=2), 0, InvalidOperationError),
+    ],
+)
+async def test_file_build_rejects_invalid_target(graph_boundary, monkeypatch, file, chunk_count, error):
+    """跨库、目录和没有当前分块的文件不得登记任务。"""
+    files = SimpleNamespace(get_by_file_id=AsyncMock(return_value=file))
+    chunks = SimpleNamespace(count_by_file_id=AsyncMock(return_value=chunk_count))
+    monkeypatch.setattr(graph_build, "KnowledgeFileRepository", lambda: files)
+    monkeypatch.setattr(graph_build, "KnowledgeChunkRepository", lambda: chunks)
+    with pytest.raises(error):
+        await graph_build.start_graph_build("kb", file_id="file")
+    graph_boundary[3].assert_not_awaited()
+
+
+async def test_file_build_records_generation_and_keeps_kb_mutex(graph_boundary, monkeypatch):
+    """作业持久化范围，互斥仍以整个知识库为单位。"""
+    files = SimpleNamespace(get_by_file_id=AsyncMock(return_value=SimpleNamespace(kb_id="kb", is_folder=False, active_generation=3)))
+    chunks = SimpleNamespace(count_by_file_id=AsyncMock(return_value=2))
+    monkeypatch.setattr(graph_build, "KnowledgeFileRepository", lambda: files)
+    monkeypatch.setattr(graph_build, "KnowledgeChunkRepository", lambda: chunks)
+    await graph_build.start_graph_build("kb", file_id="file")
+    kwargs = graph_boundary[3].await_args.kwargs
+    assert kwargs["payload"] == {"kb_id": "kb", "action": "build", "file_id": "file", "generation": 3}
+    assert kwargs["payload_match"] == {"kb_id": "kb"}

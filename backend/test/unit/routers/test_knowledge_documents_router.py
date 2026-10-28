@@ -1,5 +1,6 @@
 from io import BytesIO
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 from fastapi import HTTPException, UploadFile
@@ -558,3 +559,15 @@ async def test_parse_pending_documents_uses_params(monkeypatch):
     assert captured["payload"]["params"] == params
     assert captured["updated"] == [{"kb_id": "kb_1", "file_id": "file_pending_1", "params": params, "operator_id": "uid-user"}]
     assert captured["parsed"] == [{"kb_id": "kb_1", "file_id": "file_pending_1", "operator_id": "uid-user"}]
+
+
+@pytest.mark.parametrize(
+    "scope", [{"file_id": "file"}, {"generation": 2}, {"file_id": "", "generation": 2}, {"file_id": "file", "generation": True}]
+)
+async def test_graph_worker_rejects_incomplete_file_scope(monkeypatch, scope):
+    """不完整的持久任务不能退回全库构建。"""
+    service = SimpleNamespace(build_pending_chunks=AsyncMock())
+    monkeypatch.setattr(knowledge_job_service, "KnowledgeGraphService", lambda: service)
+    with pytest.raises(ValueError, match="范围无效"):
+        await knowledge_job_service.run_knowledge_graph(FakeBackgroundJobContext({"kb_id": "kb", **scope}))
+    service.build_pending_chunks.assert_not_awaited()

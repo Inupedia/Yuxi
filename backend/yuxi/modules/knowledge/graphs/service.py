@@ -38,6 +38,7 @@ from yuxi.modules.knowledge.repositories.graphs import KnowledgeGraphRepository
 from yuxi.modules.knowledge.repositories.projections import knowledge_projection_lock
 from yuxi.modules.knowledge.storage.offload import run_milvus_query_io, run_neo4j_query_io
 from yuxi.shared.datetime import utc_isoformat
+from yuxi.shared.errors import ResourceNotFoundError
 
 GRAPH_CONFIG_KEY = "graph_build_config"
 GRAPH_TASK_TYPE = "knowledge_graph_index"
@@ -196,20 +197,30 @@ class KnowledgeGraphService:
 
     # ─── 图谱构建：抽取 → 结构写入 → 向量索引 ─────────────────────
 
-    async def build_pending_chunks(self, kb_id: str, *, context=None) -> dict[str, Any]:
-        """图谱写入和索引共用投影锁，删除不能越过未完成写入。"""
+    async def build_pending_chunks(
+        self, kb_id: str, *, file_id: str | None = None, generation: int | None = None, context=None
+    ) -> dict[str, Any]:
+        """图谱写入期间固定投影和目标文件代次。"""
+        if file_id is not None:
+            if not file_id or not isinstance(generation, int) or isinstance(generation, bool) or generation < 1:
+                raise ValueError("文件图谱任务缺少有效的文件代次")
+            async with self.graph_repo.file_build_scope(kb_id, file_id, generation):
+                return await self._build_pending_chunks(kb_id, file_id=file_id, context=context)
+        if generation is not None:
+            raise ValueError("文件代次必须与文件 ID 一起指定")
         async with knowledge_projection_lock(kb_id, shared=True):
             return await self._build_pending_chunks(kb_id, context=context)
 
-    async def _build_pending_chunks(self, kb_id: str, *, context=None) -> dict[str, Any]:
+    async def _build_pending_chunks(self, kb_id: str, *, file_id: str | None = None, context=None) -> dict[str, Any]:
         """按现有流水线构建当前可见 Chunk 的图谱。"""
         kb = await self._get_milvus_kb(kb_id)
         config = self._get_locked_config(kb.additional_params or {})
         extractor_options = self._runtime_extractor_options(config)
         extractor = GraphExtractorFactory.create(config["extractor_type"], extractor_options)
         worker_count = self._get_worker_count(config)
-        total_pending = await self.chunk_repo.count_graph_pending_by_kb_id(kb_id)
-        initially_indexed = await self.chunk_repo.count_graph_indexed_by_kb_id(kb_id)
+        scope = {"file_id": file_id} if file_id is not None else {}
+        total_pending = await self.chunk_repo.count_graph_pending_by_kb_id(kb_id, **scope)
+        initially_indexed = await self.chunk_repo.count_graph_indexed_by_kb_id(kb_id, **scope)
         processed = 0
         extraction_failed = 0
         write_failed = 0
@@ -310,6 +321,7 @@ class KnowledgeGraphService:
                 record_type=record_type,
                 limit=GRAPH_VECTOR_BATCH_SIZE,
                 lease_seconds=GRAPH_VECTOR_LEASE_SECONDS,
+                **scope,
             )
             if not records:
                 return 0
@@ -362,13 +374,13 @@ class KnowledgeGraphService:
                 entity_count, triple_count = counts
                 if entity_count or triple_count:
                     # 本轮处理过记录：先把已达成两阶段的 chunk 推进到 graph_indexed，再继续捞取
-                    await self.graph_repo.finalize_graph_indexed_chunks(kb_id)
+                    await self.graph_repo.finalize_graph_indexed_chunks(kb_id, **scope)
                     continue
 
                 # 无可认领记录：结构全部写完且向量不再有 pending/processing 才能收尾
-                vector_counts = await self.graph_repo.count_vector_statuses_by_kb_id(kb_id)
+                vector_counts = await self.graph_repo.count_vector_statuses_by_kb_id(kb_id, **scope)
                 if structure_done.is_set() and not vector_counts["pending"] and not vector_counts["processing"]:
-                    await self.graph_repo.finalize_graph_indexed_chunks(kb_id)
+                    await self.graph_repo.finalize_graph_indexed_chunks(kb_id, **scope)
                     return
                 # 等写入侧唤醒；1s 超时兜底，轮询重新认领租约过期的记录
                 vector_wakeup.clear()
@@ -388,7 +400,7 @@ class KnowledgeGraphService:
 
                 elapsed = max(time.monotonic() - started_at, 0.001)
                 extraction_rate = extraction_completed / elapsed
-                vector_counts = await self.graph_repo.count_vector_statuses_by_kb_id(kb_id)
+                vector_counts = await self.graph_repo.count_vector_statuses_by_kb_id(kb_id, **scope)
                 message = (
                     f"图谱构建：抽取 {extraction_completed}/{total_pending} "
                     f"(活跃 {active_extractions}/{worker_count})，写入 {write_completed}/{total_pending}，"
@@ -401,7 +413,7 @@ class KnowledgeGraphService:
                     # 进度权重：抽取 40 + 结构写入 20 + 向量完成 35，起点与终点各预留 5
                     extraction_progress = extraction_completed / max(total_pending, 1) * 40.0
                     structure_progress = write_completed / max(total_pending, 1) * 20.0
-                    indexed_chunks = await self.chunk_repo.count_graph_indexed_by_kb_id(kb_id)
+                    indexed_chunks = await self.chunk_repo.count_graph_indexed_by_kb_id(kb_id, **scope)
                     newly_indexed = max(indexed_chunks - initially_indexed, 0)
                     vector_progress = newly_indexed / max(total_pending, 1) * 35.0
                     await context.set_progress(5.0 + min(extraction_progress + structure_progress + vector_progress, 95.0), message)
@@ -424,6 +436,7 @@ class KnowledgeGraphService:
                     kb_id,
                     fetch_size,
                     after_id=after_id,
+                    **scope,
                 )
                 if not chunks:
                     break
@@ -446,6 +459,9 @@ class KnowledgeGraphService:
             await asyncio.gather(*extraction_workers)
             await put_queue_item(write_queue, None)
             await writer_task
+            # 抽取可能首次关联其他文件已有的失败共享向量，结构写完后才能完整识别目标范围。
+            if file_id is not None:
+                await self.graph_repo.retry_failed_file_vectors(kb_id, file_id)
             structure_done.set()
             vector_wakeup.set()
             await vector_task
@@ -458,9 +474,9 @@ class KnowledgeGraphService:
             reporter_stop.set()
             await asyncio.gather(reporter_task, return_exceptions=True)
 
-        remaining = await self.chunk_repo.count_graph_pending_by_kb_id(kb_id)
-        extraction_counts = await self.chunk_repo.count_graph_extraction_statuses_by_kb_id(kb_id)
-        vector_counts = await self.graph_repo.count_vector_statuses_by_kb_id(kb_id)
+        remaining = await self.chunk_repo.count_graph_pending_by_kb_id(kb_id, **scope)
+        extraction_counts = await self.chunk_repo.count_graph_extraction_statuses_by_kb_id(kb_id, **scope)
+        vector_counts = await self.graph_repo.count_vector_statuses_by_kb_id(kb_id, **scope)
         logger.info(
             f"图谱构建结束 kb_id={kb_id} success={processed} extraction_failed={extraction_failed} "
             f"write_failed={write_failed} remaining={remaining} "
@@ -476,9 +492,10 @@ class KnowledgeGraphService:
             "remaining": remaining,
             "vector_failed": vector_counts["failed"],
         }
-        if incomplete or write_failed or vector_counts["failed"]:
+        if incomplete or write_failed or vector_counts["failed"] or (file_id is not None and extraction_counts["failed"]):
             raise RuntimeError(
-                f"图谱构建执行异常：chunk_incomplete={incomplete}, write_failed={write_failed}, vector_failed={vector_counts['failed']}"
+                f"图谱构建执行异常：chunk_incomplete={incomplete}, extraction_failed={extraction_counts['failed']}, "
+                f"write_failed={write_failed}, vector_failed={vector_counts['failed']}"
             )
         return result
 
@@ -668,12 +685,44 @@ class KnowledgeGraphService:
         max_depth: int = 1,
         max_nodes: int = 50,
         exclude_chunk: bool = False,
+        file_id: str | None = None,
     ) -> dict[str, Any]:
         effective_kb_id = kb_id or self.kb_id
         if not effective_kb_id:
             return {"nodes": [], "edges": []}
 
         label = safe_neo4j_label(effective_kb_id)
+        if file_id is not None:
+            # 同一事务持有投影锁与文件行锁，直到图读取完成。
+            async with self.graph_repo.file_graph_snapshot(effective_kb_id, file_id) as snapshot:
+                if snapshot is None:
+                    raise ResourceNotFoundError("文件不存在")
+                entity_mentions, triple_mentions, chunk_ids = snapshot
+                if not entity_mentions and (exclude_chunk or not chunk_ids):
+                    return {"nodes": [], "edges": []}
+                result = await run_neo4j_query_io(
+                    self._query_file_nodes_sync,
+                    effective_kb_id,
+                    label,
+                    keyword,
+                    max_nodes,
+                    max_depth,
+                    exclude_chunk,
+                    entity_mentions,
+                    triple_mentions,
+                    chunk_ids,
+                )
+                mention_pairs = {(m["id"], m["chunk_id"]) for m in entity_mentions}
+                for node in result["nodes"]:
+                    properties = node["properties"]
+                    if properties.get("entity_id") and (properties["entity_id"], properties.get("source_chunk_id")) not in mention_pairs:
+                        node["properties"] = {
+                            key: properties[key] for key in ("entity_id", "normalized_name", "label", "kb_id") if key in properties
+                        }
+                        node["name"] = properties.get("normalized_name", node["name"])
+                        node["normalized"]["name"] = node["name"]
+                return result
+
         limit = max_nodes
         try:
             result = await run_neo4j_query_io(
@@ -689,6 +738,65 @@ class KnowledgeGraphService:
         except Exception as e:
             logger.error(f"Milvus graph query failed: {e}")
             return {"nodes": [], "edges": []}
+
+    def _query_file_nodes_sync(
+        self,
+        kb_id: str,
+        label: str,
+        keyword: str,
+        limit: int,
+        max_depth: int,
+        exclude_chunk: bool,
+        entity_mentions: list[dict[str, str]],
+        triple_mentions: list[dict[str, str]],
+        chunk_ids: list[str],
+    ) -> dict[str, Any]:
+        """先按 PG 来源约束 Neo4j 路径，再限制结果数量。"""
+        entity_ids = list({m["id"] for m in entity_mentions})
+        node_scope = "(node.entity_id IN $entity_ids OR node.chunk_id IN $chunk_ids)"
+        if exclude_chunk:
+            node_scope = "node.entity_id IN $entity_ids"
+        seed_scope = node_scope.replace("node.", "n.")
+        keyword_scope = "true"
+        if keyword and keyword != "*":
+            keyword_scope = """(
+                toLower(CASE WHEN n.entity_id IS NOT NULL AND NOT any(mention IN $entity_mentions WHERE
+                    mention.id = n.entity_id AND mention.chunk_id = n.source_chunk_id)
+                    THEN coalesce(n.normalized_name, '') ELSE coalesce(n.name, '') END) CONTAINS toLower($keyword)
+                OR toLower(coalesce(n.content_preview, '')) CONTAINS toLower($keyword)
+                OR toLower(coalesce(n.chunk_id, '')) CONTAINS toLower($keyword))"""
+        depth = min(max(max_depth, 1), 3)
+        query = f"""
+        MATCH (n:MilvusKB:`{label}`)
+        WHERE {seed_scope} AND {keyword_scope}
+        WITH n LIMIT $limit
+        WITH collect(n) AS seeds
+        UNWIND seeds AS seed
+        OPTIONAL MATCH p = (seed)-[*1..{depth}]-(m:MilvusKB:`{label}`)
+        WHERE all(node IN nodes(p) WHERE node:MilvusKB AND node:`{label}` AND {node_scope})
+          AND all(rel IN relationships(p) WHERE
+            (type(rel) = 'MENTIONS' AND any(mention IN $entity_mentions WHERE
+                mention.id = endNode(rel).entity_id AND mention.chunk_id = rel.chunk_id
+                AND startNode(rel).chunk_id = rel.chunk_id))
+            OR (type(rel) = 'RELATION' AND any(mention IN $triple_mentions WHERE
+                mention.id = rel.triple_id AND mention.chunk_id = rel.chunk_id)))
+        WITH seeds, p LIMIT $path_limit
+        WITH seeds, collect(p) AS paths
+        RETURN seeds + reduce(path_nodes = [], path IN paths | path_nodes + nodes(path)) AS nodes,
+               reduce(path_edges = [], path IN paths | path_edges + relationships(path)) AS edges
+        """
+        with self.driver.session() as session:
+            record = session.run(
+                query,
+                keyword=keyword,
+                limit=limit,
+                path_limit=max(limit, 1) * 10,
+                entity_ids=entity_ids,
+                chunk_ids=chunk_ids,
+                entity_mentions=entity_mentions,
+                triple_mentions=triple_mentions,
+            ).single()
+            return self._process_subgraph_record(record, limit, kb_id) if record else {"nodes": [], "edges": []}
 
     def _query_nodes_sync(
         self,
