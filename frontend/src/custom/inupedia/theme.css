@@ -284,7 +284,6 @@ html.inupedia-theme .app-layout .header .brand-avatar {
 
 /* 开源项目入口由公司品牌层统一隐藏，避免直接改动上游组件。 */
 html.inupedia-theme .app-layout .github,
-html.inupedia-theme .settings-star-card,
 html.inupedia-theme .help-link-btn,
 html.inupedia-theme .benchmark-help-text {
   display: none !important;
