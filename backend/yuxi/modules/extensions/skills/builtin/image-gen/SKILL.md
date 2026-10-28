@@ -1,6 +1,6 @@
 ---
 name: image-gen
-description: "在 Agent 沙盒中生成并保存图片。当用户要求生成图片、海报、插画、文生图，或指定 Qwen-Image、其它兼容图片生成接口时使用此技能。"
+description: "在 Agent 沙盒中生成并保存图片。当用户明确指定 Qwen-Image、SiliconFlow 或其它兼容图片接口时使用。常规图片生成使用 minimax-media 内置 MiniMax 能力。"
 version: "2026.06.02"
 tool_dependencies: ["present_artifacts"]
 skill_dependencies: ["chat-widgets"]
@@ -8,11 +8,11 @@ skill_dependencies: ["chat-widgets"]
 
 # 图片生成技能
 
-当用户要求生成图片、海报、插画、文生图，或明确提到 Qwen-Image 时，使用此技能组织图片生成流程。
+当用户明确指定 Qwen-Image、SiliconFlow 或其他兼容图片接口时，使用此技能组织图片生成流程。普通图片生成默认使用 `minimax-media` 内置能力。
 
-## 默认生成接口
+## 指定 SiliconFlow 时的接口
 
-默认使用 SiliconFlow 的 Qwen-Image 接口：
+用户指定 SiliconFlow 或 Qwen-Image 时，使用 Qwen-Image 接口：
 
 - Endpoint: `POST https://api.siliconflow.cn/v1/images/generations`
 - Model: `Qwen/Qwen-Image`
@@ -26,7 +26,7 @@ skill_dependencies: ["chat-widgets"]
 ## 操作流程
 
 1. 明确用户要生成的图片内容、风格、尺寸或约束；信息不足但不影响生成时，使用合理默认值，不要反复追问。
-2. 使用可用的执行工具在沙盒中运行脚本，调用图片生成接口，传入用户需求整理后的 `prompt`，并按需传入 `negative_prompt`、`num_inference_steps`、`guidance_scale`。
+2. 仅当用户指定 SiliconFlow 或 Qwen-Image 时，使用沙盒执行工具调用接口；传入整理后的 `prompt`，并按需传入 `negative_prompt`、`num_inference_steps`、`guidance_scale`。
 3. 从生成接口响应中读取图片地址，默认路径为 `images[0].url`。
 4. 在同一个沙盒脚本中用 `Authorization: Bearer $SILICONFLOW_API_KEY` 下载该图片地址；如果接口直接返回 base64，则直接解码保存。
 5. 根据用户要求和项目结构，将最终图片保存到当前 Workdir 中合适的位置。

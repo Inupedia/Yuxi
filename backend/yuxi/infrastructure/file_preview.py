@@ -51,6 +51,7 @@ _TEXT_EXTENSIONS = frozenset(
     }
 )
 _IMAGE_EXTENSIONS = frozenset({".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".svg"})
+_VIDEO_EXTENSIONS = frozenset({".mp4", ".m4v", ".mov", ".webm"})
 _BINARY_SIGNATURES = (
     b"\x7fELF",
     b"MZ",
@@ -69,7 +70,7 @@ _BINARY_SIGNATURES = (
 def prepare_file_preview(path: str, raw_content: bytes) -> PreviewResult:
     """把文件字节准备为文本或二进制预览结果。"""
     preview_type, supported, message = detect_preview_type(path, raw_content)
-    if preview_type in {"image", "pdf"}:
+    if preview_type in {"image", "pdf", "video"}:
         return PreviewResult(
             content=raw_content,
             preview_type=preview_type,
@@ -106,6 +107,8 @@ def detect_preview_type(path: str, raw_content: bytes) -> tuple[str, bool, str |
 
     if suffix in _IMAGE_EXTENSIONS or (mime_type and mime_type.startswith("image/")):
         return "image", True, None
+    if suffix in _VIDEO_EXTENSIONS or (mime_type and mime_type.startswith("video/")):
+        return "video", True, None
     if suffix in _PDF_EXTENSIONS or mime_type == "application/pdf" or head.startswith(b"%PDF-"):
         return "pdf", True, None
     if suffix in _MARKDOWN_EXTENSIONS:

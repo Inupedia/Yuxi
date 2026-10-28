@@ -221,6 +221,13 @@
           <img :src="file.previewUrl" :alt="filePath" class="image-preview" />
         </div>
       </template>
+      <template v-else-if="file?.previewType === 'video' && file?.previewUrl">
+        <div class="video-preview-wrapper">
+          <video :src="file.previewUrl" class="video-preview" controls playsinline preload="metadata">
+            当前浏览器不支持播放此视频。
+          </video>
+        </div>
+      </template>
       <template v-else-if="file?.previewType === 'pdf' && file?.previewUrl">
         <PdfPreview :url="file.previewUrl" class="pdf-preview" />
       </template>
@@ -337,6 +344,13 @@
             <template v-else-if="file?.previewType === 'image' && file?.previewUrl">
               <div class="image-preview-wrapper fullscreen-image-preview-wrapper">
                 <img :src="file.previewUrl" :alt="filePath" class="image-preview" />
+              </div>
+            </template>
+            <template v-else-if="file?.previewType === 'video' && file?.previewUrl">
+              <div class="video-preview-wrapper fullscreen-video-preview-wrapper">
+                <video :src="file.previewUrl" class="video-preview" controls playsinline preload="metadata">
+                  当前浏览器不支持播放此视频。
+                </video>
               </div>
             </template>
             <template v-else-if="file?.previewType === 'pdf' && file?.previewUrl">
@@ -1059,6 +1073,22 @@ onUnmounted(() => {
   border-radius: 6px;
 }
 
+.video-preview-wrapper {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  width: 100%;
+  min-height: 240px;
+}
+
+.video-preview {
+  display: block;
+  width: min(100%, 1100px);
+  max-height: calc(80vh - 32px);
+  border-radius: 6px;
+  background: var(--gray-0);
+}
+
 .pdf-preview {
   display: block;
   width: 100%;
@@ -1190,6 +1220,10 @@ onUnmounted(() => {
   align-items: center;
 }
 
+.fullscreen-video-preview-wrapper {
+  min-height: calc(100vh - 48px);
+}
+
 .fullscreen-embed-preview {
   height: 100vh; // 全屏时填满视口
   min-height: 100vh; // 确保全屏时不塌陷
@@ -1205,6 +1239,11 @@ onUnmounted(() => {
 }
 
 .fullscreen-file-content .image-preview {
+  max-height: calc(100vh - 48px);
+}
+
+.fullscreen-file-content .video-preview {
+  width: min(100%, 1600px);
   max-height: calc(100vh - 48px);
 }
 </style>

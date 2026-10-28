@@ -8,7 +8,10 @@ import {
   shouldPollAgentPanelFilesystem,
   upsertAgentPanelSection
 } from '../../src/modules/session/model/agentPanelSections.js'
-import { normalizePreviewResponse } from '../../src/shared/lib/file_preview.js'
+import {
+  getPreviewTypeByContentType,
+  normalizePreviewResponse
+} from '../../src/shared/lib/file_preview.js'
 
 test('同一子线程重复打开时更新已有 Section 而不新增', () => {
   const section = { key: 'session:thread-1', type: 'session', threadId: 'thread-1', title: '研究员' }
@@ -90,6 +93,21 @@ test('normalizePreviewResponse 不支持格式时标记 status 为 unsupported',
 
   assert.equal(parsed.status, 'unsupported')
   assert.equal(parsed.supported, false)
+})
+
+test('MP4 artifact 响应进入可播放视频预览', async () => {
+  const binaryResponse = new Response(new Uint8Array([0, 0, 0, 24]), {
+    headers: { 'content-type': 'video/mp4' }
+  })
+
+  const parsed = await normalizePreviewResponse(binaryResponse, {
+    path: '/outputs/minimax/videos/generated.mp4'
+  })
+
+  assert.equal(getPreviewTypeByContentType('video/mp4'), 'video')
+  assert.equal(parsed.previewType, 'video')
+  assert.equal(parsed.status, 'ready')
+  assert.equal(parsed.supported, true)
 })
 
 test('暂停队列仍有请求时禁用上下文压缩', () => {

@@ -1,12 +1,12 @@
 """内置定义发现与失败边界。"""
 
-from importlib import invalidate_caches
 import sys
+from importlib import invalidate_caches
 
 import pytest
 
-from yuxi.modules.agents.runtime import agent_backends
 from yuxi.modules.agents import presets
+from yuxi.modules.agents.runtime import agent_backends
 from yuxi.modules.agents.runtime.agent_backends.chatbot.graph import ChatbotAgent
 from yuxi.modules.extensions.skills import shared as skill_service
 
@@ -42,7 +42,8 @@ def test_new_preset_file_is_discovered_without_registry(tmp_path, monkeypatch):
     monkeypatch.setattr(presets, "__file__", str(tmp_path / "__init__.py"))
     monkeypatch.setattr(presets, "__path__", [str(tmp_path)])
     (tmp_path / "test_new_role.py").write_text(
-        'from yuxi.modules.agents.presets import AgentPreset\nPRESET = AgentPreset(slug="new-role", name="新增角色", description="测试发现")\n'
+        "from yuxi.modules.agents.presets import AgentPreset\n"
+        'PRESET = AgentPreset(slug="new-role", name="新增角色", description="测试发现")\n'
     )
     invalidate_caches()
     found = presets.discover_agent_presets()
@@ -140,6 +141,7 @@ async def test_each_graph_uses_its_own_run_context(monkeypatch, backend_id):
     from importlib import import_module
     from types import SimpleNamespace
     from unittest.mock import AsyncMock
+
     from langchain_core.language_models.fake_chat_models import FakeListChatModel
 
     backend = agent_backends.get_agent_backend(backend_id)
@@ -180,6 +182,7 @@ async def test_reused_prepared_context_refreshes_skills_before_each_graph(monkey
     from unittest.mock import AsyncMock
 
     from langchain_core.language_models.fake_chat_models import FakeListChatModel
+
     from yuxi.modules.extensions.skills import runtime as skill_runtime
 
     source = tmp_path / "source.md"
@@ -225,7 +228,14 @@ async def test_reused_prepared_context_refreshes_skills_before_each_graph(monkey
 def test_shipping_skills_keep_required_dependencies():
     """默认知识能力及研究依赖不能因发现重组缺失。"""
     found = {spec["slug"]: spec for spec in skill_service.list_builtin_skill_specs()}
-    assert set(found) == {"image-gen", "deep-research", "knowledge-base", "mysql-reporter", "chat-widgets"}
+    assert set(found) == {
+        "image-gen",
+        "deep-research",
+        "knowledge-base",
+        "mysql-reporter",
+        "chat-widgets",
+        "minimax-media",
+    }
     assert found["knowledge-base"]["tool_dependencies"] == []
     assert found["knowledge-base"]["mcp_dependencies"] == ["knowledge"]
     assert found["deep-research"]["skill_dependencies"] == []

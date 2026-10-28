@@ -62,6 +62,17 @@ def test_prepare_file_preview_returns_complete_binary_result_from_signature():
     assert result.filename == "report.bin"
 
 
+def test_prepare_file_preview_returns_playable_video_bytes():
+    content = b"\x00\x00\x00\x18ftypmp42video"
+
+    result = prepare_file_preview("generated.mp4", content)
+
+    assert result.content == content
+    assert result.preview_type == "video"
+    assert result.supported is True
+    assert result.media_type == "video/mp4"
+
+
 def test_prepare_file_preview_keeps_unsupported_binary_content_hidden():
     result = prepare_file_preview("archive.bin", b"\x00binary")
 

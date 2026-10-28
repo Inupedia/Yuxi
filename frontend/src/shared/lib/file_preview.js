@@ -11,6 +11,7 @@ const IMAGE_EXTENSIONS = new Set([
   '.svg'
 ])
 const PDF_EXTENSIONS = new Set(['.pdf'])
+const VIDEO_EXTENSIONS = new Set(['.mp4', '.m4v', '.mov', '.webm'])
 const HTML_EXTENSIONS = new Set(['.html', '.htm'])
 const OFFICE_EXTENSIONS = new Set(['.docx', '.pptx'])
 const TEXT_EXTENSIONS = new Set([
@@ -131,6 +132,7 @@ export const isMarkdownPreview = (path, previewType) => {
 export const getPreviewTypeByPath = (path) => {
   const extension = getPreviewFileExtension(path)
   if (IMAGE_EXTENSIONS.has(extension)) return 'image'
+  if (VIDEO_EXTENSIONS.has(extension)) return 'video'
   if (PDF_EXTENSIONS.has(extension)) return 'pdf'
   if (MARKDOWN_EXTENSIONS.has(extension)) return 'markdown'
   if (HTML_EXTENSIONS.has(extension)) return 'html'
@@ -148,6 +150,7 @@ export const getPreviewTypeByContentType = (contentType) => {
   const normalized = String(contentType || '').toLowerCase()
   if (normalized.includes('application/pdf')) return 'pdf'
   if (normalized.startsWith('image/')) return 'image'
+  if (normalized.startsWith('video/')) return 'video'
   if (normalized.includes('text/markdown')) return 'markdown'
   if (normalized.includes('text/html')) return 'html'
   if (normalized.startsWith('text/')) return 'text'
