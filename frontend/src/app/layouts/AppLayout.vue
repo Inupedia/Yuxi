@@ -139,7 +139,7 @@ const sessionRouteCache = createSessionRouteCache(router)
 onUnmounted(sessionRouteCache.dispose)
 
 const activeJobCount = computed(() => activeCountRef.value || 0)
-const productName = computed(() => infoStore.branding.name || 'Yuxi')
+const productName = computed(() => infoStore.branding.name || 'Inupedia')
 
 // 下面是导航菜单部分，添加智能体项
 const mainList = computed(() => {

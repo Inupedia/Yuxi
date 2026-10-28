@@ -307,7 +307,7 @@ const loginBgImage = computed(() => {
 const brandLogo = computed(() => {
   return infoStore.branding.logo || ''
 })
-const brandName = computed(() => infoStore.branding.name?.trim() || 'Yuxi')
+const brandName = computed(() => infoStore.branding.name?.trim() || 'Inupedia')
 const userAgreementUrl = computed(() => {
   return infoStore.footer?.user_agreement_url?.trim() || ''
 })

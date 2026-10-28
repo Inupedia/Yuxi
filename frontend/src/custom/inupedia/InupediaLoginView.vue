@@ -318,13 +318,13 @@ const agentStore = useAgentStore()
 
 // 品牌展示数据
 const loginBgImage = computed(() => {
-  return infoStore.branding.login_bg || '/login-bg.jpg'
+  return infoStore.branding.login_bg || '/brand-waterlines.svg'
 })
 const brandLogo = computed(() => {
-  return infoStore.branding.logo || ''
+  return infoStore.branding.logo || '/inupedia-logo.svg'
 })
 const brandOrgName = computed(() => infoStore.infoConfig.organization?.name?.trim() || '四川省引大济岷水资源开发有限公司')
-const brandName = computed(() => infoStore.branding.name?.trim() || '引大济岷')
+const brandName = computed(() => infoStore.branding.name?.trim() || 'Inupedia')
 const userAgreementUrl = computed(() => {
   return infoStore.footer?.user_agreement_url?.trim() || ''
 })

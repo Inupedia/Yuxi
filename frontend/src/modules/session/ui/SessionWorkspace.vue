@@ -885,8 +885,8 @@ const promotingInputIds = reactive(new Set())
 let sendCooldownTimer = null
 // 预设的打招呼文本
 const greetingMessages = [
-  '语析，析万物之语',
-  '语析，与知识对话',
+  'Inupedia，与你一起探索工程知识',
+  'Inupedia，和知识对话',
   '答案藏在知识里，我来找',
   '与知识对话，与答案相遇',
   '你负责提问，我负责寻找'

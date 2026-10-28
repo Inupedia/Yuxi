@@ -39,7 +39,7 @@ export function installInupediaBrand({ router, infoStore }) {
   }
 
   infoStore.loadInfoConfig().then((config) => {
-    const brandName = config?.branding?.name?.trim() || '引大济岷'
+    const brandName = config?.branding?.name?.trim() || 'Inupedia'
     const brandTitle = config?.branding?.title?.trim()
     document.title = brandTitle ? `${brandName} - ${brandTitle}` : brandName
 

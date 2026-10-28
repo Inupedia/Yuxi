@@ -17,7 +17,7 @@
       <header class="site-header page-width">
         <div class="brand">
           <img :src="infoStore.branding.logo" alt="" width="32" height="32" />
-          <span>{{ infoStore.branding.name }}</span>
+          <span>{{ infoStore.branding.name || 'Inupedia' }}</span>
         </div>
         <nav class="header-actions" aria-label="首页导航">
           <a class="header-docs" :href="docsUrl" target="_blank" rel="noopener noreferrer"

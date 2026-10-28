@@ -35,7 +35,7 @@ const sessionTrigger = ref(null)
 const sessionSearchOpen = ref(false)
 const isAgentView = computed(() => ['AgentComp', 'AgentCompWithThreadId'].includes(route.name))
 const activeSessionThreadId = computed(() => (isAgentView.value ? currentThreadId.value : null))
-const productName = computed(() => infoStore.branding.name || 'Yuxi')
+const productName = computed(() => infoStore.branding.name || 'Inupedia')
 const visible = computed(() =>
   props.panel ? props.active && (sessionsPinned.value || sessionPeekOpen.value) : props.visible
 )
