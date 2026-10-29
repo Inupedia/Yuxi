@@ -13,6 +13,15 @@ import { canSelectFile, isProcessingFile } from '@/modules/knowledge/model/knowl
 const AUTO_REFRESH_POLL_INTERVAL_MS = 10000
 const AUTO_REFRESH_MAX_INTERVAL_MS = 30000
 const AUTO_REFRESH_STALE_POLLS_LIMIT = 6
+// 提交解析/入库后、worker 领取前的宽限轮数：uploaded 文件等待领取时处理计数为 0，
+// 若立即停止轮询，列表会停在"等待领取"直到用户手动刷新。宽限有界，僵尸状态不会无限轮询。
+const AUTO_REFRESH_SUBMISSION_GRACE_POLLS = 12
+
+/** 消耗一次提交宽限：仅当存在等待 worker 领取的 uploaded 文件且宽限未耗尽时继续轮询。 */
+export function consumeSubmissionGrace({ hasUploadedWaiting, gracePolls }) {
+  if (!hasUploadedWaiting || gracePolls <= 0) return { continuePolling: false, gracePolls }
+  return { continuePolling: true, gracePolls: gracePolls - 1 }
+}
 
 export const useKnowledgeBaseStore = defineStore('knowledgeBase', () => {
   const router = useRouter()
@@ -60,6 +69,7 @@ export const useKnowledgeBaseStore = defineStore('knowledgeBase', () => {
   let refreshGeneration = 0
   let refreshStablePolls = 0
   let refreshIntervalMs = AUTO_REFRESH_POLL_INTERVAL_MS
+  let refreshSubmissionGracePolls = 0
   let refreshLastProcessingCount = null
   let fileBrowserContextId = 0
   let infoRequestId = 0
@@ -170,7 +180,8 @@ export const useKnowledgeBaseStore = defineStore('knowledgeBase', () => {
         files: keepFileSnapshot ? currentFiles : data?.files || currentFiles,
         ...(keepFileSnapshot ? { stats: current.stats, row_count: current.row_count } : {})
       }
-      ensureAutoRefreshForProcessing(knowledgeBase.value.files, knowledgeBase.value.stats)
+      // 元信息响应可能不含 files；只据此开启，不能当作"无活动"停止或消耗宽限。
+      ensureAutoRefreshForProcessing(knowledgeBase.value.files, knowledgeBase.value.stats, Boolean(data?.files))
 
       // Only load query parameters if explicitly requested or if not loaded yet
       if (!skipQueryParams && queryParams.value.length === 0) {
@@ -339,7 +350,7 @@ export const useKnowledgeBaseStore = defineStore('knowledgeBase', () => {
     }
   }
 
-  function ensureAutoRefreshForProcessing(filesMap, stats = null) {
+  function ensureAutoRefreshForProcessing(filesMap, stats = null, hasFileSignal = true) {
     if (Number(stats?.processing_count || 0) > 0) {
       enableAutoRefresh('auto')
       return true
@@ -349,7 +360,17 @@ export const useKnowledgeBaseStore = defineStore('knowledgeBase', () => {
     const hasPending = files.some((file) => isProcessingFile(file))
     if (hasPending) {
       enableAutoRefresh('auto')
-    } else if (autoRefreshSource === 'auto' && state.autoRefresh) {
+    } else if (hasFileSignal && autoRefreshSource === 'auto' && state.autoRefresh) {
+      // 领取间隙内用有界宽限继续轮询；宽限耗尽按僵尸状态停止。
+      const grace = consumeSubmissionGrace({
+        hasUploadedWaiting: files.some((file) => file.status === 'uploaded'),
+        gracePolls: refreshSubmissionGracePolls
+      })
+      refreshSubmissionGracePolls = grace.gracePolls
+      if (grace.continuePolling) {
+        enableAutoRefresh('auto')
+        return true
+      }
       state.autoRefresh = false
       autoRefreshSource = null
       autoRefreshManualOverride = false
@@ -568,6 +589,7 @@ export const useKnowledgeBaseStore = defineStore('knowledgeBase', () => {
         message.error(data.message || '提交失败')
         return false
       }
+      refreshSubmissionGracePolls = AUTO_REFRESH_SUBMISSION_GRACE_POLLS
       enableAutoRefresh('auto')
       message.success(data.message || successMessage)
       if (data.job_id) {
@@ -662,6 +684,17 @@ export const useKnowledgeBaseStore = defineStore('knowledgeBase', () => {
     }
     refreshLastProcessingCount = processingCount
 
+    if (
+      refreshStablePolls >= AUTO_REFRESH_STALE_POLLS_LIMIT &&
+      documentFiles.value.some((file) => file.status === 'uploaded') &&
+      refreshSubmissionGracePolls > 0
+    ) {
+      // 等待领取期间处理计数本就稳定：消耗提交宽限而不是按僵尸状态停止。
+      refreshSubmissionGracePolls -= 1
+      scheduleAutoRefresh()
+      return
+    }
+
     if (refreshStablePolls >= AUTO_REFRESH_STALE_POLLS_LIMIT) {
       state.autoRefresh = false
       autoRefreshSource = null
@@ -706,6 +739,8 @@ export const useKnowledgeBaseStore = defineStore('knowledgeBase', () => {
     if (nextState) {
       autoRefreshSource = 'manual'
       autoRefreshManualOverride = false
+      // 用户手动开启是一轮新观察：不继承上一轮提交的宽限。
+      refreshSubmissionGracePolls = 0
       startAutoRefresh()
     } else {
       autoRefreshManualOverride = true
