@@ -2,7 +2,7 @@
 
 import pytest
 
-from test.support.openai_replay_server import validate_request
+from test.support.openai_replay_server import attachment_contexts, validate_request
 
 
 @pytest.mark.parametrize("mutation", ["none", "drop_input", "reorder", "move_image"])
@@ -62,6 +62,42 @@ def test_replay_checks_each_input_attachment_anchor(marker, context, error):
         "tools": [{"type": "function", "function": {"name": "present_artifacts"}}],
     }
     assert validate_request("Bearer ci-replay-key", body) == error
+
+
+@pytest.mark.timeout(3)
+@pytest.mark.parametrize("kind", ["anchor", "absent"])
+def test_replay_handles_many_unterminated_attachment_tags_with_bounded_work(kind):
+    """大量未闭合标签不能让两个附件检查入口重复扫描整段文本。"""
+    marker = "DETERMINISTIC_ATTACHMENT_ANCHOR:batch-0.txt" if kind == "anchor" else "DETERMINISTIC_ATTACHMENT_ABSENT:batch-1.txt"
+    body = {
+        "model": "deterministic-chat",
+        "stream": True,
+        "messages": [
+            {"role": "system", "content": "# 图片生成技能"},
+            {"role": "user", "content": f"DETERMINISTIC_AGENT_E2E_OK {marker} " + "<attachment_context>" * 25_000},
+        ],
+        "tools": [{"type": "function", "function": {"name": "present_artifacts"}}],
+    }
+    expected = "attachment_anchor_missing" if kind == "anchor" else "future_attachment_in_current_input"
+    assert validate_request("Bearer ci-replay-key", body) == expected
+
+
+@pytest.mark.parametrize(
+    ("content", "expected"),
+    [
+        ("plain", []),
+        ("<attachment_context></attachment_context>", [""]),
+        ("before<attachment_context>one\ntwo</attachment_context>after", ["one\ntwo"]),
+        (
+            "<attachment_context>outer<attachment_context>inner</attachment_context></attachment_context>",
+            ["outer<attachment_context>inner"],
+        ),
+        ("<attachment_context>a</attachment_context><attachment_context>b</attachment_context><attachment_context>c", ["a", "b"]),
+    ],
+)
+def test_replay_attachment_tag_extraction_preserves_protocol_cases(content, expected):
+    """固定空、跨行、嵌套、多段和末段未闭合样本，保持 oracle 内容语义。"""
+    assert attachment_contexts(content) == expected
 
 
 @pytest.mark.parametrize(

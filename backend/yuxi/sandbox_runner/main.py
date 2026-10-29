@@ -137,8 +137,9 @@ def health() -> JSONResponse:
     """健康检查同时证明 Docker、镜像和挂载根可用。"""
     try:
         return JSONResponse(get_manager().health())
-    except Exception as exc:
-        return JSONResponse(status_code=503, content={"ok": False, "error": str(exc)[:300]})
+    except Exception:
+        logger.exception("Sandbox runner health check failed")
+        return JSONResponse(status_code=503, content={"ok": False, "error": "sandbox_unavailable"})
 
 
 @router.get("/v1/health")

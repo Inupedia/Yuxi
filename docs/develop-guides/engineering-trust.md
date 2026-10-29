@@ -59,7 +59,7 @@ python3 -m unittest scripts.ci.test_verify_engineering_contracts
 
 Gate 必须只读、失败可诊断、拥有明确 Owner，并保持有限延迟。每个 PR 的 `ci.yml` 汇总检查按粗粒度选择可复用工作流；未知或共享变更扩大检查，必需结果缺失、失败、取消或意外跳过均拒绝通过。高风险 Agent 主链路使用无外部密钥的 deterministic assembled-path E2E，`real-provider-probe.yml` 手工探针负责外部 provider 校准；两者不能互相冒充。`CI required` 是否阻止合并由 GitHub required 规则决定：仓库接线部署并产生真实检查后才能启用该规则，远端生效须另行验证。选择和报告细节见[测试规范](./testing-guidelines.md)。Workflow、selector、skip 或 expected-output 更新都按生产代码审查；长期 flake、误报、绕过或无 consumer 的 gate 应及时修复或退役，禁止用新增规则掩盖既有缺陷。
 
-[CodeQL 工作流](https://github.com/xerrors/Yuxi/blob/main/.github/workflows/codeql.yml) 在 PR、主分支或开发分支更新、版本 tag、每周计划和手工触发时分析当前源码，分别上传 Python、JavaScript/TypeScript 和 Actions 结果。扫描成功只证明分析和上传完成，告警是否消失必须查看对应提交的安全结果；历史误报按实际数据流和约束解释，不整体关闭安全规则。
+[CodeQL 工作流](https://github.com/xerrors/Yuxi/blob/main/.github/workflows/codeql.yml) 在 PR、主分支或开发分支更新、版本 tag、每周计划和手工触发时分析当前源码，分别上传 Python、JavaScript/TypeScript 和 Actions 结果。扫描成功只证明分析和上传完成。PR 新增结果不等于完整基线；恢复或调整扫描装配时，先用手工触发在交付分支执行完整分析，并回读该提交的全部结果。合并后再核对默认分支的分析提交和未关闭告警；误报按实际数据流和约束逐条解释，不整体关闭安全规则。
 
 运行时当前事实属于 `ARCHITECTURE.md`、对应代码 Owner 与测试；本页不复制 readiness、Run 或 checkpoint 契约。相关非显然取舍保存在 [工程决策记录](./decisions/README.md) 的聚焦 implemented records 中，审计时从这些局部 Owner 派生，不维护另一份手工状态表。
 

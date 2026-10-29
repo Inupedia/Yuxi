@@ -48,6 +48,7 @@ uv run --locked --group test pytest \
     test/integration/api/test_error_information_boundary.py \
     test/integration/api/test_dashboard_usage.py \
     test/integration/api/test_scheduled_agent_history.py \
+    test/integration/api/test_sandbox_runner_health.py \
     test/integration/services/test_app_initialization.py \
     test/integration/services/test_schema_migration_version.py \
     test/integration/services/test_agent_input_concurrency.py \
