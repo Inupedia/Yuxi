@@ -1,80 +1,82 @@
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
-import test from 'node:test'
-import { computed, reactive, ref } from 'vue'
-import { widgetFormMessage } from '../../src/shared/lib/chatWidgets.js'
+import test, { before, after, afterEach } from 'node:test'
+import { createRenderer, h, reactive, ssrContextKey } from 'vue'
+import { createTestServer } from '../helpers/createTestServer.js'
+import { mountSessionWorkspace } from '../helpers/sessionWorkspace.js'
 
-const workspace = readFileSync(
-  new URL('../../src/modules/session/ui/SessionWorkspace.vue', import.meta.url),
-  'utf8'
-)
-const renderer = readFileSync(
-  new URL('../../src/shared/ui/WidgetRenderer.vue', import.meta.url),
-  'utf8'
-)
-const node = readFileSync(new URL('../../src/shared/ui/WidgetNode.vue', import.meta.url), 'utf8')
+let server
+let rendererComponent
+let nodeComponent
+const apps = []
+const hostNode = () => ({ children: [], parent: null })
+const renderer = createRenderer({
+  createElement: hostNode, createText: hostNode, createComment: hostNode,
+  insert(child, parent) { child.parent = parent; parent.children.push(child) },
+  remove(child) { const i = child.parent?.children.indexOf(child) ?? -1; if (i >= 0) child.parent.children.splice(i, 1) },
+  setText() {}, setElementText() {}, parentNode: (n) => n.parent, nextSibling: () => null, patchProp() {}
+})
+before(async () => {
+  server = await createTestServer({ server: { middlewareMode: true, hmr: false }, ssr: { noExternal: ['ant-design-vue'] }, plugins: [{
+    name: 'widget-modal-boundary', enforce: 'pre',
+    resolveId(id) { if (id === 'ant-design-vue') return '\0widget-ant' },
+    load(id) { if (id === '\0widget-ant') return 'export const Modal = {}' }
+  }] })
+  rendererComponent = (await server.ssrLoadModule('/src/shared/ui/WidgetRenderer.vue')).default
+  nodeComponent = (await server.ssrLoadModule('/src/shared/ui/WidgetNode.vue')).default
+})
+after(async () => { await server.close() })
+afterEach(() => { for (const app of apps.splice(0)) app.unmount() })
 
-/** 执行真实提交入口，检查表单与编辑器的提交快照互不混用。 */
-function setupSender() {
-  const sent = []
-  const deps = {
-    computed,
-    props: reactive({ sendDisabled: false }),
-    isLoadingMessages: ref(false),
-    isProcessing: ref(false),
-    isWaitingForUserAction: ref(false),
-    sendCooldownActive: ref(false),
-    pendingSends: ref({}),
-    currentChatId: ref('thread'),
-    currentAgent: ref({ id: 'agent' }),
-    agentExecutionAvailable: ref(true),
-    userInput: ref('尚未发送的草稿'),
-    currentPendingThreadAttachments: ref([{ id: 'attachment' }]),
-    currentModelSpec: ref('model'),
-    currentToolApprovalMode: ref('request'),
-    startSendCooldown() {},
-    sessionInput: {
-      async send(thread, draft, options) {
-        sent.push({ thread, draft, options })
-        return true
-      }
-    }
-  }
-  const source = workspace.slice(
-    workspace.indexOf('const widgetActionsDisabled ='),
-    workspace.indexOf('const handleDirectSteer =')
-  )
-  const functions = new Function(
-    ...Object.keys(deps),
-    `${source}; return { handleSendMessage, widgetActionsDisabled }`
-  )(...Object.values(deps))
-  return { ...deps, ...functions, sent }
+/** 挂载完整组件，以真实响应式状态驱动动作。 */
+function setupComponent(component, props, emit = () => {}) {
+  let state
+  const app = renderer.createApp({ setup() { state = component.setup(props, { expose() {}, emit }); return () => h('div') } })
+  app.provide(ssrContextKey, { modules: new Set() })
+  app.mount(hostNode())
+  apps.push(app)
+  return state
 }
 
-test('表单发送独立文本而不带编辑器草稿和附件，普通发送仍带附件', async () => {
-  const view = setupSender()
+/** 装配真实会话，隔离发送网络边界。 */
+async function setupSender(t) {
+  const sent = []
+  const { state, agentStore, runtime } = await mountSessionWorkspace(t, undefined, {
+    threadId: 'thread', stubChildren: true,
+    send: async (thread, draft, options) => { sent.push({ thread, draft, options }); return true }
+  })
+  t.mock.method(agentStore, 'fetchAgentDetail', async () => ({ can_run: true }))
+  await state.refreshSessionAgent('thread', 'agent')
+  state.userInput.value = '尚未发送的草稿'
+  state.draftFilesByThread.value.thread = [{ id: 'attachment' }]
+  return { ...state, sent, agentStore, runtime }
+}
+
+test('表单发送独立文本而不带编辑器草稿和附件，普通发送仍带附件', async (t) => {
+  const view = await setupSender(t)
   assert.equal(await view.handleSendMessage({ text: '目的地：南京', fromWidget: true }), true)
   assert.equal(view.sent[0].draft.text, '目的地：南京')
   assert.deepEqual(view.sent[0].draft.attachments, [])
   assert.deepEqual(view.sent[0].draft.images, [])
   assert.equal(view.userInput.value, '尚未发送的草稿')
   assert.deepEqual(view.currentPendingThreadAttachments.value, [{ id: 'attachment' }])
+  view.sendCooldownActive.value = false
   await view.handleSendMessage()
   assert.equal(view.sent[1].draft.text, '尚未发送的草稿')
   assert.deepEqual(view.sent[1].draft.attachments, [{ id: 'attachment' }])
 })
 
-test('等待回答、接收失败和发送禁用不允许表单重复创建输入', async () => {
-  const view = setupSender()
-  for (const state of [
-    view.isWaitingForUserAction,
-    view.isLoadingMessages,
-    view.sendCooldownActive
+test('等待回答、接收失败和发送禁用不允许表单重复创建输入', async (t) => {
+  const view = await setupSender(t)
+  const threadState = view.getThreadState('thread')
+  for (const setBlocked of [
+    (blocked) => { threadState.turnStatus = blocked ? 'requires_action' : null },
+    (blocked) => { view.isLoadingMessages.value = blocked },
+    (blocked) => { view.sendCooldownActive.value = blocked }
   ]) {
-    state.value = true
+    setBlocked(true)
     assert.equal(view.widgetActionsDisabled.value, true)
     assert.equal(await view.handleSendMessage({ text: '答案', fromWidget: true }), false)
-    state.value = false
+    setBlocked(false)
   }
   view.pendingSends.value.thread = { text: '上一次回答' }
   assert.equal(view.widgetActionsDisabled.value, true)
@@ -82,24 +84,11 @@ test('等待回答、接收失败和发送禁用不允许表单重复创建输�
   assert.deepEqual(view.sent, [])
 })
 
-/** 执行真实反馈处理，只有会话确认接收才显示已发送。 */
+/** 执行完整反馈组件，只有会话确认接收才显示已发送。 */
 function setupFeedback(handler) {
-  const props = reactive({ disabled: false, actionHandler: handler })
-  const values = Object.fromEntries(
-    ['feedback', 'submitting', 'submitted', 'failed'].map((key) => [
-      key,
-      ref(key === 'feedback' ? '' : false)
-    ])
-  )
-  const source = renderer.slice(
-    renderer.indexOf('async function handleAction('),
-    renderer.indexOf('</script>')
-  )
-  const handle = new Function('props', ...Object.keys(values), `${source}; return handleAction`)(
-    props,
-    ...Object.values(values)
-  )
-  return { ...values, props, handle }
+  const props = reactive({ source: '', closed: false, disabled: false, actionHandler: handler })
+  const state = setupComponent(rendererComponent, props)
+  return { ...state, props, handle: state.handleAction }
 }
 
 test('提交中阻止重复操作，接收后显示已发送，错误允许重试', async () => {
@@ -160,34 +149,13 @@ test('合法字段名 reportValidity 遮蔽表单属性时仍使用原生校验�
       children: [{ type: 'Input', name: 'reportValidity', label: '验证结果', required: true }]
     }
   }
-  const formError = ref('')
-  const source = node.slice(node.indexOf('function submitForm('), node.indexOf('/** 提交按钮'))
-  const submit = new Function(
-    'props',
-    'HTMLFormElement',
-    'formError',
-    'widgetFormMessage',
-    'FormData',
-    'emit',
-    `${source}; return submitForm`
-  )(
-    props,
-    {
-      prototype: {
-        reportValidity() {
-          return this.valid
-        }
-      }
-    },
-    formError,
-    widgetFormMessage,
-    class {
-      constructor(form) {
-        return form.entries
-      }
-    },
-    (...action) => actions.push(action)
-  )
+  const originalFormElement = globalThis.HTMLFormElement
+  const originalFormData = globalThis.FormData
+  globalThis.HTMLFormElement = class { reportValidity() { return this.valid } }
+  globalThis.FormData = class { constructor(form) { return form.entries } }
+  try {
+  const state = setupComponent(nodeComponent, reactive(props), (...action) => actions.push(action))
+  const submit = state.submitForm
   const form = {
     reportValidity: { name: 'reportValidity' },
     valid: true,
@@ -203,14 +171,16 @@ test('合法字段名 reportValidity 遮蔽表单属性时仍使用原生校验�
   form.valid = true
   form.entries[0][1] = ' '
   submit({ currentTarget: form })
-  assert.equal(formError.value, '请填写验证结果')
+  assert.equal(state.formError.value, '请填写验证结果')
   assert.equal(actions.length, 1)
+  } finally { globalThis.HTMLFormElement = originalFormElement; globalThis.FormData = originalFormData }
 })
 
 
-test('智能体不可用时，历史 widget 和直接发送均不创建输入', async () => {
-  const view = setupSender()
-  view.agentExecutionAvailable.value = false
+test('智能体不可用时，历史 widget 和直接发送均不创建输入', async (t) => {
+  const view = await setupSender(t)
+  t.mock.method(view.agentStore, 'fetchAgentDetail', async () => ({ can_run: false }))
+  await view.refreshSessionAgent('thread', 'agent')
   assert.equal(view.widgetActionsDisabled.value, true)
   assert.equal(await view.handleSendMessage({ text: '继续', fromWidget: true }), false)
   assert.equal(await view.handleSendMessage(), false)

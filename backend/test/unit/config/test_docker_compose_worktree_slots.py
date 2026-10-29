@@ -162,7 +162,7 @@ def test_cube_worker_runner_uses_installed_dependencies_and_restores_worker(tmp_
     monkeypatch.setenv("PYTEST_EXIT_CODE", str(pytest_exit))
     monkeypatch.setenv("CUBE_TEST_ISOLATED_TOPOLOGY", "1")
     result = subprocess.run(
-        ["bash", str(project_root() / "scripts/test_cube_worker_recovery.sh")], capture_output=True, text=True,
+        ["bash", str(project_root() / "scripts/ci/test_cube_worker_recovery.sh")], capture_output=True, text=True,
     )
     commands = [shlex.split(line) for line in commands_file.read_text().splitlines()]
     [command] = [command for command in commands if "pytest" in command]

@@ -1,81 +1,47 @@
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
-import { after, before, test } from 'node:test'
-import { computed, reactive, ref, toRaw } from 'vue'
-import { createTestServer } from '../helpers/createTestServer.js'
+import test from 'node:test'
+import { nextTick, toRaw } from 'vue'
+import { message } from 'ant-design-vue'
+import { mountSessionWorkspace } from '../helpers/sessionWorkspace.js'
 
-const source = readFileSync(
-  new URL('../../src/modules/session/ui/SessionWorkspace.vue', import.meta.url),
-  'utf8'
-)
-let server, useApproval
-
-before(async () => {
-  server = await createTestServer({ server: { middlewareMode: true, hmr: false } })
-  ;({ useApproval } = await server.ssrLoadModule('/src/modules/session/model/useApproval.js'))
-})
-after(async () => server?.close())
-
-/** 执行组件真实提交入口，允许在请求未返回时推进共享运行状态。 */
-function setupSubmission({ accepted = false } = {}) {
+/** 在真实审批入口控制 Turn 响应和续跑连接。 */
+async function setupSubmission(t, { accepted = false } = {}) {
   const original = {
-    threadId: 'thread',
-    interruptedRunId: 'run-A',
-    waitpointId: 'wait-A',
-    kind: 'question',
-    questions: [{ question_id: 'q-A', question: '旧问题' }]
+    threadId: 'thread', interruptedRunId: 'run-A', waitpointId: 'wait-A',
+    kind: 'question', questions: [{ question_id: 'q-A', question: '旧问题' }]
   }
-  const state = reactive({
-    currentTurnId: 'turn',
-    activeRunId: 'run-A',
-    runStateVersion: 1,
-    turnStatus: 'requires_action',
-    pendingInterrupt: original,
-    approvalSubmitting: false,
-    isStreaming: false,
-    replyLoadingVisible: false
-  })
-  const getThreadState = () => state
-  const approval = useApproval({ getThreadState, fetchThreadMessages() {} })
-  approval.restoreInterruptFromThreadState('thread')
   const errors = []
-  let rejectRequest
+  let rejectRequest, markStreamStarted
+  const streamStarted = new Promise((resolve) => { markStreamStarted = resolve })
   const pending = new Promise((_, reject) => { rejectRequest = reject })
-  const dependencies = {
-    approvalSubmitting: computed(() => state.approvalSubmitting),
-    approvalState: approval.approvalState,
-    getThreadState,
-    message: { error: (error) => errors.push(error) },
-    resumeSessionWaitpoint: () => accepted ? { run_id: 'run-B' } : pending,
-    invalidateAgentStateRequest() {},
-    hideApprovalState: approval.hideApprovalState,
-    resetThreadExecution() {},
-    fetchThreadMessages() {},
-    startRunStream: () => pending,
-    restorePendingInterruptForThread: approval.restoreInterruptFromThreadState,
-    handleChatError: (error) => errors.push(error)
+  t.mock.method(message, 'error', (error) => errors.push(error))
+  const { state: panel, runtime, agentApi } = await mountSessionWorkspace(t, async () => {}, {
+    threadId: 'thread', runtime: { startRunStream: () => { markStreamStarted(); return pending } }
+  })
+  t.mock.method(agentApi, 'getThreadTurn', async () => ({
+    status: 'requires_action', yuxi: { current_run_id: 'run-A', waitpoint: {
+      id: 'wait-A', run_id: 'run-A', questions: original.questions
+    } }
+  }))
+  t.mock.method(agentApi, 'resumeThreadTurn', () => accepted ? { run_id: 'run-B' } : pending)
+  const state = runtime.getThreadState('thread')
+  Object.assign(state, {
+    currentTurnId: 'turn', activeRunId: 'run-A', runStateVersion: 1,
+    turnStatus: 'requires_action', pendingInterrupt: original, approvalSubmitting: false,
+    isStreaming: false, replyLoadingVisible: false
+  })
+  panel.restorePendingInterruptForThread('thread')
+  return {
+    state, approval: { approvalState: panel.approvalState,
+      hideApprovalState: panel.hideApprovalState,
+      restoreInterruptFromThreadState: panel.restorePendingInterruptForThread },
+    submit: panel.handleApprovalWithStream, visible: panel.currentApprovalModalVisible,
+    errors, streamStarted, reject: () => rejectRequest(new Error('延迟失败'))
   }
-  const handler = source.slice(
-    source.indexOf('const handleApprovalWithStream ='),
-    source.indexOf('const handleQuestionSubmit =')
-  )
-  const submit = new Function(
-    ...Object.keys(dependencies),
-    `${handler}; return handleApprovalWithStream`
-  )(...Object.values(dependencies))
-  const visibility = source.slice(
-    source.indexOf('const currentApprovalModalVisible ='),
-    source.indexOf('const currentApprovalQuestions =')
-  )
-  const visible = new Function(
-    'computed', 'approvalState', 'visibleApprovalThreadId', 'currentThreadState',
-    `${visibility}; return currentApprovalModalVisible`
-  )(computed, approval.approvalState, ref('thread'), ref(state))
-  return { state, approval, submit, visible, errors, reject: () => rejectRequest(new Error('延迟失败')) }
 }
 
-test('原审批未变化时提交失败，保留审批并允许重试', async () => {
-  const h = setupSubmission()
+test('原审批未变化时提交失败，保留审批并允许重试', async (t) => {
+  const h = await setupSubmission(t)
   const pendingInterrupt = h.state.pendingInterrupt
   const submitting = h.submit({ 'q-A': '回答' })
   assert.equal(h.state.approvalSubmitting, true)
@@ -85,12 +51,12 @@ test('原审批未变化时提交失败，保留审批并允许重试', async ()
   assert.equal(h.visible.value, true)
   assert.equal(h.state.isStreaming, false)
   assert.equal(h.state.approvalSubmitting, false)
-  assert.equal(h.errors[0].message, '延迟失败')
+  assert.match(String(h.errors[0]), /延迟失败/)
 })
 
 for (const status of ['in_progress', 'completed', 'requires_action']) {
-  test(`旧审批提交失败不能覆盖后续状态：${status}`, async () => {
-    const h = setupSubmission()
+  test(`旧审批提交失败不能覆盖后续状态：${status}`, async (t) => {
+    const h = await setupSubmission(t)
     const submitting = h.submit({ 'q-A': '回答' })
     Object.assign(h.state, {
       activeRunId: status === 'completed' ? null : 'run-B',
@@ -108,17 +74,16 @@ for (const status of ['in_progress', 'completed', 'requires_action']) {
     const expected = structuredClone(toRaw(h.state))
     h.reject()
     await submitting
-    assert.deepEqual({ ...h.state }, { ...expected, approvalSubmitting: false })
+    assert.deepEqual(structuredClone(toRaw(h.state)), { ...expected, approvalSubmitting: false })
     assert.equal(h.visible.value, status === 'requires_action')
     assert.equal(h.approval.approvalState.interruptedRunId, status === 'requires_action' ? 'run-B' : null)
   })
 }
 
-test('审批已接受后续跑连接失败，不能恢复已消费的旧审批', async () => {
-  const h = setupSubmission({ accepted: true })
+test('审批已接受后续跑连接失败，不能恢复已消费的旧审批', async (t) => {
+  const h = await setupSubmission(t, { accepted: true })
   const submitting = h.submit({ 'q-A': '回答' })
-  await Promise.resolve()
-  await Promise.resolve()
+  await h.streamStarted
   assert.equal(h.state.pendingInterrupt, null)
   assert.equal(h.visible.value, false)
   h.reject()
@@ -127,4 +92,5 @@ test('审批已接受后续跑连接失败，不能恢复已消费的旧审批',
   assert.equal(h.visible.value, false)
   assert.equal(h.state.isStreaming, true)
   assert.equal(h.state.approvalSubmitting, false)
+  await nextTick()
 })

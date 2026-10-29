@@ -11,7 +11,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 
 
 class HostedProbeTests(unittest.TestCase):
@@ -30,7 +30,7 @@ class HostedProbeTests(unittest.TestCase):
             env = {**os.environ, "GITHUB_ACTIONS": "true", "RUNNER_ENVIRONMENT": "github-hosted"}
             env.pop("RUNNER_TEMP", None)
             result = subprocess.run(
-                ["bash", str(ROOT / "scripts/ci_prepare_system_tests_env.sh")],
+                ["bash", str(ROOT / "scripts/ci/prepare_system_tests_env.sh")],
                 cwd=root, env=env, capture_output=True, text=True, timeout=5, check=False,
             )
             self.assertNotEqual(result.returncode, 0)
@@ -44,11 +44,11 @@ class HostedProbeTests(unittest.TestCase):
             shim = root / command
             shim.write_text(f"#!/bin/sh\nprintf '%s\\n' called >> '{calls}'\nexit 99\n")
             shim.chmod(0o755)
-        for script in ("ci_probe_kvm.py", "ci_probe_cube_workspace.py", "ci_probe_hosted_cube.sh", "ci_prepare_system_tests_env.sh"):
+        for script in ("probe_kvm.py", "probe_cube_workspace.py", "probe_hosted_cube.sh", "prepare_system_tests_env.sh"):
             for github, runner in (("false", "github-hosted"), ("true", "self-hosted"), ("", "")):
                 with self.subTest(script=script, github=github, runner=runner):
                     result = subprocess.run(
-                        ["bash" if script.endswith(".sh") else sys.executable, str(ROOT / "scripts" / script)],
+                        ["bash" if script.endswith(".sh") else sys.executable, str(ROOT / "scripts/ci" / script)],
                         env={
                             **os.environ, "GITHUB_ACTIONS": github, "RUNNER_ENVIRONMENT": runner,
                             "PATH": f"{root}:{os.environ['PATH']}",
@@ -67,7 +67,7 @@ class ServiceIntegrationTests(unittest.TestCase):
     def assert_service_inventory(self, workflow: str, script: str) -> None:
         """保留原工程门禁拥有的 Schema、FIFO 与 lease 选择器。"""
         self.assertIn("runs-on: ubuntu-24.04", workflow)
-        self.assertIn("run: bash scripts/ci_run_service_integration.sh", workflow)
+        self.assertIn("run: bash scripts/ci/run_service_integration.sh", workflow)
         command = re.search(r"(?m)^uv run --locked --group test pytest (.*)", script.replace("\\\n", ""))
         self.assertIsNotNone(command, "缺少实际 pytest 命令")
         selectors = shlex.split(command.group(1), comments=True)
@@ -78,7 +78,7 @@ class ServiceIntegrationTests(unittest.TestCase):
         """执行入口与迁移后的关键检查共同存在。"""
         self.assert_service_inventory(
             (ROOT / ".github/workflows/service-integration.yml").read_text(),
-            (ROOT / "scripts/ci_run_service_integration.sh").read_text(),
+            (ROOT / "scripts/ci/run_service_integration.sh").read_text(),
         )
 
     def test_service_setup_selects_container_without_reachable_execution_nodes(self):
@@ -86,9 +86,9 @@ class ServiceIntegrationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as root:
             base = Path(root)
             (base / "backend").mkdir()
-            (base / "scripts").mkdir()
-            script = base / "scripts/ci_run_service_integration.sh"
-            script.write_text((ROOT / "scripts/ci_run_service_integration.sh").read_text())
+            (base / "scripts/ci").mkdir(parents=True)
+            script = base / "scripts/ci/run_service_integration.sh"
+            script.write_text((ROOT / "scripts/ci/run_service_integration.sh").read_text())
             uv = base / "uv"
             uv.write_text(
                 f"#!{sys.executable}\n"
@@ -127,7 +127,7 @@ class ServiceIntegrationTests(unittest.TestCase):
             for missing in resources:
                 with self.subTest(missing=missing):
                     result = subprocess.run(
-                        ["bash", str(ROOT / "scripts/ci_run_service_integration.sh")],
+                        ["bash", str(ROOT / "scripts/ci/run_service_integration.sh")],
                         env={"PATH": f"{root}:{os.environ['PATH']}", **{k: v for k, v in resources.items() if k != missing}},
                         capture_output=True, text=True, timeout=5,
                     )
@@ -141,9 +141,9 @@ class ServiceIntegrationTests(unittest.TestCase):
             base = Path(root)
             (base / "backend").mkdir()
             (base / "backend/.env").write_text("POSTGRES_URL=deployment-sentinel\n")
-            (base / "scripts").mkdir()
-            script = base / "scripts/ci_run_service_integration.sh"
-            script.write_text((ROOT / "scripts/ci_run_service_integration.sh").read_text())
+            (base / "scripts/ci").mkdir(parents=True)
+            script = base / "scripts/ci/run_service_integration.sh"
+            script.write_text((ROOT / "scripts/ci/run_service_integration.sh").read_text())
             calls = base / "calls"
             uv = base / "uv"
             uv.write_text(f"#!/bin/sh\nprintf '%s\\n' called >> '{calls}'\nexit 99\n")
@@ -163,13 +163,13 @@ class ServiceIntegrationTests(unittest.TestCase):
     def test_service_inventory_rejects_lost_execution_or_selectors(self):
         """删除选择器、注释执行入口或恢复 self-hosted 时必须拒绝。"""
         workflow = (ROOT / ".github/workflows/service-integration.yml").read_text()
-        script = (ROOT / "scripts/ci_run_service_integration.sh").read_text()
+        script = (ROOT / "scripts/ci/run_service_integration.sh").read_text()
         for name in ("schema_migration_version", "agent_input_concurrency", "agent_run_lease"):
             with self.subTest(name=name), self.assertRaises(AssertionError):
                 self.assert_service_inventory(workflow, script.replace(f"test_{name}.py", "removed.py"))
         for broken in (
             workflow.replace("runs-on: ubuntu-24.04", "runs-on: self-hosted"),
-            workflow.replace("run: bash scripts/ci_run_service_integration.sh", "run: true"),
+            workflow.replace("run: bash scripts/ci/run_service_integration.sh", "run: true"),
         ):
             with self.assertRaises(AssertionError):
                 self.assert_service_inventory(broken, script)
@@ -207,13 +207,13 @@ class RuntimeTopologyTests(unittest.TestCase):
     def assert_hosted_jobs(self, workflow: str) -> None:
         """两个 job 均准备 container 镜像和 runner，保留构建缓存。"""
         jobs = re.split(r"(?m)^  [\w-]+:\n", workflow.split("\njobs:\n", 1)[1])[1:]
-        self.assertEqual(len(jobs), 2)
-        for job in jobs:
+        self.assertEqual(len(jobs), 3)
+        for job in jobs[:2]:
             self.assertIn("runs-on: ubuntu-24.04", job)
-            self.assertNotIn("ci_probe_kvm.py", job)
-            self.assertNotIn("ci_probe_hosted_cube.sh", job)
+            self.assertNotIn("probe_kvm.py", job)
+            self.assertNotIn("probe_hosted_cube.sh", job)
             self.assertNotIn("test_cube_worker_recovery.sh", job)
-            self.assertLess(job.index("bash scripts/ci_prepare_system_tests_env.sh"), job.index("docker compose up -d"))
+            self.assertLess(job.index("bash scripts/ci/prepare_system_tests_env.sh"), job.index("docker compose up -d"))
             start = re.search(r"(?m)^        run: docker compose up -d (.+)$", job)
             self.assertIsNotNone(start)
             self.assertIn("sandbox-runner", shlex.split(start.group(1)))
@@ -221,7 +221,7 @@ class RuntimeTopologyTests(unittest.TestCase):
             saves = list(re.finditer(r"(?m)^        uses: actions/cache/save@v4$", job))
             self.assertEqual(len(saves), 3)
             for save in saves:
-                self.assertLess(job.index("bash scripts/ci_build_topology_images.sh"), save.start())
+                self.assertLess(job.index("bash scripts/ci/build_topology_images.sh"), save.start())
                 self.assertLess(save.start(), job.index("docker compose up -d"))
 
     def test_both_runtime_jobs_use_container(self):
@@ -234,7 +234,7 @@ class RuntimeTopologyTests(unittest.TestCase):
                     before, section = workflow.split(f"  {name}:\n", 1)
                     self.assert_hosted_jobs(before + f"  {name}:\n" + section.replace(original, "removed", 1))
         with self.assertRaises(AssertionError):
-            self.assert_hosted_jobs(workflow.replace("steps:\n", "steps:\n      - run: bash scripts/ci_probe_hosted_cube.sh\n", 1))
+            self.assert_hosted_jobs(workflow.replace("steps:\n", "steps:\n      - run: bash scripts/ci/probe_hosted_cube.sh\n", 1))
 
     def test_cube_probe_only_runs_manually(self):
         """Cube 安装不能重新进入普通 push 或 PR 路径。"""
@@ -261,7 +261,7 @@ class RuntimeTopologyTests(unittest.TestCase):
                 JWT_SECRET_KEY="ci-jwt-secret-at-least-thirty-two-characters",
                 API_KEY_DERIVATION_SECRET="ci-api-key-derivation-secret-at-least-32-chars",
             )
-            subprocess.run(["bash", str(ROOT / "scripts/ci_prepare_system_tests_env.sh")], cwd=base, env=env, check=True)
+            subprocess.run(["bash", str(ROOT / "scripts/ci/prepare_system_tests_env.sh")], cwd=base, env=env, check=True)
             self.assertEqual((base / ".env").stat().st_mode & 0o777, 0o600)
             config = json.loads(subprocess.check_output(
                 ["docker", "compose", "--env-file", str(base / ".env"), "-f", str(ROOT / "docker-compose.yml"),
@@ -316,7 +316,7 @@ class RuntimeTopologyTests(unittest.TestCase):
                         del value["services"]["sandbox-image"]
                     config_file.write_text(json.dumps(value))
                     result = subprocess.run(
-                        ["bash", str(ROOT / "scripts/ci_build_topology_images.sh"), "", "", str(base / "sandbox-cache")],
+                        ["bash", str(ROOT / "scripts/ci/build_topology_images.sh"), "", "", str(base / "sandbox-cache")],
                         env=env, capture_output=True, text=True, timeout=10, check=False,
                     )
                     if not configured:

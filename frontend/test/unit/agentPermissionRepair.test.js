@@ -1,63 +1,98 @@
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
-import test from 'node:test'
-import { computed, nextTick, reactive, ref, watch } from 'vue'
-import { compileScript, parse } from 'vue/compiler-sfc'
-import { cloneShareConfig } from '../../src/modules/agents/model/shareConfig.js'
-import { isAllAgentResourceSelection, normalizeAgentConfigurableItems } from '../../src/modules/agents/model/agentConfigUtils.js'
+import test, { afterEach } from 'node:test'
+import { createRenderer, nextTick, ref, ssrContextKey } from 'vue'
+import { createPinia, disposePinia, setActivePinia } from 'pinia'
+import { matchedRouteKey, routerKey } from 'vue-router'
+import { message } from 'ant-design-vue'
+import { createTestServer } from '../helpers/createTestServer.js'
 
-const source = readFileSync(
-  new URL('../../src/modules/agents/ui/AgentEditModal.vue', import.meta.url), 'utf8'
-)
-const { descriptor } = parse(source)
-const executable = compileScript(descriptor, { id: 'agent-permission-repair' }).content
-  .replace(/^import[\s\S]*?from '[^']+'\n/gm, '')
-  .replace('export default', 'return')
+const cleanups = []
+afterEach(async () => { while (cleanups.length) await cleanups.pop()() })
+const renderer = createRenderer({
+  createElement: () => ({ children: [] }), createText: () => ({}), createComment: () => ({}),
+  insert: (child, parent) => parent.children.push(child), remove() {}, setText() {}, setElementText() {},
+  parentNode: () => null, nextSibling: () => null, patchProp() {}
+})
+let currentServer
 
-/** 编译实际编辑组件并提供独立网络边界。 */
+/** 在真实组件和 Store 中隔离接口及路由边界。 */
 async function setupForm(detail, isAdmin = true) {
-  const writes = []
-  const selections = []
-  const errors = []
-  const navigations = []
-  const routeGuards = []
-  const store = reactive({
-    hasConfigChanges: false,
-    resetAgentConfig() {},
-    selectedAgent: detail,
-    agentConfig: {},
-    configurableItems: {},
-    updateAgentConfig(value) { this.agentConfig = { ...this.agentConfig, ...value } },
-    fetchAgentDetail: async () => detail,
-    selectAgent: async (slug) => selections.push(slug),
-    updateAgentProfile: async (slug, payload) => writes.push({ slug, payload: JSON.parse(JSON.stringify(payload)) }),
-    createAgent: async (payload, file) => {
-      writes.push({ payload: JSON.parse(JSON.stringify(payload)), file })
-      return { agent_id: payload.slug, can_run: true }
-    }
-  })
-  const deps = {
-    computed, nextTick, reactive, ref, watch, cloneShareConfig, isAllAgentResourceSelection, normalizeAgentConfigurableItems,
-    agentApi: { getAgentBackendDetail: async () => ({ configurable_items: {
-      mcps: { name: 'MCP', kind: 'mcps', type: 'list', supports_all: true, default: 'all', options: [{ key: 'ready', name: '可用' }] },
-      skills: { name: 'Skill', kind: 'skills', type: 'list', supports_all: true, default: 'all', options: [] },
-      system_prompt: { kind: 'prompt', type: 'str', default: '后端角色' }
-    } }) },
-    skillApi: { prepareSkillUpload: async () => ({ data: { draft_id: 'draft', items: [{ slug: 'shared-guide' }] } }) },
-    useAgentStore: () => store,
-    onBeforeRouteLeave: (guard) => routeGuards.push(guard),
-    useRouter: () => ({ push: async (route) => { navigations.push(route) } }),
-    useUserStore: () => ({ isAdmin, isSuperAdmin: isAdmin, uid: 'admin', departmentId: 1 }),
-    isBuiltinAgent: () => false,
-    message: { error: (value) => errors.push(value), warning: (value) => errors.push(value), success() {}, info: (value) => errors.push(value) },
-    userApi: {},
-    MAX_IMAGE_UPLOAD_SIZE_BYTES: 1024, MAX_IMAGE_UPLOAD_SIZE_MB: 1
+  const writes = [], errors = [], navigations = []
+  const previousStorage = globalThis.localStorage
+  globalThis.localStorage = { getItem: () => null, setItem() {}, removeItem() {} }
+  const pinia = createPinia()
+  setActivePinia(pinia)
+  const server = await createTestServer({ server: { middlewareMode: true, hmr: false }, appType: 'custom' })
+  currentServer = server
+  const { agentApi, skillApi } = await server.ssrLoadModule('/src/apis/index.js')
+  const original = { getAgentDetail: agentApi.getAgentDetail, getAgentBackendDetail: agentApi.getAgentBackendDetail,
+    createAgent: agentApi.createAgent, updateAgent: agentApi.updateAgent,
+    uploadAgentBoundSkill: agentApi.uploadAgentBoundSkill, getAgentBoundSkill: agentApi.getAgentBoundSkill }
+  agentApi.getAgentDetail = async () => detail
+  agentApi.getAgentBackendDetail = async () => ({ configurable_items: {
+    mcps: { name: 'MCP', kind: 'mcps', type: 'list', supports_all: true, default: 'all', options: [{ key: 'ready', name: '可用' }] },
+    skills: { name: 'Skill', kind: 'skills', type: 'list', supports_all: true, default: 'all', options: [] },
+    system_prompt: { kind: 'prompt', type: 'str', default: '后端角色' }
+  } })
+  agentApi.updateAgent = async (slug, payload) => {
+    writes.push({ slug, payload: JSON.parse(JSON.stringify(payload)) })
+    return { agent: { ...detail, ...payload, agent_id: slug } }
   }
-  for (const name of ['ArrowLeft', 'ArrowRight', 'Bot', 'FileArchive', 'Microscope', 'Plus', 'RefreshCw', 'Settings2', 'SlidersHorizontal', 'Upload', 'Wrench', 'X',
-    'AgentRuntimeConfigForm', 'McpFormModal', 'SkillInstallFlowModal', 'AgentBoundSkillPanel', 'ShareConfigForm', 'FallbackAvatar', 'CollapseTransition']) deps[name] = {}
-  const component = new Function(...Object.keys(deps), executable)(...Object.values(deps))
-  const form = component.setup({ backendOptions: [] }, { expose() {}, emit() {} })
-  return { form, store, writes, selections, errors, navigations, routeGuards, deps }
+  agentApi.createAgent = async (payload, file) => {
+    writes.push({ payload: JSON.parse(JSON.stringify(payload)), file })
+    return { agent: { ...payload, agent_id: payload.slug, can_run: true } }
+  }
+  const oldPrepare = skillApi.prepareSkillUpload
+  agentApi.getAgentBoundSkill = async () => ({ skill: null })
+  skillApi.prepareSkillUpload = async () => ({ data: { draft_id: 'draft', items: [{ slug: 'shared-guide' }] } })
+  const { useAgentStore } = await server.ssrLoadModule('/src/modules/agents/model/agent.js')
+  const { useUserStore } = await server.ssrLoadModule('/src/modules/identity/model/user.js')
+  const store = useAgentStore(pinia)
+  const user = useUserStore(pinia)
+  user.userRole = isAdmin ? 'superadmin' : 'user'
+  user.uid = 'admin'
+  user.departmentId = 1
+  const oldMessage = { error: message.error, warning: message.warning, success: message.success, info: message.info }
+  Object.assign(message, { error: (value) => errors.push(value), warning: (value) => errors.push(value), success() {}, info: (value) => errors.push(value) })
+  const record = { leaveGuards: new Set() }
+  const router = { push: async (route) => { navigations.push(route) } }
+  const { default: component } = await server.ssrLoadModule('/src/modules/agents/ui/AgentEditModal.vue')
+  let form
+  const app = renderer.createApp({ setup() {
+    form = component.setup({ backendOptions: [] }, { expose() {}, emit() {} })
+    return () => null
+  } })
+  app.use(pinia)
+  app.provide(ssrContextKey, {})
+  app.provide(routerKey, router)
+  app.provide(matchedRouteKey, ref(record))
+  app.mount({ children: [] })
+  cleanups.push(async () => {
+    app.unmount()
+    Object.assign(agentApi, original)
+    skillApi.prepareSkillUpload = oldPrepare
+    Object.assign(message, oldMessage)
+    disposePinia(pinia)
+    await server.close()
+    if (previousStorage === undefined) delete globalThis.localStorage
+    else globalThis.localStorage = previousStorage
+  })
+  return { form, store, writes, errors, navigations, routeGuards: [...record.leaveGuards], deps: { agentApi, skillApi } }
+}
+
+async function setupBoundPanel(form) {
+  const { default: component } = await currentServer.ssrLoadModule('/src/modules/agents/ui/AgentBoundSkillPanel.vue')
+  let panel
+  const app = renderer.createApp({ setup() {
+    panel = component.setup({ agentSlug: 'bound-parent' }, {
+      expose() {}, emit: (event, value) => { if (event === 'busy') form.boundSkillSaving.value = value }
+    })
+    return () => null
+  } })
+  app.provide(ssrContextKey, {})
+  app.mount({ children: [] })
+  cleanups.push(() => app.unmount())
+  return panel
 }
 
 test('管理员打开坏配置不写入，明确保存以 slug 修复共享范围', async () => {
@@ -66,12 +101,12 @@ test('管理员打开坏配置不写入，明确保存以 slug 修复共享范�
     backend_id: 'ChatbotAgent', can_manage: true, can_share: true, visibility: 'shared', share_config_invalid: true,
     share_config: { version: 2, read_scope: { access_level: 'department', department_ids: { 1: true } } }
   }
-  const { form, writes, selections, errors } = await setupForm(detail)
+  const { form, store, writes, errors } = await setupForm(detail)
   await form.openEdit({ agent_id: 'fixture-agent' })
   assert.equal(form.showAgentModal.value, true)
   assert.equal(form.shareConfigNeedsRepair.value, true)
   assert.deepEqual(writes, [])
-  assert.deepEqual(selections, ['fixture-agent'])
+  assert.equal(store.selectedAgentId, 'fixture-agent')
   assert.deepEqual(form.agentShareConfig.value, { version: 2, read_scope: null, manage_scope: null })
   await form.saveAgent()
   assert.deepEqual(errors, [])
@@ -170,10 +205,10 @@ test('编辑专属 Skill 保留未保存 Agent 配置，忙碌时不跳转，保
   assert.deepEqual(navigations, [])
   assert.match(errors.pop(), /请先保存智能体配置/)
   form.agentForm.name = '资料整理助手'
-  store.hasConfigChanges = true
+  store.updateAgentConfig({ system_prompt: '未保存' })
   await form.navigateToSkill(route)
   assert.deepEqual(navigations, [])
-  store.hasConfigChanges = false
+  store.resetAgentConfig()
   form.saving.value = true
   await form.navigateToSkill(route)
   assert.deepEqual(navigations, [])
@@ -188,7 +223,7 @@ test('编辑专属 Skill 保留未保存 Agent 配置，忙碌时不跳转，保
 })
 
 test('创建提交完整 Context 与专属 ZIP，422 保留草稿而不发送资源定义', async () => {
-  const { form, store, writes } = await setupForm({})
+  const { form, writes, deps } = await setupForm({})
   form.openCreate()
   assert.equal(form.createAdvancedOpen.value, false)
   await form.toggleCreateAdvanced()
@@ -198,14 +233,14 @@ test('创建提交完整 Context 与专属 ZIP，422 保留草稿而不发送资
   form.beforeCreateSkillUpload(file)
   form.runtimeConfig.value = { system_prompt: '指定角色', model: 'provider:model', mcps: ['ready'], skills: [] }
   const context = { ...form.runtimeConfig.value }
-  const create = store.createAgent
-  store.createAgent = async () => { throw Object.assign(new Error('invalid'), { status: 422 }) }
+  const create = deps.agentApi.createAgent
+  deps.agentApi.createAgent = async () => { throw Object.assign(new Error('invalid'), { status: 422 }) }
   await form.saveAgent()
   assert.equal(form.showAgentModal.value, true)
   assert.equal(form.createSkillFile.value.name, file.name)
   assert.deepEqual(form.createContext.value, context)
   assert.equal(form.createError.value, 'invalid')
-  store.createAgent = create
+  deps.agentApi.createAgent = create
   await form.saveAgent()
   assert.equal(writes.length, 1)
   assert.equal(writes[0].file.name, 'guide.zip')
@@ -214,10 +249,10 @@ test('创建提交完整 Context 与专属 ZIP，422 保留草稿而不发送资
 })
 
 test('等待时不重复创建，未知结果禁止在同一草稿直接重试，明确校验失败可修正', async () => {
-  const { form, store, writes } = await setupForm({ agent_id: 'existing', name: 'Existing', can_manage: true, can_run: true })
+  const { form, writes, deps } = await setupForm({ agent_id: 'existing', name: 'Existing', can_manage: true, can_run: true })
   form.openCreate()
   let rejectRequest
-  store.createAgent = () => {
+  deps.agentApi.createAgent = () => {
     writes.push('sent')
     return new Promise((_, reject) => { rejectRequest = reject })
   }
@@ -228,7 +263,7 @@ test('等待时不重复创建，未知结果禁止在同一草稿直接重试�
   await request
   assert.equal(form.createOutcomeUnknown.value, false)
   assert.equal(form.showAgentModal.value, true)
-  store.createAgent = async () => {
+  deps.agentApi.createAgent = async () => {
     writes.push('sent')
     throw new TypeError('connection lost')
   }
@@ -310,16 +345,16 @@ for (const outcome of ['pending', 'unknown', 'invalid']) {
   const description = { pending: '等待中的', unknown: '结果不明的', invalid: '校验失败后的' }[outcome]
   test(`旧编辑请求不能覆盖${description}创建草稿`, async () => {
     const detail = { agent_id: 'existing', name: 'Existing', can_manage: true, can_run: true }
-    const { form, store } = await setupForm(detail)
+    const { form, deps } = await setupForm(detail)
     const detailReads = []
-    store.fetchAgentDetail = () => new Promise((resolve) => detailReads.push(resolve))
+    deps.agentApi.getAgentDetail = () => new Promise((resolve) => detailReads.push(resolve))
     const opens = [form.openEdit('existing')]
     form.openCreate()
     form.agentForm.name = 'Creation draft'
     form.agentForm.slug = 'creation-draft'
     form.beforeCreateSkillUpload({ name: 'draft.zip', size: 100 })
     let rejectCreation
-    store.createAgent = () => new Promise((_, reject) => { rejectCreation = reject })
+    deps.agentApi.createAgent = () => new Promise((_, reject) => { rejectCreation = reject })
     const request = form.saveAgent()
     try {
       form.openCreate()
@@ -430,23 +465,13 @@ test('切换后端与重新打开后，旧 Schema 响应不能覆盖当前草稿
 
 test('专属 Skill mutation 等待时父级不关闭保存切换或打开，结束后恢复', async () => {
   const detail = { agent_id: 'bound-parent', name: '指南', backend_id: 'ChatbotAgent', visibility: 'private', can_manage: true }
-  const { form, writes, navigations, selections, routeGuards } = await setupForm(detail)
+  const { form, store, writes, navigations, routeGuards, deps } = await setupForm(detail)
   await form.openEdit(detail)
   form.agentModalActiveTab.value = 'skill'
   form.agentForm.name = '修改名称'
-  const panelSource = readFileSync(new URL('../../src/modules/agents/ui/AgentBoundSkillPanel.vue', import.meta.url), 'utf8')
-  const panelExecutable = compileScript(parse(panelSource).descriptor, { id: 'bound-parent-busy' }).content
-    .replace(/^import[\s\S]*?from '[^']+'\n/gm, '').replace('export default', 'return')
   let rejectUpload
-  const panelDeps = {
-    ref, onMounted() {}, MarkdownPreview: {}, Modal: {},
-    message: { error() {}, success() {} }, skillApi: {},
-    agentApi: { uploadAgentBoundSkill: () => new Promise((_, reject) => { rejectUpload = reject }) }
-  }
-  const panelComponent = new Function(...Object.keys(panelDeps), panelExecutable)(...Object.values(panelDeps))
-  const panel = panelComponent.setup({ agentSlug: 'bound-parent' }, {
-    expose() {}, emit: (event, value) => { if (event === 'busy') form.boundSkillSaving.value = value }
-  })
+  deps.agentApi.uploadAgentBoundSkill = () => new Promise((_, reject) => { rejectUpload = reject })
+  const panel = await setupBoundPanel(form)
   const pending = panel.upload({ name: 'guide.zip' })
   assert.equal(form.boundSkillSaving.value, true)
   assert.equal(routeGuards[0](), false, '浏览器返回也不能卸载上传组件')
@@ -461,7 +486,7 @@ test('专属 Skill mutation 等待时父级不关闭保存切换或打开，结�
   assert.equal(form.agentModalActiveTab.value, 'skill')
   assert.deepEqual(writes, [])
   assert.deepEqual(navigations, [])
-  assert.deepEqual(selections, ['bound-parent'])
+  assert.equal(store.selectedAgentId, 'bound-parent')
   rejectUpload(new Error('替换失败'))
   await pending
   assert.equal(form.boundSkillSaving.value, false)

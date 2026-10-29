@@ -1,4 +1,5 @@
 import os
+import runpy
 from pathlib import Path
 import subprocess
 
@@ -55,5 +56,7 @@ def test_pull_helper_changes_trigger_backend_unit_workflow():
     import yaml
 
     workflow = yaml.load((project_root() / ".github/workflows/test.yml").read_text(), Loader=yaml.BaseLoader)
-    for event in ("pull_request", "push"):
-        assert "scripts/pull_image.sh" in workflow["on"][event]["paths"]
+    select_checks = runpy.run_path(str(project_root() / "scripts/ci/gate.py"))["select_checks"]
+
+    assert "scripts/pull_image.sh" in workflow["on"]["push"]["paths"]
+    assert select_checks(["scripts/pull_image.sh"])["backend"]

@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 
 
-WORKFLOWS = Path(__file__).resolve().parents[1] / ".github/workflows"
+WORKFLOWS = Path(__file__).resolve().parents[2] / ".github/workflows"
 
 
 class ReleaseWorkflowTests(unittest.TestCase):
@@ -16,6 +16,8 @@ class ReleaseWorkflowTests(unittest.TestCase):
         jobs = re.split(r"(?m)^  ([\w-]+):\n", workflow.split("\njobs:\n", 1)[1])
         self.assertGreater(len(jobs), 1, "Runtime workflow 缺少 job")
         for name, body in zip(jobs[1::2], jobs[2::2], strict=True):
+            if name == "result":
+                continue
             self.assertRegex(
                 body,
                 r"(?m)^    timeout-minutes: (?:[6-9][0-9]|[1-9][0-9]{2,})$",
@@ -43,13 +45,6 @@ class ReleaseWorkflowTests(unittest.TestCase):
                     r"(?m)^(?:    branches: \[main, 'develop/\*\*'\]|      - 'develop/\*\*')$",
                     f"{name}: 缺少全部开发分支触发",
                 )
-            if name in ("ruff", "deploy"):
-                pull_request = re.search(r"(?ms)^  pull_request:\n(.*?)(?=^  [\w-]+:|\Z)", events).group(1)
-                self.assertRegex(
-                    pull_request,
-                    r"(?m)^(?:    branches: \[main, 'develop/\*\*'\]|      - 'develop/\*\*')$",
-                    f"{name}: PR 未覆盖开发目标分支",
-                )
         cli_events = workflows["publish-yuxi-cli"].split("\non:\n", 1)[1].split("\n\n", 1)[0]
         self.assertEqual(
             re.findall(r"^  (\w+):", cli_events, re.MULTILINE),
@@ -67,7 +62,7 @@ class ReleaseWorkflowTests(unittest.TestCase):
         jobs = workflow.split("  background-job-worker-path:\n", 1)[1].split("\n  system-tests:", 1)
         for job in jobs:
             self.assertIn(command, job)
-            self.assertLess(job.index("bash scripts/ci_build_topology_images.sh"), job.index(command))
+            self.assertLess(job.index("bash scripts/ci/build_topology_images.sh"), job.index(command))
             self.assertLess(job.index(command), job.index("docker compose up -d"))
 
     def test_runtime_mounts_are_owned_before_service_startup(self) -> None:
@@ -139,14 +134,11 @@ class ReleaseWorkflowTests(unittest.TestCase):
                 ):
                     self.assert_release_events(workflows | {name: workflows[name].replace("develop/**", replacement)})
 
-    def test_pull_requests_to_development_branches_are_checked(self) -> None:
-        """恢复仅检查 main 目标的 PR 时拒绝。"""
-        workflows = {path.stem: path.read_text() for path in WORKFLOWS.glob("*.yml")}
-        for name in ("ruff", "deploy"):
-            before, pull_request = workflows[name].split("  pull_request:\n", 1)
-            pull_request = pull_request.replace(", 'develop/**'", "").replace("      - 'develop/**'\n", "")
-            with self.subTest(workflow=name), self.assertRaisesRegex(AssertionError, f"{name}: PR 未覆盖开发目标分支"):
-                self.assert_release_events(workflows | {name: before + "  pull_request:\n" + pull_request})
+    def test_pull_requests_to_all_branches_are_checked(self) -> None:
+        """汇总入口覆盖所有 PR，不能添加分支或路径过滤。"""
+        workflow = (WORKFLOWS / "ci.yml").read_text()
+        events = workflow.split("\non:\n", 1)[1].split("\npermissions:", 1)[0]
+        self.assertEqual(events.strip(), "pull_request:")
 
     def test_application_release_cannot_publish_cli(self) -> None:
         """恢复应用 Release 触发时禁止重复上传独立 CLI 包。"""

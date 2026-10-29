@@ -11,15 +11,19 @@ async function renderSettings(component, api) {
   const server = await createTestServer({
     server: { middlewareMode: true, hmr: false },
     appType: 'custom',
+    ssr: { noExternal: ['ant-design-vue'] },
     plugins: [
       {
         name: 'sandbox-settings-client',
+        enforce: 'pre',
         resolveId(id) {
+          if (id === 'ant-design-vue') return '\0virtual:sandbox-ant'
+          if (id.endsWith('/ActionDropdown.vue')) return '\0virtual:action-dropdown'
           if (id === '../model/sandboxTiming')
             return new URL('../../src/modules/settings/model/sandboxTiming.js', import.meta.url)
               .pathname
           if (id.endsWith('/McpEnvEditor.vue')) return '\0virtual:env-editor'
-          if (id.endsWith('/UserSandboxSettingsCard.vue')) return '\0virtual:sandbox-child'
+          if (id.endsWith('UserSandboxSettingsCard.vue')) return '\0virtual:sandbox-child'
           if (
             [
               'virtual:sandbox-settings',
@@ -55,11 +59,7 @@ async function renderSettings(component, api) {
           return compileScript(parse(source).descriptor, {
             id: 'sandbox-settings',
             inlineTemplate: true
-          })
-            .content.replace("'ant-design-vue'", "'virtual:sandbox-ant'")
-            .replace("'@/modules/agents/ui/McpEnvEditor.vue'", "'virtual:env-editor'")
-            .replace("'./UserSandboxSettingsCard.vue'", "'virtual:sandbox-child'")
-            .replace("'@/shared/ui/ActionDropdown.vue'", "'virtual:action-dropdown'")
+          }).content
         }
       }
     ]

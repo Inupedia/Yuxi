@@ -20,7 +20,7 @@ Owner：AGENTS.md
 
 ### 实现方案
 
-通用注释纪律与修改范围由根 `AGENTS.md` 拥有；后端 Python 的表达式、阅读顺序、去重与重构规则由 `backend/AGENTS.md` 拥有；后端排版细节（含段首概括注释）由[贡献指南后端节](../../contributing.md)拥有。执行方式为独立 Reviewer 对照 AGENTS 条款核查，`scripts/verify_engineering_contracts.py` 校验结构、链接与字符预算，不新增机械检查。
+通用注释纪律与修改范围由根 `AGENTS.md` 拥有；后端 Python 的表达式、阅读顺序、去重与重构规则由 `backend/AGENTS.md` 拥有；后端排版细节（含段首概括注释）由[贡献指南后端节](../../contributing.md)拥有。执行方式为独立 Reviewer 对照 AGENTS 条款核查，`scripts/ci/verify_engineering_contracts.py` 校验结构、链接与字符预算，不新增机械检查。
 
 ## 替代方案
 

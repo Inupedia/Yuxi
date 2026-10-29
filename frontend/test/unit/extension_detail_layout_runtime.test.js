@@ -1,18 +1,10 @@
 import assert from 'node:assert/strict'
-import { readFileSync, unlinkSync, writeFileSync } from 'node:fs'
-import { pid } from 'node:process'
-import { fileURLToPath, pathToFileURL } from 'node:url'
+import { readFileSync } from 'node:fs'
 import test from 'node:test'
 
 import { compileScript, parse } from 'vue/compiler-sfc'
 import { createRenderer, h, nextTick, ref } from 'vue'
-
-const layoutSourcePath = fileURLToPath(
-  new URL('../../src/shared/ui/ExtensionDetailLayout.vue', import.meta.url)
-)
-const compiledLayoutPath = fileURLToPath(
-  new URL(`../../.extension-detail-layout-test-${pid}.mjs`, import.meta.url)
-)
+import { createTestServer } from '../helpers/createTestServer.js'
 
 function createHostNode(type) {
   return { type, props: {}, children: [], parent: null, text: '' }
@@ -94,17 +86,24 @@ const EmptyStub = {
 }
 
 test('共享详情框架转发 activeKey、响应动态 Tab 并保留 overlays 插槽', async () => {
-  const { descriptor } = parse(readFileSync(layoutSourcePath, 'utf8'))
-  const compiled = compileScript(descriptor, {
-    id: 'extension-detail-layout-test',
-    inlineTemplate: true
+  const server = await createTestServer({
+    server: { middlewareMode: true, hmr: false },
+    appType: 'custom',
+    plugins: [{
+      name: 'extension-detail-layout-test',
+      resolveId(id) {
+        if (id === 'virtual:extension-detail-layout-test') return `\0${id}`
+      },
+      load(id) {
+        if (id !== '\0virtual:extension-detail-layout-test') return
+        const source = readFileSync(new URL('../../src/shared/ui/ExtensionDetailLayout.vue', import.meta.url), 'utf8')
+        return compileScript(parse(source).descriptor, { id: 'extension-detail-layout-test', inlineTemplate: true }).content
+      }
+    }]
   })
-  writeFileSync(compiledLayoutPath, compiled.content)
 
   try {
-    const { default: ExtensionDetailLayout } = await import(
-      `${pathToFileURL(compiledLayoutPath).href}?test=${Date.now()}`
-    )
+    const { default: ExtensionDetailLayout } = await server.ssrLoadModule('virtual:extension-detail-layout-test')
     const activeKey = ref('general')
     const tabs = ref([
       { key: 'general', label: '信息' },
@@ -188,6 +187,6 @@ test('共享详情框架转发 activeKey、响应动态 Tab 并保留 overlays �
     assert.equal(findNodes(emptyActionsContainer, (node) => node.props.id === 'actions').length, 0)
     emptyActionsApp.unmount()
   } finally {
-    unlinkSync(compiledLayoutPath)
+    await server.close()
   }
 })

@@ -1,42 +1,49 @@
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
-import test from 'node:test'
-import { computed, effectScope, nextTick, reactive, ref, watch } from 'vue'
-import { compileScript, parse } from 'vue/compiler-sfc'
-import * as debug from '../../src/modules/session/model/messageDebug.js'
-import * as timing from '../../src/modules/session/model/runTiming.js'
-import { resolveLangfuseTraceUrl } from '../../src/shared/lib/langfuse.js'
+import test, { before, after } from 'node:test'
+import { createRenderer, h, nextTick, reactive, ssrContextKey } from 'vue'
+import { createTestServer } from '../helpers/createTestServer.js'
 
-/** 执行真实组件脚本，保留分组和跳转逻辑。 */
+let server
+const components = {}
+const node = () => ({ children: [], parent: null })
+const renderer = createRenderer({
+  createElement: node, createText: node, createComment: node,
+  insert(child, parent) { child.parent = parent; parent.children.push(child) },
+  remove(child) { const i = child.parent?.children.indexOf(child) ?? -1; if (i >= 0) child.parent.children.splice(i, 1) },
+  setText() {}, setElementText() {}, parentNode: (n) => n.parent, nextSibling: () => null, patchProp() {}
+})
+before(async () => {
+  server = await createTestServer({ server: { middlewareMode: true, hmr: false }, ssr: { noExternal: ['ant-design-vue'] }, plugins: [{
+    name: 'trace-boundaries', enforce: 'pre',
+    resolveId(id) { if (id === 'ant-design-vue') return '\0trace-ant' },
+    load(id) {
+      if (id === '\0trace-ant') return 'export const message = { warning: (...args) => globalThis.__traceTest.notices.push(...args), error: (...args) => globalThis.__traceTest.notices.push(...args) }'
+      if (id.endsWith('/src/apis/index.js') || id.endsWith('/src/apis/agent_api.js')) return 'export const agentApi = new Proxy({}, { get: (_, key) => globalThis.__traceTest.api[key] })'
+      if (id.endsWith('/src/apis/feedback_api.js')) return 'export const feedbackApi = new Proxy({}, { get: (_, key) => globalThis.__traceTest.api[key] })'
+    }
+  }] })
+  components.debug = (await server.ssrLoadModule('/src/modules/session/ui/MessageDebugPanel.vue')).default
+  components.feedback = (await server.ssrLoadModule('/src/modules/dashboard/ui/AgentFeedbackList.vue')).default
+})
+after(async () => { await server.close() })
+
+/** 执行完整组件，保留分组和跳转逻辑。 */
 function setupComponent(name, api = {}) {
-  const scope = effectScope()
   const windows = []
   const notices = []
   const props = reactive({ threadId: 'thread-a', active: false, runActive: false })
-  const deps = {
-    ...debug, ...timing, computed, reactive, ref, watch,
-    onMounted() {}, onBeforeUnmount() {}, onDeactivated() {},
-    document: { visibilityState: 'visible', addEventListener() {}, removeEventListener() {} },
-    window: { open() {
-      const target = { closed: false, close() { this.closed = true }, location: { replace(url) { target.url = url } } }
-      windows.push(target)
-      return target
-    } },
-    message: { warning: (text) => notices.push(text), error: (text) => notices.push(text) },
-    agentApi: api, feedbackApi: api, resolveLangfuseTraceUrl,
-    formatDateTime: (value) => value, copyTextToClipboard() {}
-  }
-  for (const name of ['Check', 'ChevronRight', 'Clock', 'Copy', 'ExternalLink', 'LoaderCircle', 'RefreshCw', 'Search', 'TriangleAlert', 'X', 'JsonTreeViewer', 'AlertCircle', 'ArrowUpRight', 'ChevronRight', 'Lightbulb', 'MessageSquare', 'ThumbsDown', 'ThumbsUp', 'FallbackAvatar', 'ResourceEmptyState']) deps[name] = {}
-  const path = name === 'debug'
-    ? '../../src/modules/session/ui/MessageDebugPanel.vue'
-    : '../../src/modules/dashboard/ui/AgentFeedbackList.vue'
-  const { descriptor } = parse(readFileSync(new URL(path, import.meta.url), 'utf8'))
-  const script = compileScript(descriptor, { id: 'turn-trace' }).content
-    .replace(/^import[\s\S]*?from '[^']+'\n/gm, '')
-    .replace('export default', 'return')
-  const component = new Function(...Object.keys(deps), script)(...Object.values(deps))
-  const form = scope.run(() => component.setup(props, { expose() {} }))
-  return { form, props, windows, notices, stop: () => scope.stop() }
+  globalThis.__traceTest = { api, notices }
+  globalThis.document = { visibilityState: 'visible', addEventListener() {}, removeEventListener() {} }
+  globalThis.window = { open() {
+    const target = { closed: false, close() { this.closed = true }, location: { replace(url) { target.url = url } } }
+    windows.push(target)
+    return target
+  } }
+  let form
+  const app = renderer.createApp({ setup() { form = components[name].setup(props, { expose() {}, emit() {} }); return () => h('div') } })
+  app.provide(ssrContextKey, { modules: new Set() })
+  app.mount(node())
+  return { form, props, windows, notices, stop: () => { app.unmount(); delete globalThis.__traceTest; delete globalThis.document; delete globalThis.window } }
 }
 
 test('调试面板按 Turn 合并恢复 Run，保留零消息轮次与真实整轮状态', () => {

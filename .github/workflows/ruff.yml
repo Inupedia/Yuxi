@@ -8,19 +8,10 @@
 name: Ruff Format Check
 
 on:
+  workflow_call:
   workflow_dispatch:
   push:
     tags: ['v[0-9]*']
-    branches:
-      - main
-      - 'develop/**'
-    paths:
-      - 'backend/**/*.py'
-      - 'backend/pyproject.toml'
-      - 'backend/uv.lock'
-      - 'Makefile'
-      - '.github/workflows/ruff.yml'
-  pull_request:
     branches:
       - main
       - 'develop/**'

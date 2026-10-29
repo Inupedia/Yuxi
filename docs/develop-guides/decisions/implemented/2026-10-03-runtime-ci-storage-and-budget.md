@@ -20,7 +20,7 @@ Runtime CI 使用全新 bind mount，Docker 创建的目录归 root 所有，UID
 
 两个 Runtime job 在构建镜像后、启动服务前，使用一次性的 root API 容器把三个测试存储根目录设置为 UID/GID 1000、模式 0700。API、worker 和 schema-init 保持原有运行身份与权限。准备只作用于 CI 的隔离目录，无递归迁移或生产目录修改。
 
-`scripts/test_release_workflows.py` 按顶层 job 分别检查至少 60 分钟的预算；负向测试逐个缩短或删除预算。Runtime workflow 以 readiness、HTTP、数据库与 worker 链路形成运行后果。
+`scripts/ci/test_release_workflows.py` 按顶层 job 分别检查至少 60 分钟的预算；负向测试逐个缩短或删除预算。Runtime workflow 以 readiness、HTTP、数据库与 worker 链路形成运行后果。
 
 `backend/test/integration/conftest.py` 在 session fixture 中调用现有 `bootstrap.models.load_models`，为独立测试进程显式注册全部 ORM；fixture 不连接服务、不建表，实际 Schema 与连接仍由原 fixture 和迁移入口拥有。单个文件和完整 integration 使用相同的模型装配。
 
