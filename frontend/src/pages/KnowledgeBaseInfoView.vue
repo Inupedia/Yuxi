@@ -125,6 +125,7 @@
             :readonly="!canManageKnowledgeBase"
             @search="fileSearchModalVisible = true"
             @view-graph="viewFileGraph"
+            @edit-markdown="editFileMarkdown"
           />
         </div>
       </template>
@@ -163,7 +164,10 @@
       v-model:open="store.state.fileDetailModalVisible"
       :kb-id="kbId"
       :file-id="store.fileDetailFileId"
-      @closed="store.closeFileDetail"
+      :editable="canManageKnowledgeBase && isMilvus"
+      :edit-requested="markdownEditRequested"
+      @saved="handleMarkdownSaved"
+      @closed="closeFileDetail"
     />
 
     <FileUploadModal
@@ -448,6 +452,27 @@ const handleGraphFileChange = (fileId) => {
 /** 进入文件图谱，由图谱页展示当前结果和可用操作。 */
 const viewFileGraph = (file) => {
   router.push({ query: { ...route.query, section: 'graph', file_id: file.file_id } })
+}
+
+const markdownEditRequested = ref(false)
+/** 管理入口可直接人工创建缺失的 Markdown。 */
+const editFileMarkdown = (file) => {
+  if (!canManageKnowledgeBase.value || !isMilvus.value) return
+  markdownEditRequested.value = true
+  store.openFileDetail(file.file_id)
+}
+/** 关闭后清除本次编辑意图，普通阅读入口仍只展示详情。 */
+const closeFileDetail = () => {
+  markdownEditRequested.value = false
+  store.closeFileDetail()
+}
+/** 只有保存作业成功才重新读取文件列表和统计。 */
+const handleMarkdownSaved = async () => {
+  try {
+    await fileTableRef.value?.refresh()
+  } catch (error) {
+    message.warning(error.message || 'Markdown 已保存，文件列表刷新失败，请手动刷新')
+  }
 }
 
 const refreshingStatistics = ref(false)

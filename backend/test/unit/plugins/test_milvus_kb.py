@@ -61,7 +61,7 @@ class FakeKnowledgeFileRepository:
         self.conditional_update_calls = []
         self.deleted = []
 
-    async def get_by_file_id(self, file_id: str):
+    async def get_by_file_id(self, file_id: str, *, include_deleted: bool = False):
         return self.records.get(file_id)
 
     async def update_fields_if_status(self, *, kb_id: str, file_id: str, allowed_statuses: set[str], data: dict):
@@ -474,8 +474,10 @@ async def test_delete_file_chunks_only_resets_file_stats(monkeypatch):
         return None
 
     kb._get_existing_milvus_collection = get_collection
+    kb.graph_service = SimpleNamespace(delete_file_graph=AsyncMock())
 
     await kb.delete_file_chunks_only("db", "file-1")
+    kb.graph_service.delete_file_graph.assert_awaited_once_with("db", "file-1", generation=None)
 
     assert repos[0].delete_calls == ["file-1"]
     assert file_repo.records["file-1"].chunk_count == 0
@@ -1136,7 +1138,7 @@ async def test_cancelled_old_attempt_cleanup_preserves_published_result(monkeypa
     repository = FakeKnowledgeFileRepository({"file-1": make_file_record(status=FileStatus.UPLOADED, markdown_file=previous_url)})
     patch_file_repository(monkeypatch, repository)
     monkeypatch.setattr("yuxi.modules.documents.service.parse_to_hosted_markdown", AsyncMock(return_value="text"))
-    monkeypatch.setattr(kb, "_save_markdown_to_minio", AsyncMock(return_value=current_url))
+    monkeypatch.setattr(kb, "save_markdown_artifact", AsyncMock(return_value=current_url))
     cleanup = AsyncMock(side_effect=asyncio.CancelledError())
     monkeypatch.setattr(kb, "_cleanup_parse_attempt", cleanup)
     with pytest.raises(asyncio.CancelledError):

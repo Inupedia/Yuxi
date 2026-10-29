@@ -352,6 +352,13 @@ async def index_graph_build(
         raise HTTPException(status_code=500, detail=f"提交图谱构建任务失败: {e}")
 
 
+@knowledge.post("/knowledge-bases/{kb_id}/graph-build/files/{file_id}/clear")
+async def clear_file_graph(kb_id: str, file_id: str, current_user: User = Depends(require_knowledge_base_manage)):
+    """登记单文件图谱撤销，后台任务拥有外部清理与最终结果。"""
+    job = await graph_build.clear_file_graph(kb_id, file_id)
+    return {"message": "清除图谱任务已提交", "status": "queued", "job_id": job.id}
+
+
 @knowledge.get("/knowledge-bases/{kb_id}/graph-build/failed-chunks")
 async def get_graph_build_failed_chunks(
     kb_id: str,
@@ -703,6 +710,44 @@ async def get_document_basic_info(kb_id: str, doc_id: str, current_user: User = 
     except Exception as e:
         logger.error(f"Failed to get file basic info, {e}, {kb_id=}, {doc_id=}, {traceback.format_exc()}")
         return {"message": "Failed to get file basic info", "status": "failed"}
+
+
+@knowledge.post("/knowledge-bases/{kb_id}/documents/{doc_id}/reparse")
+async def reparse_document(
+    kb_id: str,
+    doc_id: str,
+    data: dict | None = Body(default=None),
+    current_user: User = Depends(require_knowledge_base_manage),
+):
+    """从保留原件重新解析，后台执行器拥有撤销及新结果发布。"""
+    from yuxi.modules.knowledge.services.document_resets import submit_document_reset
+
+    return await submit_document_reset(kb_id, doc_id, action="reparse", operator_id=current_user.uid, params=(data or {}).get("params"))
+
+
+@knowledge.get("/knowledge-bases/{kb_id}/documents/{doc_id}/markdown")
+async def get_document_markdown(kb_id: str, doc_id: str, current_user: User = Depends(require_knowledge_base_manage)):
+    """读取编辑用的可靠正文和修订，不以分块或空串替代读取失败。"""
+    from yuxi.modules.knowledge.services.document_resets import read_markdown_for_edit
+
+    return await read_markdown_for_edit(kb_id, doc_id)
+
+
+@knowledge.post("/knowledge-bases/{kb_id}/documents/{doc_id}/markdown")
+async def save_document_markdown(
+    kb_id: str, doc_id: str, data: dict = Body(...), current_user: User = Depends(require_knowledge_base_manage)
+):
+    """登记正文保存任务，由执行器撤销下游并条件发布新正文。"""
+    from yuxi.modules.knowledge.services.document_resets import submit_document_reset
+
+    return await submit_document_reset(
+        kb_id,
+        doc_id,
+        action="save_markdown",
+        operator_id=current_user.uid,
+        expected_revision=data.get("expected_revision"),
+        content=data.get("content"),
+    )
 
 
 @knowledge.get("/knowledge-bases/{kb_id}/documents/{doc_id}/content")

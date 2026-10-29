@@ -16,7 +16,7 @@ pytestmark = pytest.mark.asyncio
 
 def _patch_submit_job(monkeypatch, fake):
     """路由与服务共享作业提交入口，测试同时替换，避免按调用路径分叉。"""
-    monkeypatch.setattr(document_actions, "submit_job", fake)
+    monkeypatch.setattr(document_actions, "submit_knowledge_job", fake)
 
 
 def _database_detail(**stats) -> KnowledgeBaseDetail:
@@ -332,7 +332,7 @@ async def test_reconcile_graph_build_mutates_state_only_after_unique_job_is_crea
     monkeypatch.setattr(graph_build, "_has_active_job", fake_has_running_graph_build_job)
     monkeypatch.setattr(graph_build.knowledge_base, "get_knowledge_base_info", fake_get_knowledge_base_info)
     monkeypatch.setattr(knowledge_job_service, "KnowledgeGraphService", FakeGraphService)
-    monkeypatch.setattr(graph_build, "submit_job", fake_enqueue_unique_by_payload)
+    monkeypatch.setattr(graph_build, "submit_knowledge_job", fake_enqueue_unique_by_payload)
 
     result = await knowledge_router.reconcile_graph_build(
         "kb_1",

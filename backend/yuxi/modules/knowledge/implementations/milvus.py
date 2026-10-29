@@ -545,15 +545,13 @@ class MilvusKB(KnowledgeExecutor):
 
     # ==== 清理与运维 ====
 
-    async def delete_file_chunks_only(self, kb_id: str, file_id: str, generation: int | None = None) -> None:
+    async def delete_file_chunks_only(
+        self, kb_id: str, file_id: str, generation: int | None = None, *, update_file_stats: bool = True
+    ) -> None:
         """删除指定代次的派生 Chunk；不传 generation 时删除文件全部代次。"""
         chunk_repo = KnowledgeChunkRepository()
-        if await chunk_repo.count_graph_indexed_by_file_id(file_id, generation=generation):
-            try:
-                await self.graph_service.delete_file_graph(kb_id, file_id, generation=generation)
-            except Exception as e:
-                logger.error(f"Failed to delete graph data for file {file_id}: {e}")
-                raise
+        # 结构已写入但向量失败时 graph_indexed 仍为 false，也必须撤销其图谱贡献。
+        await self.graph_service.delete_file_graph(kb_id, file_id, generation=generation)
         collection = await self._get_existing_milvus_collection(kb_id)
 
         if collection:
@@ -567,7 +565,7 @@ class MilvusKB(KnowledgeExecutor):
             await chunk_repo.delete_by_file_id(file_id)
         else:
             await chunk_repo.delete_by_file_id(file_id, generation=generation)
-        if generation is None:
+        if generation is None and update_file_stats:
             await KnowledgeFileRepository().update_fields(
                 file_id=file_id,
                 kb_id=kb_id,

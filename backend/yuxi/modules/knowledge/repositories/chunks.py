@@ -103,6 +103,14 @@ class KnowledgeChunkRepository:
             )
             return list(result.scalars().all())
 
+    async def list_ids_by_file_generation(self, file_id: str, generation: int) -> list[str]:
+        """列出待清理代次的原始 ID，不套用当前可见性过滤。"""
+        async with pg_manager.get_async_session_context() as session:
+            result = await session.scalars(
+                select(KnowledgeChunk.chunk_id).where(KnowledgeChunk.file_id == file_id, KnowledgeChunk.generation == generation)
+            )
+            return list(result)
+
     async def list_by_kb_id(self, kb_id: str) -> list[KnowledgeChunk]:
         """列出知识库当前可见代次的全部 chunk，按主键升序保证顺序稳定。"""
         async with pg_manager.get_async_session_context() as session:

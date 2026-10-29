@@ -14,6 +14,7 @@ from yuxi.modules.knowledge.file_status import FileStatus
 from yuxi.modules.knowledge.models import KnowledgeFile, KnowledgeImport
 from yuxi.modules.knowledge.names import MAX_IMPORT_ITEMS, normalize_name, source_segments
 from yuxi.modules.knowledge.repositories.directories import DirectoryRepository
+from yuxi.modules.knowledge.repositories.document_resets import DocumentResetRepository
 from yuxi.modules.knowledge.utils import params_for_uploaded_document, prepare_item_metadata, resolve_processing_params
 from yuxi.modules.knowledge.utils.kb_utils import PREPROCESSED_UPLOADS_KEY
 from yuxi.shared.errors import DomainError, InvalidInputError, StateConflictError
@@ -123,6 +124,8 @@ async def _register_prepared(*, kb_id, prepared, params, operator_id, identity, 
                 raise StateConflictError("导入标识已用于不同请求", code="import_conflict")
             return receipt.response
         kb = await repo.lock(session, kb_id)
+        if process:
+            await DocumentResetRepository.require_submission(session, kb_id)
         parent_id = params.get("parent_id")
         await repo.parent(session, kb_id, parent_id)
 

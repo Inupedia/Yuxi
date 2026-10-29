@@ -34,6 +34,7 @@ from yuxi.modules.knowledge.graphs.graph_utils import (
 from yuxi.modules.knowledge.graphs.milvus_graph_vector_store import MilvusGraphVectorStore
 from yuxi.modules.knowledge.repositories.bases import KnowledgeBaseRepository
 from yuxi.modules.knowledge.repositories.chunks import KnowledgeChunkRepository
+from yuxi.modules.knowledge.repositories.document_resets import DocumentResetRepository
 from yuxi.modules.knowledge.repositories.graphs import KnowledgeGraphRepository
 from yuxi.modules.knowledge.repositories.projections import knowledge_projection_lock
 from yuxi.modules.knowledge.storage.offload import run_milvus_query_io, run_neo4j_query_io
@@ -213,6 +214,7 @@ class KnowledgeGraphService:
 
     async def _build_pending_chunks(self, kb_id: str, *, file_id: str | None = None, context=None) -> dict[str, Any]:
         """按现有流水线构建当前可见 Chunk 的图谱。"""
+        await DocumentResetRepository().require_processable(kb_id, file_id, job_id=getattr(context, "job_id", None))
         kb = await self._get_milvus_kb(kb_id)
         config = self._get_locked_config(kb.additional_params or {})
         extractor_options = self._runtime_extractor_options(config)
@@ -1021,6 +1023,7 @@ class KnowledgeGraphService:
 
     async def _reset(self, kb_id: str, *, clear_extraction_result: bool, clear_config: bool) -> dict[str, Any]:
         """删除图谱后重置知识库构建状态。"""
+        await DocumentResetRepository().require_processable(kb_id)
         kb = await self._get_milvus_kb(kb_id)
         await await_io(asyncio.to_thread(self.delete_graph, kb_id))
         await self.graph_repo.delete_by_kb_id(kb_id)
@@ -1044,6 +1047,7 @@ class KnowledgeGraphService:
 
     async def _reconcile_vectors(self, kb_id: str, *, all_vectors: bool) -> dict[str, Any]:
         """执行已有图谱向量重置用例。"""
+        await DocumentResetRepository().require_processable(kb_id)
         await self._get_milvus_kb(kb_id)
         reset_records = await self.graph_repo.reconcile_vector_records(kb_id, all_vectors=all_vectors)
         if all_vectors:
@@ -1064,9 +1068,58 @@ class KnowledgeGraphService:
         neo4j_write(self.driver, query)
         self.graph_vector_store.drop_graph_collections(kb_id)
 
-    async def delete_file_graph(self, kb_id: str, file_id: str, *, generation: int | None = None) -> None:
+    async def clear_file_graph(self, kb_id: str, file_id: str, *, generation: int, context=None) -> dict[str, Any]:
+        """撤销文件全部图谱产物，保留文件、正文、分块和普通检索索引。"""
+        async with self.graph_repo.file_clear_scope(kb_id, file_id, generation):
+            # 排他锁可能等待超过 attempt 租约；必须在获得写权限之后重新确认 Owner。
+            if context is not None:
+                await context.raise_if_cancelled()
+            await DocumentResetRepository().require_processable(kb_id, file_id, job_id=getattr(context, "job_id", None))
+            await self._get_milvus_kb(kb_id)
+            await self.delete_file_graph(kb_id, file_id, clear_extraction_result=True)
+        return {"kb_id": kb_id, "file_id": file_id, "status": "cleared"}
+
+    async def delete_file_graph(
+        self, kb_id: str, file_id: str, *, generation: int | None = None, clear_extraction_result: bool = False
+    ) -> None:
         """外部清理成功后才提交关联移除，失败保留重试所需的 ID。"""
-        async with self.graph_repo.delete_file_references(file_id, generation=generation) as scope:
+        chunk_ids = None
+        if generation is not None:
+            chunk_ids = await self.chunk_repo.list_ids_by_file_generation(file_id, generation)
+        affected_entities, affected_triples = await await_io(asyncio.to_thread(self._file_graph_record_ids, kb_id, file_id, chunk_ids))
+        # 历史孤儿已无 PG 提及；先提交其撤销，保留 Neo4j 归属作为后续失败重试的范围证据。
+        await self.graph_repo.delete_orphan_records(entity_ids=affected_entities, triple_ids=affected_triples)
+        sources = await self.graph_repo.file_entity_sources(file_id, generation=generation, additional_entity_ids=affected_entities)
+        restored_by_id = {}
+        for source in sources:
+            entity = restored_by_id.setdefault(
+                source["entity_id"],
+                {
+                    "entity_id": source["entity_id"],
+                    "name": source["normalized_name"],
+                    "attributes": [],
+                    "source_chunk_id": None,
+                },
+            )
+            if entity["source_chunk_id"] is not None:
+                continue
+            if source["extraction_result"]:
+                payload = build_graph_payload(source["extraction_result"])
+                records = self._build_entity_records(kb_id, payload["entities"])
+                for record in records:
+                    if record["entity_id"] == source["entity_id"]:
+                        entity.update(name=record["name"], attributes=record["attributes"], source_chunk_id=source["chunk_id"])
+                        break
+        restored_entities = list(restored_by_id.values())
+        options = {
+            "generation": generation,
+            "restored_entities": restored_entities,
+            "additional_entity_ids": affected_entities,
+            "additional_triple_ids": affected_triples,
+        }
+        if clear_extraction_result:
+            options["clear_extraction_result"] = True
+        async with self.graph_repo.delete_file_references(file_id, **options) as scope:
             orphan_entity_ids, orphan_triple_ids, chunk_ids = scope
             graph_vector_store = await self.get_graph_vector_store()
             await await_io(
@@ -1076,9 +1129,34 @@ class KnowledgeGraphService:
                     triple_ids=orphan_triple_ids,
                 )
             )
-            await await_io(asyncio.to_thread(self._delete_file_graph_from_neo4j, kb_id, file_id, chunk_ids))
+            # 全文件清理也覆盖历史上已经失去 PG Chunk 的 Neo4j 半成品。
+            neo4j_chunks = chunk_ids if generation is not None else None
+            await await_io(asyncio.to_thread(self._delete_file_graph_from_neo4j, kb_id, file_id, neo4j_chunks, restored_entities))
 
-    def _delete_file_graph_from_neo4j(self, kb_id: str, file_id: str, chunk_ids: list[str]) -> None:
+    def _file_graph_record_ids(self, kb_id: str, file_id: str, chunk_ids: list[str] | None) -> tuple[list[str], list[str]]:
+        """读取文件可归属的 Neo4j 实体和三元组，补足 PG 提及丢失的半成品。"""
+        label = safe_neo4j_label(kb_id)
+        with self.driver.session() as session:
+            rows = session.run(
+                f"MATCH (c:Chunk:MilvusKB:`{label}` {{kb_id: $kb_id, file_id: $file_id}})-[:MENTIONS]->(e:Entity) "
+                "WHERE $chunk_ids IS NULL OR c.chunk_id IN $chunk_ids RETURN DISTINCT 'entity' AS kind, e.entity_id AS id "
+                "UNION "
+                "MATCH ()-[r:RELATION {kb_id: $kb_id, file_id: $file_id}]->() "
+                "WHERE $chunk_ids IS NULL OR r.chunk_id IN $chunk_ids RETURN DISTINCT 'triple' AS kind, r.triple_id AS id",
+                kb_id=kb_id,
+                file_id=file_id,
+                chunk_ids=chunk_ids,
+            )
+            entity_ids, triple_ids = [], []
+            for row in rows:
+                if row["id"]:
+                    target = entity_ids if row["kind"] == "entity" else triple_ids
+                    target.append(row["id"])
+            return entity_ids, triple_ids
+
+    def _delete_file_graph_from_neo4j(
+        self, kb_id: str, file_id: str, chunk_ids: list[str] | None, restored_entities: list[dict] | None = None
+    ) -> None:
         label = safe_neo4j_label(kb_id)
 
         def query(tx):
@@ -1086,7 +1164,7 @@ class KnowledgeGraphService:
                 f"""
                 MATCH (:Entity:MilvusKB:`{label}`)-[r:RELATION {{kb_id: $kb_id, file_id: $file_id}}]->
                     (:Entity:MilvusKB:`{label}`)
-                WHERE r.chunk_id IN $chunk_ids
+                WHERE $chunk_ids IS NULL OR r.chunk_id IN $chunk_ids
                 DELETE r
                 """,
                 kb_id=kb_id,
@@ -1097,7 +1175,7 @@ class KnowledgeGraphService:
                 f"""
                 MATCH (:Chunk:MilvusKB:`{label}` {{kb_id: $kb_id, file_id: $file_id}})-[m:MENTIONS]->
                     (e:Entity:MilvusKB:`{label}`)
-                WHERE m.chunk_id IN $chunk_ids
+                WHERE $chunk_ids IS NULL OR m.chunk_id IN $chunk_ids
                 DELETE m
                 WITH DISTINCT e
                 WHERE NOT ()-[:MENTIONS]->(e)
@@ -1110,13 +1188,23 @@ class KnowledgeGraphService:
             tx.run(
                 f"""
                 MATCH (c:Chunk:MilvusKB:`{label}` {{kb_id: $kb_id, file_id: $file_id}})
-                WHERE c.chunk_id IN $chunk_ids
+                WHERE $chunk_ids IS NULL OR c.chunk_id IN $chunk_ids
                 DETACH DELETE c
                 """,
                 kb_id=kb_id,
                 file_id=file_id,
                 chunk_ids=chunk_ids,
             )
+
+            for entity in restored_entities or []:
+                tx.run(
+                    f"MATCH (e:Entity:MilvusKB:`{label}` {{entity_id: $entity_id}}) "
+                    "SET e.name=$name, e.attributes=$attributes, e.source_chunk_id=$source_chunk_id",
+                    entity_id=entity["entity_id"],
+                    name=entity["name"],
+                    attributes=json.dumps(entity["attributes"], ensure_ascii=False),
+                    source_chunk_id=entity["source_chunk_id"],
+                )
 
         neo4j_write(self.driver, query)
 

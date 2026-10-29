@@ -10,6 +10,7 @@ from sqlalchemy import case, delete, exists, func, literal, or_, select, union_a
 from sqlalchemy.dialects.postgresql import insert
 
 from yuxi.infrastructure.postgres.manager import pg_manager
+from yuxi.modules.knowledge.file_status import FileStatus
 from yuxi.modules.knowledge.models import (
     KnowledgeChunk,
     KnowledgeFile,
@@ -20,6 +21,7 @@ from yuxi.modules.knowledge.models import (
 )
 from yuxi.modules.knowledge.repositories.chunks import KnowledgeChunkRepository
 from yuxi.modules.knowledge.repositories.projections import acquire_knowledge_projection_lock
+from yuxi.shared.errors import InvalidOperationError, ResourceNotFoundError, StateConflictError
 
 
 class KnowledgeGraphRepository:
@@ -96,6 +98,31 @@ class KnowledgeGraphRepository:
             if not count:
                 raise ValueError("文件当前没有可构建的分块")
             yield
+
+    @asynccontextmanager
+    async def file_clear_scope(self, kb_id: str, file_id: str, generation: int):
+        """清理独占投影并锁住目标文件，拒绝排队期间发生的删除和代次替换。"""
+        async with pg_manager.get_async_session_context() as session:
+            await acquire_knowledge_projection_lock(session, kb_id)
+            file = await session.scalar(
+                select(KnowledgeFile)
+                .where(KnowledgeFile.kb_id == kb_id, KnowledgeFile.file_id == file_id, KnowledgeFile.deleted_at.is_(None))
+                .with_for_update(read=True)
+            )
+            if file is None:
+                raise ResourceNotFoundError("文件不存在或不属于该知识库")
+            self.require_clearable_file(file)
+            if file.active_generation != generation:
+                raise StateConflictError("文件代次已改变，请刷新后重新清除图谱")
+            yield
+
+    @staticmethod
+    def require_clearable_file(file) -> None:
+        """文件图谱撤销只接受有稳定正文的非目录文件。"""
+        if file.is_folder:
+            raise InvalidOperationError("目录不能清除图谱")
+        if file.status not in {FileStatus.PARSED, FileStatus.INDEXED, FileStatus.ERROR_INDEXING, "done"}:
+            raise StateConflictError("文件当前状态不能清除图谱，请等待处理完成")
 
     @staticmethod
     def _vector_file_scope(model, file_id: str | None):
@@ -424,9 +451,46 @@ class KnowledgeGraphRepository:
                 await session.execute(update(KnowledgeChunk).where(KnowledgeChunk.kb_id == kb_id).values(graph_indexed=False))
         return total
 
+    async def file_entity_sources(self, file_id: str, *, generation: int | None, additional_entity_ids: list[str]) -> list[dict[str, Any]]:
+        """为受影响共享实体选取仍可见的提及来源，禁止复用被撤销文件覆盖的聚合属性。"""
+        removed_chunks = select(KnowledgeChunk.chunk_id).where(KnowledgeChunk.file_id == file_id)
+        if generation is not None:
+            removed_chunks = removed_chunks.where(KnowledgeChunk.generation == generation)
+        affected = select(KnowledgeGraphEntityMention.entity_id).where(KnowledgeGraphEntityMention.chunk_id.in_(removed_chunks))
+        async with pg_manager.get_async_session_context() as session:
+            rows = await session.execute(
+                select(
+                    KnowledgeGraphEntity.entity_id,
+                    KnowledgeGraphEntity.normalized_name,
+                    KnowledgeGraphEntityMention.chunk_id,
+                    KnowledgeChunk.extraction_result,
+                )
+                .join(KnowledgeGraphEntityMention, KnowledgeGraphEntityMention.entity_id == KnowledgeGraphEntity.entity_id)
+                .join(KnowledgeChunk, KnowledgeChunk.chunk_id == KnowledgeGraphEntityMention.chunk_id)
+                .where(
+                    or_(KnowledgeGraphEntity.entity_id.in_(affected), KnowledgeGraphEntity.entity_id.in_(additional_entity_ids)),
+                    ~KnowledgeChunk.chunk_id.in_(removed_chunks),
+                    KnowledgeChunkRepository.visible_scope(),
+                )
+                .order_by(KnowledgeGraphEntity.entity_id, KnowledgeChunk.chunk_id)
+            )
+            return [dict(row._mapping) for row in rows]
+
+    async def delete_orphan_records(self, *, entity_ids: list[str], triple_ids: list[str]) -> None:
+        """先提交历史无引用记录的撤销，Neo4j 保留文件归属直到外部清理成功。"""
+        async with pg_manager.get_async_session_context() as session:
+            await self._delete_orphan_records(session, entity_ids=entity_ids, triple_ids=triple_ids)
+
     @asynccontextmanager
     async def delete_file_references(
-        self, file_id: str, *, generation: int | None = None
+        self,
+        file_id: str,
+        *,
+        generation: int | None = None,
+        clear_extraction_result: bool = False,
+        restored_entities: list[dict] | None = None,
+        additional_entity_ids: list[str] | None = None,
+        additional_triple_ids: list[str] | None = None,
     ) -> AsyncIterator[tuple[list[str], list[str], list[str]]]:
         """清理指定代次关联；外部删除失败时回滚，保留重试依据。"""
         entity_scope = KnowledgeGraphEntityMention.file_id == file_id
@@ -446,57 +510,40 @@ class KnowledgeGraphRepository:
                 (await session.execute(select(KnowledgeGraphTripleMention.triple_id).where(triple_scope).distinct())).scalars().all()
             )
 
+            # 历史上 Chunk 可能先被删除，Neo4j 文件来源补足已被级联删除的提及归属。
+            affected_entity_ids = list(set(affected_entity_ids) | set(additional_entity_ids or []))
+            affected_triple_ids = list(set(affected_triple_ids) | set(additional_triple_ids or []))
+
             # 先删提及再在同一事务内判定孤儿；孤儿三元组先于孤儿实体删除，
             # 否则刚被清空的边会把本应删除的实体继续钉在图里。
             await session.execute(delete(KnowledgeGraphTripleMention).where(triple_scope))
             await session.execute(delete(KnowledgeGraphEntityMention).where(entity_scope))
 
-            orphan_triple_ids: list[str] = []
-            if affected_triple_ids:
-                triple_has_mentions = exists().where(KnowledgeGraphTripleMention.triple_id == KnowledgeGraphTriple.triple_id)
-                orphan_triple_ids = list(
-                    (
-                        await session.execute(
-                            select(KnowledgeGraphTriple.triple_id).where(
-                                KnowledgeGraphTriple.triple_id.in_(affected_triple_ids),
-                                ~triple_has_mentions,
-                            )
-                        )
-                    )
-                    .scalars()
-                    .all()
-                )
-                if orphan_triple_ids:
-                    await session.execute(delete(KnowledgeGraphTriple).where(KnowledgeGraphTriple.triple_id.in_(orphan_triple_ids)))
-
-            orphan_entity_ids: list[str] = []
-            if affected_entity_ids:
-                # 实体仍是任一三元组端点时保留，只随最后一条边一起消失。
-                entity_has_mentions = exists().where(KnowledgeGraphEntityMention.entity_id == KnowledgeGraphEntity.entity_id)
-                entity_has_triples = exists().where(
-                    or_(
-                        KnowledgeGraphTriple.source_entity_id == KnowledgeGraphEntity.entity_id,
-                        KnowledgeGraphTriple.target_entity_id == KnowledgeGraphEntity.entity_id,
-                    )
-                )
-                orphan_entity_ids = list(
-                    (
-                        await session.execute(
-                            select(KnowledgeGraphEntity.entity_id).where(
-                                KnowledgeGraphEntity.entity_id.in_(affected_entity_ids),
-                                ~entity_has_mentions,
-                                ~entity_has_triples,
-                            )
-                        )
-                    )
-                    .scalars()
-                    .all()
-                )
-                if orphan_entity_ids:
-                    await session.execute(delete(KnowledgeGraphEntity).where(KnowledgeGraphEntity.entity_id.in_(orphan_entity_ids)))
+            orphan_entity_ids, orphan_triple_ids = await self._delete_orphan_records(
+                session, entity_ids=affected_entity_ids, triple_ids=affected_triple_ids
+            )
 
             # 事务跨 yield 保持打开：外部 Neo4j/Milvus 清理失败时异常抛回本上下文，PG 删除整体回滚。
             yield orphan_entity_ids, orphan_triple_ids, chunk_ids
+            for entity in restored_entities or []:
+                await session.execute(
+                    update(KnowledgeGraphEntity)
+                    .where(KnowledgeGraphEntity.entity_id == entity["entity_id"])
+                    .values(name=entity["name"], attributes=entity["attributes"])
+                )
+            if clear_extraction_result:
+                await session.execute(
+                    update(KnowledgeChunk)
+                    .where(KnowledgeChunk.file_id == file_id)
+                    .values(
+                        graph_structure_indexed=False,
+                        graph_indexed=False,
+                        extraction_result=None,
+                        graph_extraction_details={"status": "pending", "attempt_count": 0},
+                        ent_ids=None,
+                        tags=None,
+                    )
+                )
 
     async def delete_by_kb_id(self, kb_id: str) -> None:
         """删除知识库全部图谱投影；先删提及和三元组再删实体，满足外键约束。"""
@@ -507,6 +554,42 @@ class KnowledgeGraphRepository:
             await session.execute(delete(KnowledgeGraphEntity).where(KnowledgeGraphEntity.kb_id == kb_id))
 
     # ─── 内部辅助 ──────────────────────────────────────────────────
+
+    @staticmethod
+    async def _delete_orphan_records(session, *, entity_ids: list[str], triple_ids: list[str]) -> tuple[list[str], list[str]]:
+        """仅回收候选中的无来源三元组，再按提及和剩余关系端点判定实体孤儿。"""
+        orphan_triple_ids = []
+        if triple_ids:
+            has_mentions = exists().where(KnowledgeGraphTripleMention.triple_id == KnowledgeGraphTriple.triple_id)
+            retained = set(
+                await session.scalars(
+                    select(KnowledgeGraphTriple.triple_id).where(KnowledgeGraphTriple.triple_id.in_(triple_ids), has_mentions)
+                )
+            )
+            # PG 已不存在的来源候选仍需清理外部向量，不能因先前重试已删行而漏掉。
+            orphan_triple_ids = sorted(set(triple_ids) - retained)
+            if orphan_triple_ids:
+                await session.execute(delete(KnowledgeGraphTriple).where(KnowledgeGraphTriple.triple_id.in_(orphan_triple_ids)))
+        orphan_entity_ids = []
+        if entity_ids:
+            has_mentions = exists().where(KnowledgeGraphEntityMention.entity_id == KnowledgeGraphEntity.entity_id)
+            has_triples = exists().where(
+                or_(
+                    KnowledgeGraphTriple.source_entity_id == KnowledgeGraphEntity.entity_id,
+                    KnowledgeGraphTriple.target_entity_id == KnowledgeGraphEntity.entity_id,
+                )
+            )
+            retained = set(
+                await session.scalars(
+                    select(KnowledgeGraphEntity.entity_id).where(
+                        KnowledgeGraphEntity.entity_id.in_(entity_ids), or_(has_mentions, has_triples)
+                    )
+                )
+            )
+            orphan_entity_ids = sorted(set(entity_ids) - retained)
+            if orphan_entity_ids:
+                await session.execute(delete(KnowledgeGraphEntity).where(KnowledgeGraphEntity.entity_id.in_(orphan_entity_ids)))
+        return orphan_entity_ids, orphan_triple_ids
 
     @staticmethod
     def _vector_model(record_type: str):

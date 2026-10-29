@@ -124,7 +124,10 @@ async def test_graph_build_rejections_do_not_create_jobs(test_client, admin_head
 
 @pytest.mark.integration
 @pytest.mark.asyncio
-async def test_active_graph_job_blocks_requests_without_resetting(test_client, admin_headers, knowledge_base_resource, postgres_sessions):
+@pytest.mark.parametrize("job_status", ["pending", "running"])
+async def test_active_graph_job_blocks_requests_without_resetting(
+    test_client, admin_headers, knowledge_base_resource, postgres_sessions, job_status
+):
     """已执行且租约有效的任务阻止重复提交和重置，现有配置与任务事实保持。"""
     from datetime import timedelta
     from uuid import uuid4
@@ -147,7 +150,7 @@ async def test_active_graph_job_blocks_requests_without_resetting(test_client, a
                 name="pytest graph active owner",
                 type=GRAPH_TASK_TYPE,
                 payload={"kb_id": kb_id, "action": "build"},
-                status="running",
+                status=job_status,
                 worker_id="pytest-owner",
                 started_at=utc_now(),
                 heartbeat_at=utc_now(),
@@ -157,7 +160,7 @@ async def test_active_graph_job_blocks_requests_without_resetting(test_client, a
         await writer.commit()
     try:
         base = f"/api/knowledge/knowledge-bases/{kb_id}/graph-build"
-        for action in ["index", "reconcile", "reset"]:
+        for action in ["index", "reconcile", "reset", "files/any-file/clear"]:
             response = await test_client.post(f"{base}/{action}", json={}, headers=admin_headers)
             expected = "该知识库存在正在运行的图谱构建任务，无法重置" if action == "reset" else "该知识库已有正在运行的图谱构建任务"
             assert response.status_code == 409 and response.json() == {"detail": expected}, response.text
@@ -165,7 +168,7 @@ async def test_active_graph_job_blocks_requests_without_resetting(test_client, a
             jobs = list(
                 await observer.scalars(select(BackgroundJobRecord).where(BackgroundJobRecord.payload["kb_id"].as_string() == kb_id))
             )
-            assert [(job.id, job.status, job.payload) for job in jobs] == [(job_id, "running", {"kb_id": kb_id, "action": "build"})]
+            assert [(job.id, job.status, job.payload) for job in jobs] == [(job_id, job_status, {"kb_id": kb_id, "action": "build"})]
             row = await observer.scalar(select(KnowledgeBase).where(KnowledgeBase.kb_id == kb_id))
             assert row.additional_params == params
     finally:
@@ -315,3 +318,178 @@ async def test_file_graph_build_validates_scope_and_persists_generation(
             kb = await session.scalar(select(KnowledgeBase).where(KnowledgeBase.kb_id == other_kb))
             await session.delete(kb)
             await session.commit()
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+@pytest.mark.parametrize("route_action", ["graph", "reparse", "markdown_read", "markdown_save"])
+async def test_document_rollback_enforces_permission_and_file_scope_without_mutation(actors, route_action):
+    """真实 HTTP 拒绝未授权、只读管理员、跨库目标和目录，PG 不产生任务或文件变更。"""
+    from uuid import uuid4
+
+    from test.support.knowledge import default_embedding_model_spec
+    from test.support.permission_convergence import SHARED
+
+    client, db, root_headers = actors["client"], actors["db"], actors["root"]
+    kb_ids = []
+    try:
+        for _ in range(2):
+            response = await client.post(
+                "/api/knowledge/knowledge-bases",
+                headers=root_headers,
+                json={
+                    "name": f"pytest_clear_scope_{uuid4().hex}",
+                    "description": "File graph permission test",
+                    "kb_type": "milvus",
+                    "embedding_model_spec": default_embedding_model_spec(),
+                    "share_config": SHARED,
+                },
+            )
+            assert response.status_code == 200, response.text
+            kb_ids.append(response.json()["kb_id"])
+        kb_id, other_kb = kb_ids
+        target, foreign, folder = [uuid4().hex for _ in range(3)]
+        await db.executemany(
+            "INSERT INTO knowledge_files(file_id,kb_id,filename,status,active_generation,is_folder) VALUES($1,$2,$1,'indexed',1,$3)",
+            [(target, kb_id, False), (foreign, other_kb, False), (folder, kb_id, True)],
+        )
+        before_files = await db.fetch(
+            "SELECT file_id,kb_id,status,active_generation,is_folder FROM knowledge_files WHERE file_id=ANY($1::text[]) ORDER BY file_id",
+            [target, foreign, folder],
+        )
+        for file_id, headers, expected in [
+            (target, {}, 401),
+            (target, actors["identities"]["admin0"]["headers"], 403),
+            (foreign, root_headers, 404),
+            (folder, root_headers, 400),
+        ]:
+            if route_action == "graph":
+                response = await client.post(f"/api/knowledge/knowledge-bases/{kb_id}/graph-build/files/{file_id}/clear", headers=headers)
+            elif route_action == "markdown_read":
+                response = await client.get(f"/api/knowledge/knowledge-bases/{kb_id}/documents/{file_id}/markdown", headers=headers)
+            else:
+                suffix = "reparse" if route_action == "reparse" else "markdown"
+                response = await client.post(
+                    f"/api/knowledge/knowledge-bases/{kb_id}/documents/{file_id}/{suffix}",
+                    headers=headers,
+                    json={"expected_revision": "obsolete", "content": "draft"},
+                )
+            assert response.status_code == expected, response.text
+        assert await db.fetchval("SELECT count(*) FROM background_jobs WHERE payload->>'kb_id'=$1", kb_id) == 0
+        after_files = await db.fetch(
+            "SELECT file_id,kb_id,status,active_generation,is_folder FROM knowledge_files WHERE file_id=ANY($1::text[]) ORDER BY file_id",
+            [target, foreign, folder],
+        )
+        assert after_files == before_files
+    finally:
+        for kb_id in kb_ids:
+            response = await client.delete(f"/api/knowledge/knowledge-bases/{kb_id}", headers=root_headers)
+            assert response.status_code in {200, 404}, response.text
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_reparse_rejects_invalid_params_before_any_persistent_intent(
+    test_client, admin_headers, knowledge_base_resource, postgres_sessions
+):
+    """非法嵌套参数在真实 HTTP 登记前拒绝，不撤销文件也不保存任务。"""
+    from uuid import uuid4
+
+    from sqlalchemy import insert, select
+
+    from yuxi.modules.background_jobs.models import BackgroundJobRecord
+    from yuxi.modules.knowledge.models import KnowledgeFile
+
+    kb_id, file_id = knowledge_base_resource["kb_id"], uuid4().hex
+    async with postgres_sessions() as session:
+        await session.execute(
+            insert(KnowledgeFile).values(
+                kb_id=kb_id,
+                file_id=file_id,
+                filename="invalid-params.docx",
+                status="indexed",
+                generation=4,
+                active_generation=4,
+                path="http://minio:9000/documents/test/source.docx",
+                markdown_file="http://minio:9000/parsed/test/document.md",
+            )
+        )
+        await session.commit()
+    for params in ([], "invalid", 123, False):
+        response = await test_client.post(
+            f"/api/knowledge/knowledge-bases/{kb_id}/documents/{file_id}/reparse",
+            headers=admin_headers,
+            json={"params": params},
+        )
+        assert response.status_code == 400 and response.json()["detail"] == "解析参数必须是对象", response.text
+    async with postgres_sessions() as session:
+        file = await session.scalar(select(KnowledgeFile).where(KnowledgeFile.file_id == file_id))
+        assert (file.status, file.generation, file.active_generation) == ("indexed", 4, 4)
+        assert file.markdown_file == "http://minio:9000/parsed/test/document.md"
+        assert file.processing_job_id is None
+        assert await session.scalar(select(BackgroundJobRecord.id).where(BackgroundJobRecord.payload["kb_id"].as_string() == kb_id)) is None
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_document_clear_primitives_have_no_independent_http_entry(test_client, admin_headers, knowledge_base_resource):
+    """清理只由领域编排使用，不能因测试或前端遗留暴露额外公开动作。"""
+    kb_id = knowledge_base_resource["kb_id"]
+    for action in ("clear-index", "clear-parse"):
+        response = await test_client.post(f"/api/knowledge/knowledge-bases/{kb_id}/documents/any-file/{action}", headers=admin_headers)
+        assert response.status_code == 404, response.text
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_markdown_rejects_invalid_content_and_stale_revision_before_persistent_intent(
+    test_client, admin_headers, knowledge_base_resource, postgres_sessions
+):
+    """保存信任边界拒绝非法正文与旧修订，不能先暂存、排队或撤销索引。"""
+    from uuid import uuid4
+
+    from sqlalchemy import select
+
+    from yuxi.modules.background_jobs.models import BackgroundJobRecord
+    from yuxi.modules.knowledge.models import KnowledgeFile
+
+    kb_id, file_id = knowledge_base_resource["kb_id"], uuid4().hex
+    async with postgres_sessions() as session:
+        session.add(
+            KnowledgeFile(kb_id=kb_id, file_id=file_id, filename="manual.txt", status="uploaded", generation=2, active_generation=2)
+        )
+        await session.commit()
+    base = f"/api/knowledge/knowledge-bases/{kb_id}/documents/{file_id}/markdown"
+    response = await test_client.get(base, headers=admin_headers)
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["content"] == "" and body["has_parsed_markdown"] is False
+    for content, revision, expected in [
+        (None, body["revision"], 400),
+        ([], body["revision"], 400),
+        ("valid", 123, 400),
+        ("draft", "obsolete", 409),
+    ]:
+        response = await test_client.post(base, headers=admin_headers, json={"content": content, "expected_revision": revision})
+        assert response.status_code == expected, response.text
+    async with postgres_sessions() as session:
+        file = await session.scalar(select(KnowledgeFile).where(KnowledgeFile.file_id == file_id))
+        assert (file.status, file.generation, file.active_generation, file.markdown_file, file.processing_job_id) == (
+            "uploaded",
+            2,
+            2,
+            None,
+            None,
+        )
+        assert await session.scalar(select(BackgroundJobRecord.id).where(BackgroundJobRecord.payload["kb_id"].as_string() == kb_id)) is None
+    missing_pointer = f"http://minio:9000/knowledgebases/{kb_id}/parsed/{file_id}/missing/document.md"
+    async with postgres_sessions() as session:
+        file = await session.scalar(select(KnowledgeFile).where(KnowledgeFile.file_id == file_id))
+        file.markdown_file = missing_pointer
+        await session.commit()
+    response = await test_client.get(base, headers=admin_headers)
+    assert response.status_code == 500 and response.json()["detail"] == "无法读取现有 Markdown，请恢复解析产物后重试", response.text
+    async with postgres_sessions() as session:
+        file = await session.scalar(select(KnowledgeFile).where(KnowledgeFile.file_id == file_id))
+        assert (file.status, file.generation, file.active_generation, file.markdown_file) == ("uploaded", 2, 2, missing_pointer)
+        assert await session.scalar(select(BackgroundJobRecord.id).where(BackgroundJobRecord.payload["kb_id"].as_string() == kb_id)) is None

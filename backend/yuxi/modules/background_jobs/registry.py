@@ -74,6 +74,13 @@ JOB_DEFINITIONS = {
             failure_function="fail_knowledge_file_job",
         ),
         JobDefinition(
+            "knowledge_document_reset",
+            "yuxi.modules.knowledge.services.document_resets",
+            "run_document_reset",
+            success_function="finish_document_reset",
+            failure_function="fail_document_reset",
+        ),
+        JobDefinition(
             "knowledge_graph_index",
             "yuxi.modules.knowledge.services.background_jobs",
             "run_knowledge_graph",

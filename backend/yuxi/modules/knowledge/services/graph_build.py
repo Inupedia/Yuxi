@@ -1,13 +1,14 @@
 """图谱构建的提交准入和重置；worker 独立消费已经登记的任务。"""
 
-from yuxi.modules.background_jobs.dispatch import submit_job
 from yuxi.modules.background_jobs.models import BackgroundJobRecord
 from yuxi.modules.background_jobs.service import job_tracker
 from yuxi.modules.knowledge.graphs.service import GRAPH_TASK_TYPE, KnowledgeGraphService
 from yuxi.modules.knowledge.read_models import KnowledgeBaseDetail
 from yuxi.modules.knowledge.repositories.chunks import KnowledgeChunkRepository
 from yuxi.modules.knowledge.repositories.files import KnowledgeFileRepository
+from yuxi.modules.knowledge.repositories.graphs import KnowledgeGraphRepository
 from yuxi.modules.knowledge.runtime import knowledge_base
+from yuxi.modules.knowledge.services.document_actions import submit_knowledge_job
 from yuxi.shared.errors import InvalidOperationError, ResourceNotFoundError, StateConflictError
 
 
@@ -41,6 +42,22 @@ async def start_graph_build(kb_id: str, *, file_id: str | None = None) -> Backgr
     return await _submit_graph_job(kb_id, name=f"图谱构建 ({kb.name})", payload=payload)
 
 
+async def clear_file_graph(kb_id: str, file_id: str) -> BackgroundJobRecord:
+    """为稳定文件登记图谱撤销任务，所有图谱动作共用知识库唯一准入。"""
+    kb = await _require_available_knowledge_base(kb_id)
+    if kb.kb_type.lower() != "milvus":
+        raise InvalidOperationError("仅 Milvus 知识库支持清除图谱")
+    file = await KnowledgeFileRepository().get_by_file_id(file_id)
+    if file is None or file.kb_id != kb_id:
+        raise ResourceNotFoundError("文件不存在或不属于该知识库")
+    KnowledgeGraphRepository.require_clearable_file(file)
+    return await _submit_graph_job(
+        kb_id,
+        name=f"清除文件图谱 ({file.filename})",
+        payload={"kb_id": kb_id, "action": "clear_file", "file_id": file_id, "generation": int(file.active_generation)},
+    )
+
+
 async def reconcile_graph_build(kb_id: str, *, mode: str) -> BackgroundJobRecord:
     """校验修复范围并登记唯一修复任务，执行方才修改图谱事实。"""
     if mode not in {"failed", "all_vectors"}:
@@ -72,7 +89,7 @@ async def _require_available_knowledge_base(kb_id: str) -> KnowledgeBaseDetail:
 
 async def _submit_graph_job(kb_id: str, *, name: str, payload: dict) -> BackgroundJobRecord:
     """通过持久唯一登记处理预检后的并发竞争，提交后才投递。"""
-    job, created = await submit_job(name=name, job_type=GRAPH_TASK_TYPE, payload=payload, payload_match={"kb_id": kb_id})
+    job, created = await submit_knowledge_job(name=name, job_type=GRAPH_TASK_TYPE, payload=payload, payload_match={"kb_id": kb_id})
     if not created:
         raise StateConflictError("该知识库已有正在运行的图谱构建任务")
     return job

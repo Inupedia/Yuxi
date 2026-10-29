@@ -247,6 +247,24 @@ export const documentApi = {
     })
   },
 
+  /** 严格读取可编辑的完整 Markdown 和修订凭据。 */
+  getDocumentMarkdown: async (kbId, fileId) => {
+    return apiAdminGet(`/api/knowledge/knowledge-bases/${kbId}/documents/${encodeURIComponent(fileId)}/markdown`)
+  },
+
+  /** 以修订凭据提交 Markdown 保存任务。 */
+  saveDocumentMarkdown: async (kbId, fileId, expectedRevision, content) => {
+    return apiAdminPost(`/api/knowledge/knowledge-bases/${kbId}/documents/${encodeURIComponent(fileId)}/markdown`, {
+      expected_revision: expectedRevision,
+      content
+    })
+  },
+
+  /** 从原件重新解析文件，并清除已有下游数据。 */
+  reparseDocument: async (kbId, fileId, params = {}) => {
+    return apiAdminPost(`/api/knowledge/knowledge-bases/${kbId}/documents/${encodeURIComponent(fileId)}/reparse`, { params })
+  },
+
   /**
    * 手动触发全部待解析文档解析
    * @param {string} kbId - 知识库ID
@@ -313,6 +331,11 @@ export const graphBuildApi = {
 
   startIndex: async (kbId, fileId = null) => {
     return apiAdminPost(graphBuildUrl(kbId, 'index'), fileId ? { file_id: fileId } : {})
+  },
+
+  /** 提交单个文件的图谱清除任务。 */
+  clearFile: async (kbId, fileId) => {
+    return apiAdminPost(`${graphBuildUrl(kbId, 'files')}/${encodeURIComponent(fileId)}/clear`)
   },
 
   reset: async (kbId, data) => {

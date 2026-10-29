@@ -13,6 +13,19 @@ const deferred = () => {
   return { promise, resolve }
 }
 
+test('后台任务抽屉为文档产物撤销展示中文类型', () => {
+  const source = readFileSync(new URL('../../src/modules/background-jobs/ui/BackgroundJobsDrawer.vue', import.meta.url), 'utf8')
+  const { descriptor } = parse(source)
+  const { scriptSetupAst } = compileScript(descriptor, { id: 'job-type-label-test' })
+  const declarations = scriptSetupAst.filter((node) =>
+    (node.type === 'VariableDeclaration' && node.declarations.some((item) => item.id.name === 'TASK_TYPE_LABELS')) ||
+    (node.type === 'FunctionDeclaration' && node.id.name === 'jobTypeLabel')
+  )
+  const jobTypeLabel = new Function(declarations.map((node) => descriptor.scriptSetup.content.slice(node.start, node.end)).join('\n') + '; return jobTypeLabel')()
+  assert.equal(jobTypeLabel('knowledge_document_reset'), '文档产物撤销')
+  assert.equal(jobTypeLabel('knowledge_graph_index'), '图谱构建')
+})
+
 test('任务请求时序与轮询生命周期', async (t) => {
   globalThis.localStorage = { getItem: () => null, setItem() {}, removeItem() {} }
   const server = await createTestServer({

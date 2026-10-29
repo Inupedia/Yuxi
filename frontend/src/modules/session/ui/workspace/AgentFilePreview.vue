@@ -144,7 +144,7 @@
       </template>
     </div>
 
-    <div v-if="canEdit && editMode === 'edit'" class="edit-floating-actions">
+    <div v-if="showEditActions && canEdit && editMode === 'edit'" class="edit-floating-actions">
       <span v-if="draftChanged" class="edit-status-badge">未保存</span>
       <button
         class="edit-floating-btn edit-floating-wrap-btn"
@@ -193,6 +193,7 @@
           v-model="draftContent"
           @input="emit('draft-change', draftContent)"
           class="file-edit-textarea"
+          aria-label="编辑文件内容"
           :class="{ 'no-wrap': !lineWrapEnabled }"
           :disabled="saving"
           :wrap="lineWrapEnabled ? 'soft' : 'off'"
@@ -415,6 +416,7 @@ const HTML_PREVIEW_SCALE_MAX = 1.5
 
 const props = defineProps({
   showSaveAction: { type: Boolean, default: true },
+  showEditActions: { type: Boolean, default: true },
   draft: { type: String, default: null },
   file: {
     type: Object,
@@ -496,7 +498,7 @@ const props = defineProps({
   }
 })
 
-const emit = defineEmits(['close', 'download', 'save', 'draft-change'])
+const emit = defineEmits(['close', 'download', 'save', 'draft-change', 'cancel-edit'])
 
 const themeStore = useThemeStore()
 const closeTitle = computed(() =>
@@ -651,6 +653,7 @@ const cancelEdit = () => {
   draftContent.value = savedContent.value
   emit('draft-change', savedContent.value)
   editMode.value = 'preview'
+  emit('cancel-edit')
 }
 
 const openFullscreenPreview = () => {
@@ -997,7 +1000,6 @@ onUnmounted(() => {
   padding: 12px;
   border: 1px solid var(--gray-150);
   border-radius: 8px;
-  outline: none;
   resize: none;
   background: var(--gray-0);
   color: var(--gray-1000);
@@ -1009,6 +1011,11 @@ onUnmounted(() => {
     white-space: pre;
     overflow-x: auto;
   }
+}
+
+.file-edit-textarea:focus-visible {
+  outline: 2px solid var(--main-color);
+  outline-offset: -2px;
 }
 
 .file-edit-textarea:disabled {

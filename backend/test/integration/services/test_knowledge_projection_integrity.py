@@ -20,6 +20,7 @@ from yuxi.infrastructure.postgres.manager import pg_manager
 from yuxi.infrastructure.redis import close_async_redis_client
 from yuxi.api.routers.knowledge import management as knowledge_router
 from yuxi.infrastructure.filesystem import await_io
+from yuxi.modules.background_jobs.models import BackgroundJobRecord
 from yuxi.modules.knowledge.graphs.service import KnowledgeGraphService
 from yuxi.migrations.schema import create_knowledge_tables, ensure_knowledge_schema
 from yuxi.modules.knowledge.implementations.milvus import MilvusKB
@@ -46,6 +47,8 @@ async def database(monkeypatch):
     """给真实 repositories 提供独立 Schema 与 owning transaction。"""
     schema, admin, engine, manager = await _create_isolated_manager("pytest_projection")
     await create_knowledge_tables(manager)
+    async with engine.begin() as connection:
+        await connection.run_sync(lambda sync_connection: BackgroundJobRecord.__table__.create(sync_connection, checkfirst=True))
     sessions = async_sessionmaker(engine, expire_on_commit=False)
 
     @asynccontextmanager

@@ -187,6 +187,11 @@ jobs:
               test/integration/api/test_knowledge_directory_imports.py \
               test/integration/api/test_knowledge_file_summary.py \
               test/integration/api/test_graph_build_status.py -q
+      - name: Verify document rollback projections and recovery
+        run: |
+          docker compose exec -T api uv run --no-sync --no-dev pytest \
+            test/integration/graphs/test_file_graph_clear.py \
+            test/integration/services/test_knowledge_document_resets.py -q
       - name: Runtime logs on failure
         if: failure() || cancelled()
         run: |
