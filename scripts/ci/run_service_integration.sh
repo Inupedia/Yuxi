@@ -45,6 +45,7 @@ if [[ -n "${CI_TEST_REPORT_DIR:-}" ]]; then
     report_args=("--junitxml=${CI_TEST_REPORT_DIR}/service-integration.xml" --durations=20 --durations-min=1.0)
 fi
 uv run --locked --group test pytest \
+    test/integration/api/test_error_information_boundary.py \
     test/integration/services/test_app_initialization.py \
     test/integration/services/test_schema_migration_version.py \
     test/integration/services/test_agent_input_concurrency.py \

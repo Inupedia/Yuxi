@@ -34,6 +34,7 @@ class ReleaseWorkflowTests(unittest.TestCase):
             "system-tests",
             "service-integration",
             "dependency-audit",
+            "codeql",
             "deploy",
         ):
             events = re.split(r"\n(?=[\w-]+:)", workflows[name].split("\non:\n", 1)[1], maxsplit=1)[0]
@@ -146,6 +147,42 @@ class ReleaseWorkflowTests(unittest.TestCase):
         workflows["publish-yuxi-cli"] = workflows["publish-yuxi-cli"].replace("on:\n", "on:\n  release:\n    types: [published]\n", 1)
         with self.assertRaisesRegex(AssertionError, "CLI 必须独立手动发布"):
             self.assert_release_events(workflows)
+
+
+
+class CodeQLWorkflowTests(unittest.TestCase):
+    """持续扫描必须有真实触发、覆盖语言和结果上传入口。"""
+
+    def test_codeql_runs_current_sources_with_scoped_permissions(self):
+        """PR、主分支与周期扫描都能发布三种语言的结果。"""
+        self.assert_codeql_configuration((WORKFLOWS / "codeql.yml").read_text())
+
+    def test_missing_scan_trigger_language_or_upload_is_rejected(self):
+        """移除任一必要扫描入口、语言或上传步骤时门禁拒绝。"""
+        workflow = (WORKFLOWS / "codeql.yml").read_text()
+        for required in (
+            "  pull_request:", "  schedule:", "  workflow_dispatch:",
+            "branches: [main, 'develop/**']", "security-events: write",
+            "actions, javascript-typescript, python", "github/codeql-action/analyze@v4",
+            "category: /language:${{ matrix.language }}",
+        ):
+            with self.subTest(required=required), self.assertRaises(AssertionError):
+                self.assert_codeql_configuration(workflow.replace(required, "removed", 1))
+
+    def assert_codeql_configuration(self, workflow: str):
+        """验证扫描实际执行和历史 category 衔接，禁止提权执行 PR。"""
+        for required in (
+            "\n  pull_request:", "\n  schedule:", "\n  workflow_dispatch:",
+            "branches: [main, 'develop/**']", "security-events: write",
+            "language: [actions, javascript-typescript, python]",
+            "uses: github/codeql-action/init@v4", "languages: ${{ matrix.language }}",
+            "uses: github/codeql-action/analyze@v4", "category: /language:${{ matrix.language }}",
+        ):
+            self.assertIn(required, workflow)
+        self.assertNotIn("pull_request_target", workflow)
+        self.assertNotIn("contents: write", workflow)
+        events = workflow.split("\non:\n", 1)[1].split("\npermissions:", 1)[0]
+        self.assertNotIn("paths:", events, "安全扫描不能因路径过滤而继续使用历史快照")
 
 
 if __name__ == "__main__":

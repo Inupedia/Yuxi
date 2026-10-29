@@ -59,6 +59,8 @@ YUXI_URL_WHITELIST=github.com,docs.example.com,*.wikipedia.org
 
 系统内部引擎 ID 为 `rapid_ocr`、`mineru_ocr`、`mineru_official`、`pp_structure_v3_ocr`、`deepseek_ocr`、`paddleocr_vl_1_6` 和 `paddleocr_pp_ocrv6`。页面中的健康状态只表示配置或服务探测结果，真正解析时仍会验证凭证和接口。
 
+登录用户通过 `/api/system/ocr/health` 获取各引擎的状态和固定说明。`configured` 只表示凭据已配置，解析时仍会验证；响应中的 `details` 为空，不包含提供者原始消息、内部服务地址或凭据。配置检查或调用抛出异常时返回 `error`，具体异常记录在服务端日志。
+
 ## 在页面配置
 
 管理员进入“设置 → OCR 配置”可以设置默认引擎，并配置自托管服务地址或云端凭证。OCR 配置定义由 documents 模块拥有，system 模块统一管理持久化、脱敏和缓存。知识库上传和附件解析时可以单独选择引擎；没有单独选择时，使用系统默认值。

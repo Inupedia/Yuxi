@@ -90,6 +90,14 @@ def test_hash_password_uses_argon2():
     assert AuthUtils.verify_password(hashed, "wrong-password") is False
 
 
+def test_verify_password_rejects_legacy_sha256():
+    """历史快速哈希不能重新成为密码验证入口。"""
+    password = "fixture-password"
+    salt = "fixture-salt"
+    stored = hashlib.sha256((password + salt).encode()).hexdigest() + ":" + salt
+    assert AuthUtils.verify_password(stored, password) is False
+
+
 def test_access_token_contains_instance_claims(monkeypatch):
     monkeypatch.setenv("JWT_SECRET_KEY", "test-secret-key-with-enough-randomness")
     monkeypatch.setenv("YUXI_INSTANCE_ID", "pytest-instance")

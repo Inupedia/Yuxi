@@ -71,6 +71,7 @@ class ServiceIntegrationTests(unittest.TestCase):
         command = re.search(r"(?m)^uv run --locked --group test pytest (.*)", script.replace("\\\n", ""))
         self.assertIsNotNone(command, "缺少实际 pytest 命令")
         selectors = shlex.split(command.group(1), comments=True)
+        self.assertIn("test/integration/api/test_error_information_boundary.py", selectors)
         for name in ("schema_migration_version", "agent_input_concurrency", "agent_run_lease"):
             self.assertIn(f"test/integration/services/test_{name}.py", selectors)
 
@@ -80,6 +81,13 @@ class ServiceIntegrationTests(unittest.TestCase):
             (ROOT / ".github/workflows/service-integration.yml").read_text(),
             (ROOT / "scripts/ci/run_service_integration.sh").read_text(),
         )
+
+    def test_service_inventory_rejects_missing_error_boundary(self):
+        """去掉真实 HTTP 信息边界回归时接线门禁失败。"""
+        workflow = (ROOT / ".github/workflows/service-integration.yml").read_text()
+        script = (ROOT / "scripts/ci/run_service_integration.sh").read_text()
+        with self.assertRaises(AssertionError):
+            self.assert_service_inventory(workflow, script.replace("test/integration/api/test_error_information_boundary.py", ""))
 
     def test_service_setup_selects_container_without_reachable_execution_nodes(self):
         """初始化与 pytest 使用相同配置，不能隐式依赖 Cube 或现成 runner。"""
