@@ -1,33 +1,54 @@
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
-import test from 'node:test'
-import { computed, effectScope, nextTick, reactive, ref, watch } from 'vue'
-import { compileScript, parse } from 'vue/compiler-sfc'
-import dayjs, { parseToShanghai } from '../../src/shared/lib/time.js'
+import test, { before, after } from 'node:test'
+import { createRenderer, effectScope, getCurrentScope, h, nextTick, onScopeDispose, reactive, ssrContextKey } from 'vue'
+import { createTestServer } from '../helpers/createTestServer.js'
 import { isPasswordLongEnough, MIN_PASSWORD_LENGTH } from '../../src/modules/identity/model/passwordValidation.js'
-import {
-  formatTokenCount, toFiniteNumber, getContextUsageSegments, resolveContextUsageSummary,
-  shouldSuggestContextCompression as isContextCompressionSuggested
-} from '../../src/modules/session/model/contextUsage.js'
 
-/** 执行实际组件脚本，将网络和挂载副作用留在测试边界。 */
-function setupComponent(path, deps, props = {}) {
-  const source = readFileSync(new URL(path, import.meta.url), 'utf8')
-  const { descriptor } = parse(source)
-  const executable = compileScript(descriptor, { id: 'gui-feedback' }).content
-    .replace(/^import[\s\S]*?from '[^']+'\n/gm, '')
-    .replace('export default', 'return')
-  const component = new Function(...Object.keys(deps), executable)(...Object.values(deps))
-  return component.setup(props, { expose() {}, emit() {} })
+let server
+const components = {}
+before(async () => {
+  globalThis.__guiFeedback = { isPasswordLongEnough, MIN_PASSWORD_LENGTH }
+  server = await createTestServer({ server: { middlewareMode: true, hmr: false }, ssr: { noExternal: ['ant-design-vue'] }, plugins: [{
+    name: 'gui-feedback-boundaries', enforce: 'pre',
+    resolveId(id) { if (id === 'ant-design-vue') return '\0gui-ant' },
+    load(id) {
+      if (id === '\0gui-ant') return 'export const message = { error: (...args) => globalThis.__guiFeedback.message.error(...args), success: (...args) => globalThis.__guiFeedback.message.success(...args) }; export const Modal = {}'
+      if (id.endsWith('/src/apis/index.js')) return 'export const threadApi = { searchThreads: (...args) => globalThis.__guiFeedback.search(...args) }; export const authApi = { getUsersPage: async () => ({ total: 0, items: [] }) }; export const departmentApi = { getDepartments: async () => [] }'
+      if (id.endsWith('/src/modules/identity/index.js')) return 'export const useUserStore = () => globalThis.__guiFeedback.user; export const isPasswordLongEnough = globalThis.__guiFeedback.isPasswordLongEnough; export const MIN_PASSWORD_LENGTH = globalThis.__guiFeedback.MIN_PASSWORD_LENGTH'
+    }
+  }] })
+  for (const path of ['/src/modules/session/ui/GlobalSearchModal.vue', '/src/modules/settings/ui/UserManagementComponent.vue', '/src/modules/session/ui/ContextUsagePanel.vue']) {
+    components[path] = (await server.ssrLoadModule(path)).default
+  }
+})
+after(async () => { await server.close(); delete globalThis.__guiFeedback })
+
+const node = () => ({ children: [], parent: null })
+const renderer = createRenderer({
+  createElement: node, createText: node, createComment: node,
+  insert(child, parent) { child.parent = parent; parent.children.push(child) },
+  remove(child) { const i = child.parent?.children.indexOf(child) ?? -1; if (i >= 0) child.parent.children.splice(i, 1) },
+  setText() {}, setElementText() {}, parentNode: (n) => n.parent, nextSibling: () => null, patchProp() {}
+})
+
+/** 执行完整组件模块，隔离网络边界。 */
+function setupComponent(path, props = {}) {
+  let form
+  const app = renderer.createApp({ setup() {
+    form = components[path].setup(props, { expose() {}, emit() {} })
+    return () => h('div')
+  } })
+  app.provide(ssrContextKey, { modules: new Set() })
+  app.mount(node())
+  if (getCurrentScope()) onScopeDispose(() => app.unmount())
+  return form
 }
 
 /** 构造真实搜索组件的独立查询边界。 */
 function setupSearch(sessionSearch, fileSearch, fileScopeHint = '') {
-  return setupComponent('../../src/modules/session/ui/GlobalSearchModal.vue', {
-    computed, nextTick, ref, watch, onUnmounted() {}, dayjs, parseToShanghai,
-    threadApi: { searchThreads: sessionSearch }, File: {}, MessageCircle: {},
-    MessageCirclePlus: {}, X: {}, FileTypeIcon: {}
-  }, { open: true, modes: ['session', 'file'], defaultMode: 'session', recentThreads: [], fileSearch, fileScopeHint })
+  globalThis.__guiFeedback.search = sessionSearch
+  return setupComponent('/src/modules/session/ui/GlobalSearchModal.vue',
+    { open: true, modes: ['session', 'file'], defaultMode: 'session', recentThreads: [], fileSearch, fileScopeHint })
 }
 
 test('搜索切换保留关键词，往返切换重新查询正确范围', async (t) => {
@@ -107,21 +128,16 @@ test('文件空态说明遵循实际调用方的个人空间或对话目录范�
 /** 保留用户表单的实际提交逻辑，观察越过校验后的写操作。 */
 function setupUserForm(validate = async () => ({ uid: 'fixture_uid' })) {
   const effects = []
-  const deps = {
-    reactive, ref, computed, watch, onMounted() {}, onUnmounted() {},
-    useUserStore: () => ({
-      isSuperAdmin: true,
-      validateUsernameAndGenerateUid: async (name) => { effects.push(['uid', name]); return validate(name) },
-      createUser: async (data) => effects.push(['create', data]),
-      updateUser: async (id, data) => effects.push(['update', id, data]),
-      getUsers: async () => []
-    }),
-    message: { error: (text) => effects.push(['error', text]), success() {} }, Modal: {},
-    authApi: {}, departmentApi: {}, formatDateTime: () => '', isPasswordLongEnough, MIN_PASSWORD_LENGTH
+  globalThis.__guiFeedback.user = {
+    isSuperAdmin: true,
+    validateUsernameAndGenerateUid: async (name) => { effects.push(['uid', name]); return validate(name) },
+    createUser: async (data) => effects.push(['create', data]),
+    updateUser: async (id, data) => effects.push(['update', id, data]),
+    getUsers: async () => []
   }
-  for (const name of ['Plus', 'SquarePen', 'Trash2', 'User', 'UserLock', 'UserStar', 'RefreshCw', 'Search', 'FallbackAvatar']) deps[name] = {}
+  globalThis.__guiFeedback.message = { error: (text) => effects.push(['error', text]), success() {} }
   const scope = effectScope()
-  const form = scope.run(() => setupComponent('../../src/modules/settings/ui/UserManagementComponent.vue', deps))
+  const form = scope.run(() => setupComponent('/src/modules/settings/ui/UserManagementComponent.vue'))
   return { form, effects, scope }
 }
 
@@ -183,10 +199,7 @@ test('旧用户名的 UID 预览迟到时，不覆盖当前非法用户名的提
 
 test('缺失或零累计用量不显示有效累计指标，正数继续按 Token 单位展示', () => {
   const props = reactive({ usage: null, compressing: false, compressionDisabled: false })
-  const form = setupComponent('../../src/modules/session/ui/ContextUsagePanel.vue', {
-    computed, ref, formatTokenCount, toFiniteNumber, getContextUsageSegments, resolveContextUsageSummary,
-    isContextCompressionSuggested, ChevronDown: {}, LoaderCircle: {}, ListCollapse: {}
-  }, props)
+  const form = setupComponent('/src/modules/session/ui/ContextUsagePanel.vue', props)
   assert.equal(form.tokenUsageThreadTotalLabel.value, null)
   props.usage = { thread: { total: { total_tokens: 0 } } }
   assert.equal(form.tokenUsageThreadTotalLabel.value, null)

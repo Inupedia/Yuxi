@@ -1,49 +1,103 @@
 import assert from 'node:assert/strict'
-import fs from 'node:fs/promises'
 import test from 'node:test'
-import { compileScript, parse } from 'vue/compiler-sfc'
-import { computed, nextTick, reactive, ref, watch } from 'vue'
+import { createRenderer, createSSRApp, h, nextTick, reactive, ref, ssrContextKey } from 'vue'
+import { matchedRouteKey, routeLocationKey, routerKey } from 'vue-router'
+import { renderToString } from 'vue/server-renderer'
+import { createPinia, disposePinia, getActivePinia, setActivePinia } from 'pinia'
+import { message, Modal } from 'ant-design-vue'
 import { createTestServer } from '../helpers/createTestServer.js'
-import {
-  collectSkillChanges,
-  readDraftDependencies,
-  writeDraftDependencies
-} from '../../src/modules/extensions/model/skillDraft.js'
+import { readDraftDependencies } from '../../src/modules/extensions/model/skillDraft.js'
 
-async function loadComponent(path, deps) {
-  const source = await fs.readFile(new URL(path, import.meta.url), 'utf8')
-  const { descriptor } = parse(source)
-  const compiled = compileScript(descriptor, { id: 'skill-versions-test' }).content
-  const importNames = [...compiled.matchAll(/^import \{([\s\S]*?)\} from '[^']+'$/gm)].flatMap(
-    (match) => match[1].split(',').map((name) => name.trim())
-  )
-  if (importNames.includes('resolveApiErrorMessage')) {
-    const server = await createTestServer({ server: { middlewareMode: true, hmr: false }, appType: 'custom' })
-    try {
-      const api = await server.ssrLoadModule('/src/apis/base.js')
-      deps.resolveApiErrorMessage = api.resolveApiErrorMessage
-    } finally {
-      await server.close()
+/** 加载完整组件，在真实 Vue 上下文中运行，替身只控制 API 与导航。 */
+async function loadComponent(t, path, deps) {
+  globalThis.__skillVersionBoundary = deps
+  for (const [key, value] of Object.entries(deps.message || {})) t.mock.method(message, key, value)
+  if (deps.Modal?.confirm) t.mock.method(Modal, 'confirm', deps.Modal.confirm)
+  const server = await createTestServer({
+    server: { middlewareMode: true },
+    appType: 'custom',
+    plugins: [
+      {
+        name: 'skill-version-boundaries',
+        enforce: 'pre',
+        load(id) {
+          if (id.endsWith('/src/shared/model/theme.js') && path.endsWith('AgentFilePreview.vue'))
+            return 'export const useThemeStore = () => ({ isDark: false })'
+          if (id.endsWith('/src/apis/skill_api.js'))
+            return 'export const skillApi = globalThis.__skillVersionBoundary.skillApi'
+        }
+      }
+    ]
+  })
+  t.after(async () => {
+    await server.close()
+    delete globalThis.__skillVersionBoundary
+  })
+  const { default: component } = await server.ssrLoadModule(path.replace('../../src/', '/src/'))
+  return async (props, context) => {
+    let state
+    const root = {
+      setup() {
+        state = component.setup(props, context)
+        return () => h('div')
+      }
     }
+    const live = path.endsWith('AgentFilePreview.vue')
+    const renderer =
+      live &&
+      createRenderer({
+        createElement: () => ({}),
+        createText: () => ({}),
+        createComment: () => ({}),
+        insert() {},
+        remove() {},
+        setText() {},
+        setElementText() {},
+        patchProp() {},
+        parentNode: () => null,
+        nextSibling: () => null
+      })
+    const app = live ? renderer.createApp(root) : createSSRApp(root)
+    const previousPinia = getActivePinia()
+    const pinia = createPinia()
+    app.use(pinia)
+    t.after(() => {
+      disposePinia(pinia)
+      setActivePinia(previousPinia)
+    })
+    const record = { leaveGuards: new Set() }
+    if (deps.useRoute) {
+      app.provide(routeLocationKey, deps.useRoute())
+      app.provide(routerKey, deps.useRouter())
+      app.provide(matchedRouteKey, ref(record))
+    }
+    if (live) {
+      const storage = Object.getOwnPropertyDescriptor(globalThis, 'localStorage')
+      const document = Object.getOwnPropertyDescriptor(globalThis, 'document')
+      globalThis.document = { body: { style: {} } }
+      globalThis.localStorage = { getItem: () => null }
+      t.after(() => {
+        app.unmount()
+        if (storage) Object.defineProperty(globalThis, 'localStorage', storage)
+        else delete globalThis.localStorage
+        if (document) Object.defineProperty(globalThis, 'document', document)
+        else delete globalThis.document
+      })
+      app.provide(ssrContextKey, { modules: new Set() })
+      app.mount({})
+    } else await renderToString(app)
+    if (deps.onBeforeRouteLeave) deps.onBeforeRouteLeave([...record.leaveGuards][0])
+    return state
   }
-  for (const name of importNames) if (!(name in deps)) deps[name] = {}
-  for (const match of compiled.matchAll(/^import (\w+) from '[^']+'$/gm))
-    if (!(match[1] in deps)) deps[match[1]] = {}
-  const executable = compiled
-    .replace(/^import[\s\S]*?from '[^']+'\n/gm, '')
-    .replace('export default', 'return')
-  return new Function(...Object.keys(deps), executable)(...Object.values(deps))
 }
 
-test('版本恢复与删除均需确认，恢复传整包修订，冲突保留列表并显示失败', async () => {
+test('版本恢复与删除均需确认，恢复传整包修订，冲突保留列表并显示失败', async (t) => {
   let confirmation
   let restoreFails = true
   const errors = []
   const events = []
   const calls = []
   const deps = {
-    ref,
-    onMounted() {},
     message: { error: (value) => errors.push(value), success() {}, warning() {} },
     Modal: {
       confirm: (value) => {
@@ -65,10 +119,11 @@ test('版本恢复与删除均需确认，恢复传整包修订，冲突保留�
     }
   }
   const component = await loadComponent(
+    t,
     '../../src/modules/extensions/ui/SkillVersionPanel.vue',
     deps
   )
-  const panel = component.setup(
+  const panel = await component(
     { slug: 'latest', canManage: true },
     { expose() {}, emit: (...args) => events.push(args) }
   )
@@ -80,7 +135,10 @@ test('版本恢复与删除均需确认，恢复传整包修订，冲突保留�
   assert.deepEqual(calls[0], ['latest', '20261004-12345678', 'package-before'])
   assert.equal(panel.versions.value.length, 1)
   assert.equal(panel.busy.value, false)
-  assert.deepEqual(events.splice(0), [['restoring', true], ['restoring', false]])
+  assert.deepEqual(events.splice(0), [
+    ['restoring', true],
+    ['restoring', false]
+  ])
   assert.equal(errors[0], '409 stale')
   restoreFails = false
   panel.confirmRestore('20261004-12345678')
@@ -93,7 +151,7 @@ test('版本恢复与删除均需确认，恢复传整包修订，冲突保留�
   assert.deepEqual(calls[2], ['latest', '20261004-12345678'])
 })
 
-test('完整保存包含跨文件草稿与依赖，409保留全部修改', async () => {
+test('完整保存包含跨文件草稿与依赖，409保留全部修改', async (t) => {
   const errors = []
   let payload
   let shouldFail = false
@@ -115,15 +173,9 @@ test('完整保存包含跨文件草稿与依赖，409保留全部修改', async
     skill_dependencies: []
   }
   const deps = {
-    computed,
-    reactive,
-    ref,
-    collectSkillChanges,
-    readDraftDependencies,
-    writeDraftDependencies,
-    onMounted() {},
-    onUnmounted() {},
-    onBeforeRouteLeave(callback) { leaveRoute = callback },
+    onBeforeRouteLeave(callback) {
+      leaveRoute = callback
+    },
     useRoute: () => ({ params: { slug: 'latest' }, query: {} }),
     useRouter: () => ({ push() {} }),
     message: { error: (value) => errors.push(value), success() {}, warning() {} },
@@ -157,8 +209,12 @@ test('完整保存包含跨文件草稿与依赖，409保留全部修改', async
       }
     }
   }
-  const component = await loadComponent('../../src/modules/extensions/ui/SkillDetailView.vue', deps)
-  const page = component.setup({}, { expose() {} })
+  const component = await loadComponent(
+    t,
+    '../../src/modules/extensions/ui/SkillDetailView.vue',
+    deps
+  )
+  const page = await component({}, { expose() {} })
   page.currentSkill.value = skill
   page.syncShareConfigFromSkill(skill)
   page.savedFiles.value = { 'SKILL.md': root, 'notes.md': 'old notes' }
@@ -242,7 +298,9 @@ test('完整保存包含跨文件草稿与依赖，409保留全部修改', async
   assert.equal(page.activeTab.value, 'versions', '恢复请求期间不能离开历史页')
   page.restoringVersion.value = false
   let resumeRestoreLoad
-  pendingRefresh = new Promise((resolve) => { resumeRestoreLoad = resolve })
+  pendingRefresh = new Promise((resolve) => {
+    resumeRestoreLoad = resolve
+  })
   const reloading = page.fetchSkillDetail()
   await nextTick()
   assert.equal(page.loading.value, true)
@@ -266,8 +324,7 @@ test('完整保存包含跨文件草稿与依赖，409保留全部修改', async
   )
 })
 
-test('父级接收逐字草稿后，文件编辑器保持编辑态；切换文件才重置预览', async () => {
-  const stops = []
+test('父级接收逐字草稿后，文件编辑器保持编辑态；切换文件才重置预览', async (t) => {
   const props = reactive({
     filePath: 'SKILL.md',
     file: { content: 'baseline', previewType: 'markdown' },
@@ -275,57 +332,49 @@ test('父级接收逐字草稿后，文件编辑器保持编辑态；切换文�
     editable: true,
     saving: false
   })
-  const deps = {
-    computed,
-    ref,
-    watch: (...args) => {
-      const stop = watch(...args)
-      stops.push(stop)
-      return stop
-    },
-    onUnmounted() {},
-    useThemeStore: () => ({ isDark: false }),
-    getPreviewFileExtension: () => '.md',
-    isHtmlPreview: () => false,
-    isMarkdownPreview: () => true
-  }
   const component = await loadComponent(
+    t,
     '../../src/modules/session/ui/workspace/AgentFilePreview.vue',
-    deps
+    {}
   )
-  const editor = component.setup(props, { expose() {}, emit() {} })
-  try {
-    editor.startEditing()
-    assert.equal(editor.editMode.value, 'edit')
-    props.draft = 'first keystroke'
-    await nextTick()
-    assert.equal(editor.editMode.value, 'edit')
-    assert.equal(editor.draftContent.value, 'first keystroke')
-    props.filePath = 'notes.md'
-    props.file = { content: 'other file', previewType: 'markdown' }
-    props.draft = 'other draft'
-    await nextTick()
-    assert.equal(editor.editMode.value, 'preview')
-    assert.equal(editor.draftContent.value, 'other draft')
-  } finally {
-    stops.forEach((stop) => stop())
-  }
+  const editor = await component(props, { expose() {}, emit() {} })
+  editor.startEditing()
+  assert.equal(editor.editMode.value, 'edit')
+  props.draft = 'first keystroke'
+  await nextTick()
+  assert.equal(editor.editMode.value, 'edit')
+  assert.equal(editor.draftContent.value, 'first keystroke')
+  props.filePath = 'notes.md'
+  props.file = { content: 'other file', previewType: 'markdown' }
+  props.draft = 'other draft'
+  await nextTick()
+  assert.equal(editor.editMode.value, 'preview')
+  assert.equal(editor.draftContent.value, 'other draft')
 })
 
-
-test('历史页只发布已保存修订，脏草稿或无管理权限不能发版，冲突保留历史', async () => {
+test('历史页只发布已保存修订，脏草稿或无管理权限不能发版，冲突保留历史', async (t) => {
   const props = reactive({ slug: 'latest', canManage: true, canRelease: false })
-  const calls = [], errors = []
+  const calls = [],
+    errors = []
   let fails = true
-  const component = await loadComponent('../../src/modules/extensions/ui/SkillVersionPanel.vue', {
-    ref, onMounted() {}, Modal: {},
-    message: { success() {}, error: (value) => errors.push(value) },
-    skillApi: {
-      listSkillVersions: async () => ({ data: { versions: [{ version: 'prior' }], revision: 'saved' } }),
-      releaseSkillVersion: async (...args) => { calls.push(args); if (fails) throw new Error('409 stale') }
+  const component = await loadComponent(
+    t,
+    '../../src/modules/extensions/ui/SkillVersionPanel.vue',
+    {
+      Modal: {},
+      message: { success() {}, error: (value) => errors.push(value) },
+      skillApi: {
+        listSkillVersions: async () => ({
+          data: { versions: [{ version: 'prior' }], revision: 'saved' }
+        }),
+        releaseSkillVersion: async (...args) => {
+          calls.push(args)
+          if (fails) throw new Error('409 stale')
+        }
+      }
     }
-  })
-  const panel = component.setup(props, { expose() {}, emit() {} })
+  )
+  const panel = await component(props, { expose() {}, emit() {} })
   await panel.load()
   await panel.release()
   assert.deepEqual(calls, [])

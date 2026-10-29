@@ -1,48 +1,69 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
-import test from 'node:test'
-import { computed, nextTick, reactive, ref, watch } from 'vue'
-import { compileScript, parse } from 'vue/compiler-sfc'
-import { useGraph } from '../../src/modules/knowledge/model/useGraph.js'
+import test, { before, after } from 'node:test'
+import { setTimeout as realSetTimeout, clearTimeout as realClearTimeout } from 'node:timers'
+import { createRenderer, h, nextTick, reactive, ssrContextKey } from 'vue'
 import { createTestServer } from '../helpers/createTestServer.js'
 
 const source = readFileSync(new URL('../../src/modules/knowledge/ui/KnowledgeGraphSection.vue', import.meta.url), 'utf8')
-const executable = compileScript(parse(source).descriptor, { id: 'file-graph-filter' }).content
-  .replace(/^import[\s\S]*?from '[^']+'\n/gm, '')
-  .replace('export default', 'return')
+let server
+let component
+const node = () => ({ children: [], parent: null })
+const renderer = createRenderer({
+  createElement: node, createText: node, createComment: node,
+  insert(child, parent) { child.parent = parent; parent.children.push(child) },
+  remove(child) { const i = child.parent?.children.indexOf(child) ?? -1; if (i >= 0) child.parent.children.splice(i, 1) },
+  setText() {}, setElementText() {}, parentNode: (n) => n.parent, nextSibling: () => null, patchProp() {}
+})
+before(async () => {
+  server = await createTestServer({ server: { middlewareMode: true, hmr: false }, ssr: { noExternal: ['ant-design-vue'] }, plugins: [{
+    name: 'graph-boundaries', enforce: 'pre',
+    resolveId(id) { if (id === 'ant-design-vue') return '\0graph-ant' },
+    load(id) {
+      if (id === '\0graph-ant') return 'export const message = new Proxy({}, { get: (_, k) => globalThis.__graphTest.message[k] }); export const Modal = {}'
+      if (id.endsWith('/src/modules/knowledge/model/knowledgeBase.js')) return 'export const useKnowledgeBaseStore = () => globalThis.__graphTest.store'
+      if (id.endsWith('/src/modules/background-jobs/index.js')) return 'export const useBackgroundJobsStore = () => ({ createJobRegistration: () => () => {} })'
+      if (id.endsWith('/src/modules/settings/index.js')) return 'export const useConfigStore = () => ({})'
+      if (id.endsWith('/src/apis/graph_api.js')) return 'export const unifiedApi = { getSubgraph: (...args) => globalThis.__graphTest.getSubgraph(...args) }'
+      if (id.endsWith('/src/apis/knowledge_api.js')) return 'export const graphBuildApi = new Proxy({}, { get: (_, k) => globalThis.__graphTest.graphBuildApi[k] }); export const documentApi = { getDocumentBasicInfo: async (_kb, id) => ({ file_id: id, filename: `${id}.txt` }) }'
+      if (['GraphCanvas.vue', 'FileSearchModal.vue', 'GraphDetailPanel.vue', 'ResourceEmptyState.vue', 'ModelSelectorComponent.vue'].some((name) => id.endsWith('/' + name))) return '<script>export default {}</script>'
+    }
+  }] })
+  component = (await server.ssrLoadModule('/src/modules/knowledge/ui/KnowledgeGraphSection.vue')).default
+})
+after(async () => { await server.close() })
 
 /** 使用真实图谱状态和组件加载流程，替换网络边界。 */
 function setupGraph(getSubgraph, options = {}) {
   const emitted = []
-  const unmount = []
   const props = reactive({ active: false, readonly: false, fileId: null })
   const store = reactive({ kbId: 'kb', knowledgeBase: { kb_type: 'milvus' } })
-  const deps = {
-    setTimeout: options.setTimeout || setTimeout, clearTimeout: options.clearTimeout || clearTimeout,
-    ref, computed, watch, nextTick, reactive, onUnmounted: (fn) => unmount.push(fn), useGraph,
-    useKnowledgeBaseStore: () => store,
-    useBackgroundJobsStore: () => ({ createJobRegistration: () => () => {} }), useConfigStore: () => ({}),
-    getKbTypeLabel: () => 'Yuxi', unifiedApi: { getSubgraph },
-    graphBuildApi: { getFileStatus: async () => ({ pending_chunks: 1 }), ...options.graphBuildApi }, documentApi: { getDocumentBasicInfo: async (_kb, id) => ({ file_id: id, filename: `${id}.txt` }) },
-    Modal: {}, message: options.message || { error() {}, success() {} }
-  }
-  for (const name of ['RefreshCw', 'Settings', 'Search', 'Loader2', 'Database', 'Network', 'FileText', 'X', 'GraphCanvas', 'GraphDetailPanel', 'FileSearchModal', 'ResourceEmptyState', 'ModelSelectorComponent']) deps[name] = {}
-  const component = new Function(...Object.keys(deps), executable)(...Object.values(deps))
-  const state = component.setup(props, { expose() {}, emit: (...args) => emitted.push(args) })
-  return { state, props, store, emitted, unmount: () => unmount.forEach((fn) => fn()) }
+  const originalSetTimeout = globalThis.setTimeout
+  const originalClearTimeout = globalThis.clearTimeout
+  if (options.setTimeout) globalThis.setTimeout = options.setTimeout
+  if (options.clearTimeout) globalThis.clearTimeout = options.clearTimeout
+  globalThis.__graphTest = { store, getSubgraph, graphBuildApi: { getFileStatus: async () => ({ pending_chunks: 1 }), ...options.graphBuildApi }, message: options.message || { error() {}, success() {} } }
+  let state
+  const app = renderer.createApp({ setup() { state = component.setup(props, { expose() {}, emit: (...args) => emitted.push(args) }); return () => h('div') } })
+  app.provide(ssrContextKey, { modules: new Set() })
+  app.mount(node())
+  return { state, props, store, emitted, unmount: () => { app.unmount(); globalThis.setTimeout = originalSetTimeout; globalThis.clearTimeout = originalClearTimeout; delete globalThis.__graphTest } }
 }
 
 const result = (name) => ({ success: true, data: { nodes: name ? [{ id: name }] : [], edges: [] } })
 
 test('图谱 API 只在选择文件时发送 file_id', async () => {
   const requests = []
-  const apiSource = readFileSync(new URL('../../src/apis/graph_api.js', import.meta.url), 'utf8')
-    .replace("import { apiGet } from './base'", '')
-    .replace('export const graphApi', 'const graphApi')
-    .replace('export const unifiedApi = graphApi', 'return graphApi')
-  const api = new Function('apiGet', apiSource)(async (url) => { requests.push(url) })
-  await api.getSubgraph({ kb_id: 'kb' })
-  await api.getSubgraph({ kb_id: 'kb', file_id: 'file & 1' })
+  const apiServer = await createTestServer({ server: { middlewareMode: true, hmr: false }, plugins: [{
+    name: 'graph-api-boundary', enforce: 'pre',
+    load(id) { if (id.endsWith('/src/apis/base.js')) return 'export const apiGet = async (url) => globalThis.__graphRequests.push(url)' }
+  }] })
+  globalThis.__graphRequests = requests
+  try {
+    const { graphApi } = await apiServer.ssrLoadModule('/src/apis/graph_api.js')
+    await graphApi.getSubgraph({ kb_id: 'kb' })
+    await graphApi.getSubgraph({ kb_id: 'kb', file_id: 'file & 1' })
+  } finally { await apiServer.close(); delete globalThis.__graphRequests }
   assert.equal(new URL(requests[0], 'http://localhost').searchParams.has('file_id'), false)
   assert.equal(new URL(requests[1], 'http://localhost').searchParams.get('file_id'), 'file & 1')
 })
@@ -309,13 +330,13 @@ test('提交后首次状态失败仍轮询，恢复终态时刷新当前文件�
     return result('实体')
   }, {
     setTimeout: (fn, delay) => {
-      if (delay !== 5000) return setTimeout(fn, delay)
+      if (delay !== 5000) return realSetTimeout(fn, delay)
       poll = fn
       return 1
     },
     clearTimeout: (timer) => {
       if (timer === 1) poll = null
-      else clearTimeout(timer)
+      else realClearTimeout(timer)
     },
     graphBuildApi: {
       startIndex: async () => ({ job_id: 'job' }),
@@ -367,13 +388,13 @@ test('慢状态请求完成后才安排下一次，终态刷新且切库丢弃�
     return result('结果')
   }, {
     setTimeout: (fn, delay) => {
-      if (delay !== 5000) return setTimeout(fn, delay)
+      if (delay !== 5000) return realSetTimeout(fn, delay)
       poll = fn
       return 1
     },
     clearTimeout: (timer) => {
       if (timer === 1) poll = null
-      else clearTimeout(timer)
+      else realClearTimeout(timer)
     },
     graphBuildApi: {
       getStatus: async () => {
@@ -431,13 +452,13 @@ for (const outcome of ['success', 'failure']) {
     const errors = []
     const { state, props, unmount } = setupGraph(async () => result(null), {
       setTimeout: (fn, delay) => {
-        if (delay !== 5000) return setTimeout(fn, delay)
+        if (delay !== 5000) return realSetTimeout(fn, delay)
         poll = fn
         return 1
       },
       clearTimeout: (timer) => {
         if (timer === 1) poll = null
-        else clearTimeout(timer)
+        else realClearTimeout(timer)
       },
       message: { error: (text) => errors.push(text), success() {} },
       graphBuildApi: {

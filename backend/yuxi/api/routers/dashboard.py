@@ -128,11 +128,14 @@ class TimeSeriesStats(BaseModel):
 
     data: list[dict]
     categories: list[str]
-    total_count: int
-    average_count: float
-    peak_count: int
+    total_count: int | None
+    average_count: float | None
+    peak_count: int | None
     peak_date: str
     agent_names: dict[str, str] | None = None
+    token_usage_complete: bool | None = None
+    run_count: int | None = None
+    incomplete_run_count: int | None = None
 
 
 class ThreadSummary(BaseModel):
@@ -141,9 +144,10 @@ class ThreadSummary(BaseModel):
     total_threads: int
     active_threads: int
     total_messages: int
-    total_tokens: int
+    total_tokens: int | None
+    token_usage_complete: bool = False
     avg_messages_per_thread: float
-    avg_tokens_per_thread: float
+    avg_tokens_per_thread: float | None
     pinned_threads: int = 0
 
 
@@ -163,7 +167,8 @@ class ThreadAgentStat(BaseModel):
     agent_name: str
     thread_count: int
     message_count: int
-    token_count: int
+    token_count: int | None
+    token_usage_complete: bool = False
     avg_messages: float
     agent_avatar: str | None = None
 

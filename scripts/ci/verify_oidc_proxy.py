@@ -12,7 +12,7 @@ from uuid import uuid4
 
 def main():
     """隔离容器和假回调参数，回读实际代理日志后清理。"""
-    root = Path(__file__).resolve().parent.parent
+    root = Path(__file__).resolve().parents[2]
     name = "oidc-proxy-probe-" + uuid4().hex[:12]
     marker = "fixture-secret-marker-" + uuid4().hex
     with tempfile.TemporaryDirectory(prefix="oidc-proxy-") as directory:

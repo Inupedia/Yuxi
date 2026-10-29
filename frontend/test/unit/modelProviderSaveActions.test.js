@@ -1,77 +1,51 @@
 import assert from 'node:assert/strict'
-import { readFileSync, unlinkSync, writeFileSync } from 'node:fs'
-import { pid } from 'node:process'
+import { readFileSync } from 'node:fs'
 import { setImmediate } from 'node:timers'
-import { fileURLToPath, pathToFileURL } from 'node:url'
-import test from 'node:test'
+import test, { before, after } from 'node:test'
+import { createRenderer, nextTick, proxyRefs, ssrContextKey } from 'vue'
+import { createPinia, setActivePinia, disposePinia } from 'pinia'
+import { message, Modal } from 'ant-design-vue'
+import { createTestServer } from '../helpers/createTestServer.js'
 
-import { compileScript, parse } from 'vue/compiler-sfc'
-import { createRenderer, nextTick } from 'vue'
-
-const componentPath = fileURLToPath(
-  new URL('../../src/modules/settings/ui/ModelProviderManagePanel.vue', import.meta.url)
-)
-const compiledPath = fileURLToPath(
-  new URL(`../../.model-provider-actions-test-${pid}.mjs`, import.meta.url)
-)
-const source = readFileSync(componentPath, 'utf8')
-const requests = []
-const remoteRequests = []
-const confirmations = []
-const notices = []
-const configStore = { config: { default_model: 'other:model' }, refreshConfig: async () => {} }
+const source = readFileSync(new URL('../../src/modules/settings/ui/ModelProviderManagePanel.vue', import.meta.url), 'utf8')
+const requests = [], remoteRequests = [], confirmations = [], notices = []
 let updateProvider = async () => ({})
 let fetchRemoteModels = async () => ({ data: [] })
-
-globalThis.__modelProviderActionsTestDeps = {
-  message: {
+let server, ProviderPanel, configStore
+const pinia = createPinia()
+const oldMessage = { success: message.success, error: message.error, warning: message.warning }
+const oldConfirm = Modal.confirm
+before(async () => {
+  setActivePinia(pinia)
+  Object.assign(message, {
     success: (value) => notices.push(['success', value]),
     error: (value) => notices.push(['error', value]),
     warning: (value) => notices.push(['warning', value])
-  },
-  Modal: { confirm: (options) => confirmations.push(options) },
-  useConfigStore: () => configStore,
-  loadModelMetadataCatalog: async () => ({ providers: {} }),
-  modelProviderApi: {
+  })
+  Modal.confirm = (options) => confirmations.push(options)
+  globalThis.__providerTestApi = {
     getProviders: async () => ({ data: [provider] }),
-    fetchRemoteModels: (id) => {
-      remoteRequests.push(id)
-      return fetchRemoteModels(id)
-    },
-    updateProvider: (id, payload) => {
-      requests.push([id, payload])
-      return updateProvider(id, payload)
-    }
-  },
-  TextInitial: null,
-  Image: null,
-  Video: null,
-  AudioLines: null,
-  FileText: null
-}
-
-const { descriptor } = parse(source)
-const compiled = compileScript(descriptor, { id: 'model-provider-actions-test' }).content
-const executable = compiled
-  .replace(/^import(?:\s*\{[\s\S]*?\}|\s+[A-Za-z]\w*)\s+from\s+'[^']+'\n/gm, (line) =>
-    line.includes("from 'vue'") ? line : ''
-  )
-  .replace(
-    /const __returned__ = \{[\s\S]*?\}\nObject\.defineProperty/,
-    'const __returned__ = { showProviderModal, originalProviderEnabled, providerForm, saving, openCreateProviderModal, openEditProviderModal, toggleProviderEnabled, deleteProviderFromEdit, openModelsModal, fetchRemoteModels, showModelsModal, remoteLoading, remoteError, remoteModelsMap, remoteModelsLoaded }\nObject.defineProperty'
-  )
-  .replace(
-    "import { computed, onMounted, reactive, ref } from 'vue'",
-    "import { computed, onMounted, reactive, ref } from 'vue'\nconst { message, Modal, useConfigStore, modelProviderApi, loadModelMetadataCatalog, TextInitial, Image, Video, AudioLines, FileText } = globalThis.__modelProviderActionsTestDeps"
-  )
-writeFileSync(compiledPath, executable)
-let ProviderPanel
-try {
-  ;({ default: ProviderPanel } = await import(pathToFileURL(compiledPath).href))
-} finally {
-  unlinkSync(compiledPath)
-}
-ProviderPanel.render = () => null
+    fetchRemoteModels: (id) => { remoteRequests.push(id); return fetchRemoteModels(id) },
+    updateProvider: (id, payload) => { requests.push([id, payload]); return updateProvider(id, payload) }
+  }
+  server = await createTestServer({ server: { middlewareMode: true, hmr: false }, appType: 'custom',
+    plugins: [{ name: 'provider-api-boundary', enforce: 'pre', load(id) {
+      if (id.endsWith('/src/apis/system_api.js')) return 'export const modelProviderApi = globalThis.__providerTestApi; export const configApi = {}'
+    } }]
+  })
+  const { loadModelMetadataCatalog } = await server.ssrLoadModule('/src/modules/settings/model/modelMetadata.js')
+  await loadModelMetadataCatalog()
+  const { useConfigStore } = await server.ssrLoadModule('/src/modules/settings/model/config.js')
+  configStore = useConfigStore(pinia)
+  ;({ default: ProviderPanel } = await server.ssrLoadModule('/src/modules/settings/ui/ModelProviderManagePanel.vue'))
+})
+after(async () => {
+  await server?.close()
+  disposePinia(pinia)
+  Object.assign(message, oldMessage)
+  Modal.confirm = oldConfirm
+  delete globalThis.__providerTestApi
+})
 
 const makeNode = (type) => ({ type, children: [], props: {}, parent: null, text: '' })
 const renderer = createRenderer({
@@ -108,9 +82,15 @@ function mountPanel() {
   notices.length = 0
   updateProvider = async () => ({})
   configStore.config.default_model = 'other:model'
-  const app = renderer.createApp(ProviderPanel)
+  let panel
+  const app = renderer.createApp({ setup() {
+    panel = proxyRefs(ProviderPanel.setup({}, { expose() {}, emit() {} }))
+    return () => null
+  } })
+  app.use(pinia)
+  app.provide(ssrContextKey, {})
   app.mount(makeNode('root'))
-  return { panel: app._instance.setupState, unmount: () => app.unmount() }
+  return { panel, unmount: () => app.unmount() }
 }
 
 const provider = { provider_id: 'sample', display_name: 'Sample', is_enabled: true }

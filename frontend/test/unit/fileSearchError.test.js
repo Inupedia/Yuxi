@@ -1,26 +1,31 @@
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
 import test from 'node:test'
-import { nextTick, reactive, ref, watch } from 'vue'
-import { compileScript, parse } from 'vue/compiler-sfc'
+import { createRenderer, h, reactive, ssrContextKey, toRaw } from 'vue'
+import { createTestServer } from '../helpers/createTestServer.js'
 
-const source = readFileSync(new URL('../../src/modules/knowledge/ui/FileSearchModal.vue', import.meta.url), 'utf8')
-const executable = compileScript(parse(source).descriptor, { id: 'file-search-error' }).content
-  .replace(/^import[\s\S]*?from '[^']+'\n/gm, '')
-  .replace('export default', 'return')
-
-/** 按真实组件执行搜索状态机，替换搜索接口。 */
-function setupSearch(searchDocuments) {
-  const component = new Function('nextTick', 'ref', 'watch', 'FileText', 'Search', 'X', 'dayjs', 'parseToShanghai', 'formatFileSize', 'documentApi', executable)(
-    nextTick, ref, watch, {}, {}, {}, {}, () => null, () => '', { searchDocuments }
-  )
+/** 加载真实组件，在 API 边界控制搜索响应。 */
+async function setupSearch(t, searchDocuments) {
+  const server = await createTestServer({ server: { middlewareMode: true, hmr: false }, appType: 'custom' })
+  t.after(() => server.close())
+  const { documentApi } = await server.ssrLoadModule('/src/apis/knowledge_api.js')
+  t.mock.method(documentApi, 'searchDocuments', searchDocuments)
+  const { default: component } = await server.ssrLoadModule('/src/modules/knowledge/ui/FileSearchModal.vue')
   const props = reactive({ open: false, kbId: 'kb' })
-  return { props, state: component.setup(props, { expose() {}, emit() {} }) }
+  const renderer = createRenderer({
+    createElement: () => ({}), createText: () => ({}), createComment: () => ({}),
+    insert() {}, remove() {}, setText() {}, setElementText() {}, patchProp() {},
+    parentNode: () => null, nextSibling: () => null
+  })
+  const app = renderer.createApp({ ...component, render: () => h('div') }, props)
+  app.provide(ssrContextKey, { modules: new Set() })
+  app.mount({})
+  t.after(() => app.unmount())
+  return { props, state: toRaw(app._instance.setupState) }
 }
 
-test('搜索失败显示错误，重试成功后展示结果，空结果保持独立', async () => {
+test('搜索失败显示错误，重试成功后展示结果，空结果保持独立', async (t) => {
   let attempt = 0
-  const { state } = setupSearch(async () => {
+  const { state } = await setupSearch(t, async () => {
     attempt++
     if (attempt === 1) throw new Error('offline')
     return { files: attempt === 2 ? [{ file_id: 'file', filename: '报告.txt' }] : [] }
@@ -45,9 +50,9 @@ test('搜索失败显示错误，重试成功后展示结果，空结果保持�
   assert.deepEqual(state.results.value, [])
 })
 
-test('过期失败不能覆盖后一次搜索结果', async () => {
+test('过期失败不能覆盖后一次搜索结果', async (t) => {
   const pending = []
-  const { state } = setupSearch(() => new Promise((resolve, reject) => pending.push({ resolve, reject })))
+  const { state } = await setupSearch(t, () => new Promise((resolve, reject) => pending.push({ resolve, reject })))
   state.keyword.value = '旧'
   const oldRequest = state.handleSearch()
   state.keyword.value = '新'

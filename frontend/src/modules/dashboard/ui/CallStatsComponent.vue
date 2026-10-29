@@ -42,27 +42,51 @@
       <div v-if="!callStatsError && !callStatsLoading" class="dashboard-card-metric-grid">
         <DashboardMetricCard
           :value="formatValueForDisplay(totalCount)"
-          :label="isConversation ? '新增会话' : isTokenView ? 'Token 总量' : '调用总量'"
+          :label="
+            isConversation
+              ? '新增会话'
+              : isTokenView
+                ? usageComplete
+                  ? 'Token 总量'
+                  : '已报 Token'
+                : '调用总量'
+          "
           compact
         />
         <DashboardMetricCard
           :value="formatValueForDisplay(averageCount)"
-          :label="`${intervalLabel}均${isConversation ? '新增' : isTokenView ? ' Token' : '调用'}`"
+          :label="`${isTokenView && !usageComplete ? '已报' : ''}${intervalLabel}均${isConversation ? '新增' : isTokenView ? ' Token' : '调用'}`"
           compact
         />
         <DashboardMetricCard
           :value="formatValueForDisplay(peakCount)"
-          :label="`${intervalLabel}${isConversation ? '新增' : ''}峰值`"
+          :label="`${isTokenView && !usageComplete ? '已报' : ''}${intervalLabel}${isConversation ? '新增' : ''}峰值`"
           compact
         />
       </div>
+      <p
+        v-if="isTokenView && !callStatsLoading && !callStatsError"
+        class="usage-note"
+        role="status"
+      >
+        <strong :class="{ incomplete: !usageComplete }">{{ usageStatus }}</strong>
+        <span>按运行创建时间统计主模型已记录用量；摘要及其他系统调用不计入。</span>
+      </p>
     </template>
     <div v-if="callStatsError" class="call-state" role="status">
       {{ isConversation ? '会话统计暂不可用，请重试' : '调用统计暂不可用，请重试' }}
     </div>
     <div v-else-if="callStatsLoading" class="call-state" aria-label="正在加载统计"><a-spin /></div>
     <div v-else-if="!hasChartData" class="call-state">
-      {{ isConversation ? '暂无会话数据' : '暂无调用数据' }}
+      {{
+        isConversation
+          ? '暂无会话数据'
+          : isTokenView
+            ? totalCount === null
+              ? '暂无已上报用量'
+              : '当前范围已报用量为 0'
+            : '暂无调用数据'
+      }}
     </div>
     <div
       v-else
@@ -104,6 +128,14 @@ const dataTypeOptions = [
 ]
 const isConversation = computed(() => callDataType.value === 'sessions')
 const isTokenView = computed(() => callDataType.value === 'tokens')
+const usageComplete = computed(() => callStatsData.value?.token_usage_complete === true)
+const usageStatus = computed(() => {
+  const data = callStatsData.value
+  if (!data?.run_count) return '暂无运行记录'
+  if (usageComplete.value) return '上报完整'
+  if (data.total_count === null) return `用量未上报（${data.run_count} 次运行）`
+  return `部分缺报（${data.incomplete_run_count}/${data.run_count} 次运行）`
+})
 const refreshLabel = computed(
   () => `${callStatsError.value ? '重试' : '刷新'}${isConversation.value ? '会话' : '调用'}统计`
 )
@@ -118,15 +150,27 @@ const intervalCounts = computed(() =>
       : Object.values(day.data).reduce((sum, count) => sum + count, 0)
   )
 )
-const totalCount = computed(() => intervalCounts.value.reduce((sum, count) => sum + count, 0))
-const averageCount = computed(() =>
-  intervalCounts.value.length
-    ? Number((totalCount.value / intervalCounts.value.length).toFixed(2))
-    : 0
+const totalCount = computed(() =>
+  isTokenView.value
+    ? (callStatsData.value?.total_count ?? null)
+    : intervalCounts.value.reduce((sum, count) => sum + count, 0)
 )
-const peakCount = computed(() => Math.max(0, ...intervalCounts.value))
+const averageCount = computed(() =>
+  isTokenView.value
+    ? (callStatsData.value?.average_count ?? null)
+    : intervalCounts.value.length
+      ? Number((totalCount.value / intervalCounts.value.length).toFixed(2))
+      : 0
+)
+const peakCount = computed(() =>
+  isTokenView.value
+    ? (callStatsData.value?.peak_count ?? null)
+    : Math.max(0, ...intervalCounts.value)
+)
 const hasChartData = computed(() =>
-  (callStatsData.value?.data || []).some((day) => Object.values(day.data).some((count) => count > 0))
+  (callStatsData.value?.data || []).some((day) =>
+    Object.values(day.data).some((count) => count > 0)
+  )
 )
 const callStatsChartRef = ref(null)
 let callStatsChart = null
@@ -141,8 +185,10 @@ function getCSSVariable(name) {
 
 /** Token 以百万为单位，其他计数保留接口精度。 */
 function formatValueForDisplay(value) {
+  if (value == null) return '未知'
   if (isTokenView.value) {
-    const million = (value ?? 0) / 1_000_000
+    if (value < 1_000_000) return value.toLocaleString()
+    const million = value / 1_000_000
     return `${million.toFixed(Math.abs(million) >= 100 ? 0 : Math.abs(million) >= 10 ? 1 : 2)}M`
   }
   return (value ?? 0).toLocaleString()
@@ -210,6 +256,8 @@ function renderCallStatsChart() {
   const resolveCategoryLabel = (cat) => {
     if (isConversation.value)
       return { new_threads: '新增会话', active_threads: '活跃会话' }[cat] || cat
+    if (isTokenView.value)
+      return { input_tokens: '输入 Token', output_tokens: '输出 Token' }[cat] || cat
     if (cat === 'None') return '未知模型'
     return agentNames[cat] || cat
   }
@@ -219,7 +267,7 @@ function renderCallStatsChart() {
     type: 'bar',
     stack: isConversation.value ? undefined : 'total',
     emphasis: { focus: 'series' },
-    data: data.map((item) => item.data[category] || 0),
+    data: data.map((item) => item.data[category] ?? (isTokenView.value ? null : 0)),
     itemStyle: {
       color: getColorByIndex(index),
       borderRadius: 0
@@ -260,10 +308,17 @@ function renderCallStatsChart() {
       textStyle: { color: getCSSVariable('--gray-600'), fontSize: 12 },
       formatter: (params) => {
         if (!params?.length) return ''
-        const visibleParams = params.filter((param) => Number(param.value) !== 0)
-        if (!visibleParams.length) return ''
+        const bucket = data[params[0].dataIndex]
+        const missingNote =
+          isTokenView.value && bucket?.token_usage_complete === false
+            ? '本区间有缺报，仅展示已报用量<br/>'
+            : ''
+        const visibleParams = params.filter(
+          (param) => param.value != null && Number(param.value) !== 0
+        )
+        if (!visibleParams.length) return missingNote
         let total = 0
-        let result = `${visibleParams[0].name}<br/>`
+        let result = `${visibleParams[0].name}<br/>${missingNote}`
         visibleParams.forEach((param) => {
           total += param.value
           const truncatedName = truncateLegend(param.seriesName)
@@ -280,7 +335,7 @@ function renderCallStatsChart() {
           sessions: '会话趋势'
         }
         const formattedTotal = formatValueForDisplay(total)
-        return `<div style="font-weight:bold;margin-bottom:5px">${labelMap[callDataType.value]}</div>${result}${isConversation.value ? '' : `<strong>总计: ${formattedTotal}</strong>`}`
+        return `<div style="font-weight:bold;margin-bottom:5px">${labelMap[callDataType.value]}</div>${result}${isConversation.value ? '' : `<strong>${missingNote ? '已报合计' : '总计'}: ${formattedTotal}</strong>`}`
       }
     },
     legend: {
@@ -341,6 +396,20 @@ defineExpose({ cleanup, resizeCharts })
 </script>
 
 <style scoped>
+.usage-note {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  margin: 8px 0 0;
+  color: var(--gray-600);
+  font-size: 12px;
+}
+.usage-note strong {
+  font-weight: 500;
+}
+.usage-note .incomplete {
+  color: var(--color-warning-900);
+}
 .call-actions {
   display: flex;
   align-items: center;

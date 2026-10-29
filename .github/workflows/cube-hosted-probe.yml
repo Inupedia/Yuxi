@@ -26,10 +26,10 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends qemu-system-x86 xfsprogs
       - name: Execute real KVM guest
-        run: python3 scripts/ci_probe_kvm.py
+        run: python3 scripts/ci/probe_kvm.py
       - name: Install Cube and build shipping user template
         timeout-minutes: 25
-        run: bash scripts/ci_probe_hosted_cube.sh
+        run: bash scripts/ci/probe_hosted_cube.sh
       - uses: astral-sh/setup-uv@v7
         with:
           version: '0.12.6'
@@ -40,7 +40,7 @@ jobs:
           CUBE_PROXY_NODE_IP: 127.0.0.1
           CUBE_PROXY_PORT_HTTP: '80'
           CUBE_TEMPLATE_ID: yuxi-user
-        run: uv run --project backend --locked --no-dev python scripts/ci_probe_cube_workspace.py
+        run: uv run --project backend --locked --no-dev python scripts/ci/probe_cube_workspace.py
       - name: Inspect final resources
         if: always()
         run: |

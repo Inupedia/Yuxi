@@ -4,7 +4,7 @@ set -euo pipefail
 : "${POSTGRES_URL:?需要隔离测试数据库}"
 : "${REDIS_URL:?需要隔离测试 Redis}"
 : "${YUXI_SKILL_DATA_DIR:?需要临时 Skill 目录}"
-cd "$(dirname "$0")/../backend"
+cd "$(dirname "$0")/../../backend"
 # app-init 会用本地 .env 覆盖进程环境，禁止借用已有部署配置。
 if [[ -e .env ]]; then
     echo '独立集成测试拒绝加载 backend/.env，请使用干净 checkout 与隔离资源' >&2
@@ -40,7 +40,14 @@ async def prepare():
 
 asyncio.run(prepare())
 PY
+report_args=()
+if [[ -n "${CI_TEST_REPORT_DIR:-}" ]]; then
+    report_args=("--junitxml=${CI_TEST_REPORT_DIR}/service-integration.xml" --durations=20 --durations-min=1.0)
+fi
 uv run --locked --group test pytest \
+    test/integration/api/test_error_information_boundary.py \
+    test/integration/api/test_dashboard_usage.py \
+    test/integration/api/test_scheduled_agent_history.py \
     test/integration/services/test_app_initialization.py \
     test/integration/services/test_schema_migration_version.py \
     test/integration/services/test_agent_input_concurrency.py \
@@ -65,4 +72,4 @@ uv run --locked --group test pytest \
     test/integration/services/test_background_job_repository.py \
     test/integration/services/test_chunk_config_boundary.py \
     test/integration/services/test_knowledge_stats_refresh.py \
-    -q --tb=short -ra
+    -q --tb=short -ra "${report_args[@]}"

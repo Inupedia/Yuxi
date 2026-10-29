@@ -4,7 +4,7 @@ from calendar import monthrange
 from datetime import datetime, timedelta
 from typing import Any
 
-from sqlalchemy import Integer, String, and_, case, cast, distinct, func, literal, or_, select
+from sqlalchemy import String, and_, case, cast, distinct, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from yuxi.infrastructure.minio.client import normalize_public_minio_url
@@ -37,32 +37,6 @@ class DashboardRepository:
         if bind is not None and bind.dialect.name == "sqlite":
             return func.date(column, "+8 hours")
         return func.date(func.timezone("Asia/Shanghai", column))
-
-    @staticmethod
-    def _session_token_totals(session_record_ids: list[int] | None = None):
-        """按会话汇总 Run 实测用量，保留缺失标记。"""
-        reported = AgentRun.token_usage["usage_reported_call_count"].as_integer() > 0
-        complete = AgentRun.token_usage["complete"].as_boolean().is_(True)
-        value = AgentRun.token_usage["total"]["total_tokens"].as_integer()
-        run_totals = (
-            select(
-                AgentRun.session_record_id,
-                func.sum(case((reported | complete, value), else_=None)).label("total_tokens"),
-                func.min(case((complete & value.isnot(None), 1), else_=0)).label("complete"),
-            )
-            .where(AgentRun.session_record_id.in_(session_record_ids) if session_record_ids is not None else True)
-            .group_by(AgentRun.session_record_id)
-            .subquery()
-        )
-        return (
-            select(
-                run_totals.c.session_record_id.label("session_record_id"),
-                run_totals.c.total_tokens,
-                (run_totals.c.complete == 1).label("complete"),
-            )
-            .where(run_totals.c.session_record_id.in_(session_record_ids) if session_record_ids is not None else True)
-            .subquery()
-        )
 
     @staticmethod
     def _counted_message_condition():
@@ -452,6 +426,8 @@ class DashboardRepository:
     ) -> dict[str, Any]:
         """查询并补齐十四个时间区间的调用分析序列。"""
         query_now = now or utc_now()
+        if metric_type == "tokens":
+            return await self._get_token_timeseries(time_range=time_range, now=query_now)
         if metric_type == "sessions":
             return await self._get_session_timeseries(time_range=time_range, now=query_now)
         query_local_now = local_now or shanghai_now()
@@ -515,35 +491,7 @@ class DashboardRepository:
                 .order_by(session_group)
             )
             rows = list(result.all())
-        elif metric_type == "tokens":
-            rows = []
-            for token_name in ("input_tokens", "output_tokens"):
-                result = await self.db_session.execute(
-                    select(
-                        message_group.label("date"),
-                        func.sum(
-                            func.coalesce(
-                                cast(cast(Message.extra_metadata["usage_metadata"][token_name], String), Integer),
-                                0,
-                            )
-                        ).label("count"),
-                        literal(token_name).label("category"),
-                    )
-                    .join(Session, Message.session_record_id == Session.id)
-                    .join(User, Session.uid == User.uid)
-                    .join(Agent, Session.agent_id == Agent.slug)
-                    .where(
-                        Message.created_at >= query_start_time,
-                        or_(Message.message_type.is_(None), Message.message_type.notin_(AUDIT_MESSAGE_TYPES)),
-                        Message.extra_metadata.isnot(None),
-                        Message.extra_metadata["usage_metadata"].isnot(None),
-                        Session.status != "deleted",
-                        User.is_deleted == 0,
-                    )
-                    .group_by(message_group)
-                    .order_by(message_group)
-                )
-                rows.extend(result.all())
+
         else:
             tool_group = self._time_group_format(Message.created_at, time_range)
             tool_name = Message.extra_metadata["tool_name"].as_string()
@@ -762,16 +710,22 @@ class DashboardRepository:
 
         token_totals = self._session_token_totals()
         tokens_query = (
-            select(func.coalesce(func.sum(token_totals.c.total_tokens), 0))
-            .select_from(token_totals)
-            .join(Session, token_totals.c.session_record_id == Session.id)
+            select(
+                func.sum(token_totals.c.total_tokens).label("total_tokens"),
+                func.min(case((token_totals.c.complete.is_(True), 1), else_=0)).label("complete"),
+            )
+            .select_from(Session)
+            .outerjoin(token_totals, token_totals.c.session_record_id == Session.id)
             .join(User, Session.uid == User.uid)
             .join(Agent, Session.agent_id == Agent.slug)
             .where(*session_filters)
         )
-        total_tokens = int((await self.db_session.execute(tokens_query)).scalar() or 0)
+        token_summary = (await self.db_session.execute(tokens_query)).one()
+        total_tokens = token_summary.total_tokens
 
         total_threads = int(summary_row.total_threads or 0)
+        if not total_threads:
+            total_tokens = 0
         active_threads = int(message_summary_row.active_threads or 0)
         pinned_threads = int(summary_row.pinned_threads or 0)
         total_messages = int(message_summary_row.total_messages or 0)
@@ -867,7 +821,8 @@ class DashboardRepository:
                 Session.agent_id,
                 func.count(Session.id).label("thread_count"),
                 func.coalesce(func.sum(message_counts.c.message_count), 0).label("message_count"),
-                func.coalesce(func.sum(token_totals.c.total_tokens), 0).label("token_count"),
+                func.sum(token_totals.c.total_tokens).label("token_count"),
+                func.min(case((token_totals.c.complete.is_(True), 1), else_=0)).label("token_usage_complete"),
             )
             .select_from(Session)
             .outerjoin(token_totals, Session.id == token_totals.c.session_record_id)
@@ -894,7 +849,8 @@ class DashboardRepository:
                 "agent_avatar": agent_avatars_map.get(row.agent_id),
                 "thread_count": int(row.thread_count or 0),
                 "message_count": int(row.message_count or 0),
-                "token_count": int(row.token_count or 0),
+                "token_count": row.token_count,
+                "token_usage_complete": bool(row.token_usage_complete),
                 "avg_messages": round(int(row.message_count or 0) / int(row.thread_count or 1), 1),
             }
             for row in agent_rows
@@ -949,8 +905,11 @@ class DashboardRepository:
                 "active_threads": active_threads,
                 "total_messages": total_messages,
                 "total_tokens": total_tokens,
+                "token_usage_complete": bool(token_summary.complete) if total_threads else True,
                 "avg_messages_per_thread": round(total_messages / total_threads, 1) if total_threads else 0.0,
-                "avg_tokens_per_thread": round(total_tokens / total_threads, 0) if total_threads else 0.0,
+                "avg_tokens_per_thread": (round(total_tokens / total_threads, 0) if total_threads else 0.0)
+                if total_tokens is not None
+                else None,
                 "pinned_threads": pinned_threads,
             },
             "daily_trends": daily_trends,
@@ -1020,3 +979,101 @@ class DashboardRepository:
             "peak_count": peak["total"],
             "peak_date": peak["date"],
         }
+
+    async def _get_token_timeseries(self, *, time_range: str, now: datetime) -> dict[str, Any]:
+        """按 Run 创建时间统计持久用量，空桶为零，缺报桶保留未知和完整性。"""
+        unit = {"14hours": "hour", "14weeks": "week"}.get(time_range, "day")
+        current = ensure_shanghai(now).replace(minute=0, second=0, microsecond=0)
+        if unit != "hour":
+            current = current.replace(hour=0)
+        if unit == "week":
+            current -= timedelta(days=current.weekday())
+        step = {"hour": timedelta(hours=1), "day": timedelta(days=1), "week": timedelta(weeks=1)}[unit]
+        first = current - 13 * step
+        usage = self._run_token_usage()
+        bucket = func.date_trunc(unit, func.timezone("Asia/Shanghai", usage.c.created_at))
+        rows = (
+            await self.db_session.execute(
+                select(
+                    bucket.label("bucket"),
+                    func.sum(usage.c.input_tokens).label("input_tokens"),
+                    func.sum(usage.c.output_tokens).label("output_tokens"),
+                    func.sum(usage.c.total_tokens).label("total_tokens"),
+                    func.count(usage.c.id).label("run_count"),
+                    func.sum(case((usage.c.complete, 0), else_=1)).label("incomplete_run_count"),
+                )
+                .select_from(usage)
+                .join(Session, Session.id == usage.c.session_record_id)
+                .join(User, User.uid == Session.uid)
+                .join(Agent, Agent.slug == Session.agent_id)
+                .where(
+                    Session.status != "deleted",
+                    User.is_deleted == 0,
+                    usage.c.created_at >= first.astimezone(UTC),
+                    usage.c.created_at <= now,
+                )
+                .group_by(bucket)
+            )
+        ).all()
+        by_bucket = {row.bucket: row for row in rows}
+        date_format = {"hour": "%Y-%m-%d %H:00", "day": "%Y-%m-%d", "week": "%G-%V"}[unit]
+        data = []
+        for index in range(14):
+            moment = first + index * step
+            row = by_bucket.get(moment.replace(tzinfo=None))
+            data.append(
+                {
+                    "date": moment.strftime(date_format),
+                    "data": {"input_tokens": row.input_tokens if row else 0, "output_tokens": row.output_tokens if row else 0},
+                    "total": row.total_tokens if row else 0,
+                    "token_usage_complete": row.incomplete_run_count == 0 if row else True,
+                    "run_count": row.run_count if row else 0,
+                    "incomplete_run_count": row.incomplete_run_count if row else 0,
+                }
+            )
+        run_count = sum(item["run_count"] for item in data)
+        incomplete = sum(item["incomplete_run_count"] for item in data)
+        # 空桶的零不能让全部缺报的范围产生一个看似可靠的零汇总。
+        known = [row.total_tokens for row in rows if row.total_tokens is not None]
+        total = sum(known) if known else (None if run_count else 0)
+        peak = max((item for item in data if item["run_count"] and item["total"] is not None), key=lambda item: item["total"], default=None)
+        return {
+            "data": data,
+            "categories": ["input_tokens", "output_tokens"],
+            "total_count": total,
+            "average_count": round(total / 14, 2) if total is not None else None,
+            "peak_count": peak["total"] if peak else total,
+            "peak_date": peak["date"] if peak else "",
+            "token_usage_complete": incomplete == 0,
+            "run_count": run_count,
+            "incomplete_run_count": incomplete,
+        }
+
+    @staticmethod
+    def _session_token_totals(session_record_ids: list[int] | None = None):
+        """按会话汇总同一组 Run 实测用量，保留缺报标记。"""
+        usage = DashboardRepository._run_token_usage()
+        return (
+            select(
+                usage.c.session_record_id,
+                func.sum(usage.c.total_tokens).label("total_tokens"),
+                (func.min(case((usage.c.complete, 1), else_=0)) == 1).label("complete"),
+            )
+            .where(usage.c.session_record_id.in_(session_record_ids) if session_record_ids is not None else True)
+            .group_by(usage.c.session_record_id)
+            .subquery()
+        )
+
+    @staticmethod
+    def _run_token_usage():
+        """统一识别 Run 的已上报用量，禁止用缺报时的初始零冒充观测值。"""
+        complete = AgentRun.token_usage["complete"].as_boolean().is_(True)
+        reported = (AgentRun.token_usage["usage_reported_call_count"].as_integer() > 0) | complete
+        values = {name: AgentRun.token_usage["total"][name].as_integer() for name in ("input_tokens", "output_tokens", "total_tokens")}
+        return select(
+            AgentRun.id,
+            AgentRun.session_record_id,
+            AgentRun.created_at,
+            *(case((reported, value), else_=None).label(name) for name, value in values.items()),
+            (complete & and_(*(value.isnot(None) for value in values.values()))).label("complete"),
+        ).subquery()

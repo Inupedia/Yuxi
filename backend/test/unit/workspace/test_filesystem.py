@@ -348,3 +348,24 @@ def test_search_tree_entry_budget_limits_actual_directory_iteration(tmp_path: Pa
     )
 
     assert examined == 7
+
+
+def test_read_rejects_directory_swapped_to_external_symlink(tmp_path, monkeypatch):
+    """元数据检查后替换祖先目录，实际读取仍不得跟随链接。"""
+    workspace_root = tmp_path / "workspace"
+    pivot = workspace_root / "pivot"
+    pivot.mkdir(parents=True)
+    (pivot / "note.txt").write_text("inside", encoding="utf-8")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "note.txt").write_text("outside-canary", encoding="utf-8")
+    monkeypatch.setattr(workspace_filesystem_module, "user_workspace_dir", lambda _uid: workspace_root)
+    workspace = Workspace("user-1")
+    assert workspace.stat_authorized_path("/pivot/note.txt", root="/")["is_dir"] is False
+
+    pivot.rename(workspace_root / "before-swap")
+    pivot.symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises((PermissionError, NotADirectoryError)):
+        workspace.read_authorized_file("/pivot/note.txt", 1024)
+    assert (outside / "note.txt").read_text(encoding="utf-8") == "outside-canary"

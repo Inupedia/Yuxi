@@ -1,83 +1,114 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
-import test from 'node:test'
-import { compileScript, parse } from 'vue/compiler-sfc'
-import { canIndexFile } from '../../src/modules/knowledge/model/knowledge_file_policy.js'
+import test, { before, after, afterEach } from 'node:test'
 import { createPinia, setActivePinia } from 'pinia'
-import { ref } from 'vue'
+import { createRenderer, h, reactive, ssrContextKey, toRef } from 'vue'
+import { routerKey, routeLocationKey } from 'vue-router'
 import { createTestServer } from '../helpers/createTestServer.js'
 
-/** 从组件中提取实际执行的声明，注入外部依赖以检查行为。 */
-function componentLogic(path, names, dependencies, exported) {
-  const source = readFileSync(new URL(path, import.meta.url), 'utf8')
-  const { descriptor } = parse(source)
-  const { scriptSetupAst } = compileScript(descriptor, { id: 'file-graph-entry-test' })
-  const declarations = names.map((name) => {
-    const node = scriptSetupAst.find(
-      (item) => item.type === 'VariableDeclaration' &&
-        item.declarations.some((declaration) => declaration.id.name === name)
-    )
-    assert.ok(node, `缺少 ${name}`)
-    return descriptor.scriptSetup.content.slice(node.start, node.end)
-  })
-  return new Function(...Object.keys(dependencies), `${declarations.join('\n')}; return ${exported}`)(
-    ...Object.values(dependencies)
-  )
-}
-
 const tablePath = '../../src/modules/knowledge/ui/FileTable.vue'
-const pagePath = '../../src/pages/KnowledgeBaseInfoView.vue'
+let fixtureServer
+let tableComponent
+let pageComponent
+const mounted = []
+const node = () => ({ children: [], parent: null })
+const renderer = createRenderer({
+  createElement: node, createText: node, createComment: node,
+  insert(child, parent) { child.parent = parent; parent.children.push(child) },
+  remove(child) { const i = child.parent?.children.indexOf(child) ?? -1; if (i >= 0) child.parent.children.splice(i, 1) },
+  setText() {}, setElementText() {}, parentNode: (n) => n.parent, nextSibling: () => null, patchProp() {}
+})
+
+before(async () => {
+  fixtureServer = await createTestServer({ server: { middlewareMode: true, hmr: false }, ssr: { noExternal: ['ant-design-vue'] }, plugins: [{
+    name: 'file-entry-boundaries', enforce: 'pre',
+    resolveId(id) { if (id === 'ant-design-vue') return '\0file-entry-ant' },
+    load(id) {
+      if (id === '\0file-entry-ant') return 'export const message = new Proxy({}, { get: (_, key) => (...args) => globalThis.__fileEntry.message[key](...args) }); export const Modal = {}'
+      if (id.endsWith('/src/modules/knowledge/model/knowledgeBase.js')) return 'export const useKnowledgeBaseStore = () => globalThis.__fileEntry.store'
+      if (id.endsWith('/src/modules/background-jobs/index.js') || id.endsWith('/src/modules/background-jobs/model/jobs.js')) return 'export const useBackgroundJobsStore = () => globalThis.__fileEntry.jobsStore'
+      if (id.endsWith('/src/modules/identity/index.js')) return 'export const useUserStore = () => globalThis.__fileEntry.userStore'
+      if (id.endsWith('/src/modules/settings/index.js')) return 'export const useConfigStore = () => ({ config: {} })'
+      if (id.endsWith('/src/apis/knowledge_api.js')) return 'export const documentApi = new Proxy({}, { get: (_, key) => (...args) => globalThis.__fileEntry.documentApi[key](...args) }); export const graphBuildApi = new Proxy({}, { get: (_, key) => (...args) => globalThis.__fileEntry.graphBuildApi[key](...args) })'
+      if (id.endsWith('/src/modules/knowledge/model/useChunkPresetOptions.js')) return 'import { ref } from "vue"; export const useChunkPresetOptions = () => ({ chunkPresetSelectOptions: ref([]), chunkPresetLoading: ref(false), loadChunkPresetOptions: () => {}, getChunkPresetDescription: () => "" })'
+      if (id.endsWith('/src/apis/department_api.js')) return 'export const departmentApi = { getDepartments: async () => [] }'
+      if (id.endsWith('/src/apis/auth_api.js')) return 'export const authApi = { getUsersPage: async () => ({ items: [], total: 0 }) }'
+      if (id.endsWith('.vue') && !id.endsWith('/FileTable.vue') && !id.endsWith('/KnowledgeBaseInfoView.vue')) return '<script>export default {}</script>'
+    }
+  }] })
+  tableComponent = (await fixtureServer.ssrLoadModule('/src/modules/knowledge/ui/FileTable.vue')).default
+  pageComponent = (await fixtureServer.ssrLoadModule('/src/pages/KnowledgeBaseInfoView.vue')).default
+})
+after(async () => { await fixtureServer.close() })
+afterEach(() => {
+  for (const app of mounted.splice(0)) app.unmount()
+  delete globalThis.__fileEntry
+  delete globalThis.document
+})
+
+/** 通过真实组件与 API 边界观察文件操作和持久任务回执。 */
+function fixture(overrides = {}) {
+  const requests = []
+  const registrations = []
+  const feedback = []
+  const refreshed = []
+  const events = []
+  const props = reactive({ readonly: false })
+  const store = reactive({
+    kbId: 'kb-a', knowledgeBase: { kb_type: 'milvus' }, state: { lock: false },
+    fileBrowser: {}, documentFiles: [], folderBreadcrumbs: [], selectedRowKeys: [],
+    getKnowledgeBaseInfo: async () => { refreshed.push(true) }, loadDocumentFiles: async () => {},
+    resetFileBrowser() {}, closeFileDetail() {}, stopAutoRefresh() {}, startAutoRefresh() {}
+  })
+  const userStore = reactive({ token: 'session-a' })
+  const documentApi = {
+    getDocumentInfo: async () => ({ meta: { processing_params: { ocr_engine: 'existing-ocr' } } }),
+    reparseDocument: async (...args) => { requests.push(args); return { job_id: 'reparse-job' } },
+    ...overrides.documentApi
+  }
+  if (overrides.loadRecordProcessingParams) documentApi.getDocumentInfo = async (...args) => ({ meta: { processing_params: await overrides.loadRecordProcessingParams(...args) } })
+  const graphBuildApi = { clearFile: async () => ({ job_id: 'job-a' }), ...overrides.graphBuildApi }
+  globalThis.__fileEntry = { store, userStore, documentApi, graphBuildApi,
+    jobsStore: { createJobRegistration: (onSettled) => (job) => registrations.push({ job, onSettled }) },
+    message: { success: (text) => feedback.push(['success', text]), error: (text) => feedback.push(['error', text]), warning: (text) => feedback.push(['warning', text]) }
+  }
+  let state
+  const app = renderer.createApp({ setup() { state = tableComponent.setup(props, { expose() {}, emit: (...args) => events.push(args) }); return () => h('div') } })
+  app.provide(ssrContextKey, { modules: new Set() })
+  app.mount(node())
+  mounted.push(app)
+  return { ...state, readonly: toRef(props, 'readonly'), lock: toRef(store.state, 'lock'), store, userStore, requests, registrations, feedback, refreshed, events }
+}
 
 test('文件菜单提供查看图谱，点击关闭菜单并传递当前文件', () => {
   const source = readFileSync(new URL(tablePath, import.meta.url), 'utf8')
   assert.match(source, /<template v-else>\s*<a-button[^>]*@click="viewFileGraph\(row\)"[^>]*>[\s\S]*?查看图谱/)
-  const visible = { value: { 'file-a': true } }
-  const events = []
-  const action = componentLogic(tablePath, ['closePopover', 'viewFileGraph'], {
-    popoverVisibleMap: visible,
-    emit: (...args) => events.push(args)
-  }, 'viewFileGraph')
+  const action = fixture()
+  action.popoverVisibleMap.value['file-a'] = true
   const file = { file_id: 'file-a', file_name: '合同.pdf' }
-  action(file)
-  assert.equal(visible.value['file-a'], false)
-  assert.deepEqual(events, [['view-graph', file]])
+  action.viewFileGraph(file)
+  assert.equal(action.popoverVisibleMap.value['file-a'], false)
+  assert.deepEqual(action.events, [['view-graph', file]])
 })
 
 test('查看图谱直接进入所选文件并保留其他路由参数', () => {
+  fixture()
   const pushes = []
-  const action = componentLogic(pagePath, ['viewFileGraph'], {
-    route: { query: { section: 'filetable', folder: 'folder-a' } },
-    router: { push: (target) => pushes.push(target) }
-  }, 'viewFileGraph')
-
-  action({ file_id: 'file-a' })
+  let page
+  const app = renderer.createApp({ setup() { page = pageComponent.setup({}, { expose() {}, emit() {} }); return () => h('div') } })
+  app.provide(ssrContextKey, { modules: new Set() })
+  app.provide(routerKey, { push: (target) => pushes.push(target), replace() {} })
+  app.provide(routeLocationKey, { params: {}, query: { section: 'filetable', folder: 'folder-a' } })
+  globalThis.document = { addEventListener() {}, removeEventListener() {} }
+  app.mount(node())
+  mounted.push(app)
+  page.viewFileGraph({ file_id: 'file-a' })
   assert.deepEqual(pushes, [{ query: { section: 'graph', folder: 'folder-a', file_id: 'file-a' } }])
 })
 
-/** 装配文件菜单实际使用的清除行为，保留可观察的弹窗与作业回执。 */
 function clearGraphAction(overrides = {}) {
-  const registered = []
-  const feedback = []
-  const dependencies = {
-    readonly: { value: false },
-    lock: { value: false },
-    clearingGraphFileId: { value: null },
-    documentReparseSubmitting: { value: false },
-    fileGraphClearTarget: { value: null },
-    store: { kbId: 'kb-a', knowledgeBase: { kb_type: 'milvus' } },
-    canIndexFile,
-    closePopover: () => {},
-    jobsStore: { createJobRegistration: () => (job) => registered.push(job) },
-    graphBuildApi: { clearFile: async () => ({ job_id: 'job-a' }) },
-    message: {
-      success: (text) => feedback.push(['success', text]),
-      error: (text) => feedback.push(['error', text])
-    },
-    ...overrides
-  }
-  const action = componentLogic(tablePath, ['canClearFileGraph', 'handleClearFileGraph', 'submitClearFileGraph'],
-    dependencies, '({ canClearFileGraph, handleClearFileGraph, submitClearFileGraph })')
-  return { ...action, ...dependencies, registered, feedback }
+  const action = fixture(overrides)
+  return { ...action, get registered() { return action.registrations.map((entry) => entry.job) } }
 }
 
 test('清除图谱仅允许 Milvus 中有分块的稳定文件，其他状态不打开确认框', () => {
@@ -166,37 +197,8 @@ test('确认时切换知识库或变为只读不提交原文件清除', async ()
   assert.deepEqual(action.registered, [])
 })
 
-/** 装配真实重新解析用例，回读提交、刷新与草稿状态。 */
 function documentReparseAction(overrides = {}) {
-  const requests = []
-  const registrations = []
-  const feedback = []
-  const refreshed = []
-  const parsedParams = []
-  const dependencies = {
-    readonly: ref(false),
-    lock: ref(false),
-    clearingGraphFileId: ref(null),
-    documentReparseTarget: ref(null),
-    documentReparseSubmitting: ref(false),
-    parseConfigModalVisible: ref(false),
-    parseConfigModalTitle: ref(''),
-    parseParams: ref({ ocr_engine: 'selected-ocr' }),
-    store: { kbId: 'kb-a', knowledgeBase: { kb_type: 'milvus' } },
-    userStore: { token: 'session-a' },
-    documentApi: { reparseDocument: async (...args) => { requests.push(args); return { job_id: 'reparse-job' } } },
-    closePopover: () => {},
-    loadRecordProcessingParams: async () => ({ ocr_engine: 'existing-ocr' }),
-    resetParseParams: (params) => parsedParams.push(params),
-    refreshAfterMutation: async () => { refreshed.push(true) },
-    jobsStore: { createJobRegistration: (onSettled) => (job) => registrations.push({ job, onSettled }) },
-    message: { success: (text) => feedback.push(['success', text]), error: (text) => feedback.push(['error', text]) },
-    ...overrides
-  }
-  const action = componentLogic(tablePath,
-    ['documentReparseStableStatuses', 'canReparseDocument', 'handleReparseDocument', 'submitReparseDocument', 'handleParseConfigConfirm'],
-    dependencies, '({ canReparseDocument, handleReparseDocument, submitReparseDocument, handleParseConfigConfirm })')
-  return { ...dependencies, ...action, requests, registrations, feedback, refreshed, parsedParams }
+  return fixture(overrides)
 }
 
 const reparsableFile = {
@@ -247,7 +249,8 @@ test('重新解析沿用参数且只提交后台任务，终态回读后端状�
   await action.handleReparseDocument(reparsableFile)
   assert.deepEqual(action.requests, [])
   assert.equal(action.parseConfigModalVisible.value, true)
-  assert.deepEqual(action.parsedParams, [{ ocr_engine: 'existing-ocr' }])
+  assert.deepEqual(action.parseParams.value, { ocr_engine: 'existing-ocr' })
+  action.parseParams.value = { ocr_engine: 'selected-ocr' }
   assert.match(action.parseConfigModalTitle.value, /重新解析.*合同.pdf/)
   await action.handleParseConfigConfirm()
   assert.deepEqual(action.requests, [['kb-a', 'file-a', { ocr_engine: 'selected-ocr' }]])
@@ -326,18 +329,14 @@ test('重新解析参数读取失败可见，切库后的旧参数不打开弹�
 
 test('重新解析从真实详情响应的 meta 读取已有 OCR 参数', async () => {
   const requests = []
-  const loadParams = componentLogic(tablePath, ['loadRecordProcessingParams'], {
-    store: { kbId: 'kb-a' },
-    documentApi: {
-      getDocumentInfo: async (...args) => {
-        requests.push(args)
-        return { meta: { processing_params: { ocr_engine: 'persisted-ocr' } }, content: '原正文' }
-      }
+  const action = documentReparseAction({ documentApi: {
+    getDocumentInfo: async (...args) => {
+      requests.push(args)
+      return { meta: { processing_params: { ocr_engine: 'persisted-ocr' } }, content: '原正文' }
     }
-  }, 'loadRecordProcessingParams')
-  const action = documentReparseAction({ loadRecordProcessingParams: loadParams })
+  } })
   await action.handleReparseDocument(reparsableFile)
-  assert.deepEqual(action.parsedParams, [{ ocr_engine: 'persisted-ocr' }])
+  assert.deepEqual(action.parseParams.value, { ocr_engine: 'persisted-ocr' })
   assert.deepEqual(requests, [['kb-a', 'file-a']])
 })
 
@@ -381,25 +380,15 @@ test('文件图谱和重新解析 API 使用管理端 POST 并保留作业回执
 })
 
 test('Markdown 编辑独立于阅读物料准入，稳定失败态无原件也能人工编辑', () => {
-  const events = []
-  const menu = { value: { 'empty-file': true } }
-  const dependencies = {
-    readonly: ref(false), lock: ref(false),
-    documentReparseSubmitting: ref(false), clearingGraphFileId: ref(null),
-    store: { knowledgeBase: { kb_type: 'milvus' } },
-    popoverVisibleMap: menu,
-    emit: (...args) => events.push(args)
-  }
-  const action = componentLogic(tablePath,
-    ['documentReparseStableStatuses', 'closePopover', 'canEditFileMarkdown', 'editFileMarkdown'],
-    dependencies, '({ canEditFileMarkdown, editFileMarkdown })')
+  const action = fixture()
+  action.popoverVisibleMap.value['empty-file'] = true
   const row = { file_id: 'empty-file', status: 'error_parsing', has_original_file: false, has_parsed_markdown: false }
   action.editFileMarkdown(row)
-  assert.deepEqual(events, [['edit-markdown', row]])
-  assert.equal(menu.value['empty-file'], false)
+  assert.deepEqual(action.events, [['edit-markdown', row]])
+  assert.equal(action.popoverVisibleMap.value['empty-file'], false)
   for (const status of ['uploaded', 'parsed', 'indexed', 'error_indexing', 'failed']) assert.equal(action.canEditFileMarkdown({ ...row, status }), true)
   for (const status of ['parsing', 'indexing', 'processing', 'unknown']) assert.equal(action.canEditFileMarkdown({ ...row, status }), false)
-  dependencies.readonly.value = true
+  action.readonly.value = true
   assert.equal(action.canEditFileMarkdown(row), false)
   assert.equal(action.canEditFileMarkdown({ ...row, is_folder: true }), false)
 })

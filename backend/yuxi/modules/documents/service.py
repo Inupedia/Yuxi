@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from yuxi.infrastructure.document_parsing import OCR_FILE_EXTENSIONS, ParseOptions, ParseResult
 from yuxi.infrastructure.document_parsing.engines import ENGINE_SPECS, get_engine, get_engine_spec
+from yuxi.infrastructure.observability.logging import logger
 from yuxi.modules.documents.options import (
     mineru_ocr_host_opts,
     mineru_official_api_opts,
@@ -135,18 +136,36 @@ async def check_all_ocr_health(db: AsyncSession) -> dict[str, Any]:
         try:
             kwargs = await _build_processor_kwargs(db, engine_id)
             configured.append((engine_id, kwargs))
-        except Exception as exc:
-            results[engine_id] = {"status": "error", "message": str(exc), "details": {}}
+        except Exception:
+            logger.exception("OCR {} 配置检查失败", engine_id)
+            results[engine_id] = {"status": "error"}
 
     async def check(engine_id: str, kwargs: dict[str, Any]) -> tuple[str, dict[str, Any]]:
         try:
             result = await asyncio.to_thread(get_engine(engine_id, **kwargs).check_health)
-        except Exception as exc:
-            result = {"status": "error", "message": str(exc), "details": {}}
+        except Exception:
+            logger.exception("OCR {} 健康检查失败", engine_id)
+            result = {"status": "error"}
         return engine_id, result
 
     checked = await asyncio.gather(*(check(engine_id, kwargs) for engine_id, kwargs in configured))
     results.update(checked)
+
+    # 登录用户仅消费可用性，提供者 message/details 可能包含服务地址或凭据。
+    public_messages = {
+        "healthy": "服务可用",
+        "configured": "凭据已配置，将在解析时验证",
+        "unhealthy": "服务响应异常",
+        "unavailable": "服务不可用，请联系管理员",
+        "timeout": "服务连接超时",
+        "error": "健康检查失败，请联系管理员",
+    }
+    for engine_id, result in results.items():
+        status = result["status"]
+        if status not in public_messages:
+            logger.error("OCR {} 返回未知健康状态", engine_id)
+            status = "error"
+        results[engine_id] = {"status": status, "message": public_messages[status], "details": {}}
     return results
 
 

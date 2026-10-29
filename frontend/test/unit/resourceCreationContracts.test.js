@@ -1,21 +1,50 @@
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
-import test from 'node:test'
-import { computed, defineComponent, h, nextTick, reactive, ref, watch } from 'vue'
-import { compileScript, parse } from 'vue/compiler-sfc'
-import { parseMcpManifest } from '../../src/modules/extensions/model/mcpManifest.js'
+import test, { before, after } from 'node:test'
+import { createSSRApp, h } from 'vue'
+import { renderToString } from 'vue/server-renderer'
+import { createPinia, setActivePinia, disposePinia } from 'pinia'
+import { message } from 'ant-design-vue'
+import { createTestServer } from '../helpers/createTestServer.js'
 
-/** 编译真实资源弹窗，替换网络边界而非业务实现。 */
-function setupModal(file, props, dependencies) {
-  const source = readFileSync(new URL(`../../src/modules/extensions/ui/${file}.vue`, import.meta.url), 'utf8')
-  const { descriptor } = parse(source)
-  const executable = compileScript(descriptor, { id: file }).content
-    .replace(/^import[\s\S]*?from '[^']+'\n/gm, '')
-    .replace('export default', 'return')
-  const deps = { computed, defineComponent, h, nextTick, reactive, ref, watch, ...dependencies }
+let server
+const pinia = createPinia()
+const originalMessage = { error: message.error, success: message.success }
+const previousStorage = globalThis.localStorage
+before(async () => {
+  globalThis.localStorage = { getItem: () => null, setItem() {}, removeItem() {} }
+  setActivePinia(pinia)
+  server = await createTestServer({ server: { middlewareMode: true, hmr: false }, appType: 'custom',
+    plugins: [{ name: 'resource-api-boundaries', enforce: 'pre', load(id) {
+      if (id.endsWith('/src/apis/skill_api.js')) return 'export const skillApi = new Proxy({}, { get: (_, key) => globalThis.__resourceTest.skillApi?.[key] })'
+      if (id.endsWith('/src/apis/mcp_api.js')) return 'export const mcpApi = new Proxy({}, { get: (_, key) => globalThis.__resourceTest.mcpApi?.[key] })'
+    } }]
+  })
+  const { useUserStore } = await server.ssrLoadModule('/src/modules/identity/model/user.js')
+  useUserStore(pinia).userRole = 'admin'
+})
+after(async () => {
+  await server?.close()
+  disposePinia(pinia)
+  Object.assign(message, originalMessage)
+  delete globalThis.__resourceTest
+  if (previousStorage === undefined) delete globalThis.localStorage
+  else globalThis.localStorage = previousStorage
+})
+
+/** 在真实资源弹窗中替换网络边界。 */
+async function setupModal(file, props, dependencies) {
+  globalThis.__resourceTest = dependencies
+  if (dependencies.message) Object.assign(message, dependencies.message)
+  const { default: component } = await server.ssrLoadModule(`/src/modules/extensions/ui/${file}.vue`)
   const events = []
-  const component = new Function(...Object.keys(deps), executable)(...Object.values(deps))
-  return { modal: component.setup(props, { expose() {}, emit: (...args) => events.push(args) }), events }
+  let modal
+  const app = createSSRApp({ setup() {
+    modal = component.setup(props, { expose() {}, emit: (...args) => events.push(args) })
+    return () => h('div')
+  } })
+  app.use(pinia)
+  await renderToString(app)
+  return { modal, events }
 }
 
 test('固定共享入口发布到共享 API，完成返回实际安装 slug，默认入口仍是个人', async () => {
@@ -29,12 +58,10 @@ test('固定共享入口发布到共享 API，完成返回实际安装 slug，�
       },
       discardSkillInstallDraft: () => assert.fail('成功草稿已经消费')
     },
-    useUserStore: () => ({ isAdmin: true }),
-    ShareConfigForm: {}, CheckCircle2: {}, Circle: {}, LoaderCircle: {}, PackageOpen: {}, XIcon: {}, XCircle: {}
   }
   const flow = { kind: 'draft', drafts: [{ draft_id: 'draft', items: [{ slug: 'guide', success: true }],
     default_share_config: { version: 2, read_scope: { access_level: 'global' } }, allowed_access_levels: ['global'] }] }
-  const { modal, events } = setupModal('SkillInstallFlowModal', { open: true, flow, target: 'shared' }, dependencies)
+  const { modal, events } = await setupModal('SkillInstallFlowModal', { open: true, flow, target: 'shared' }, dependencies)
   assert.equal(modal.installTarget.value, 'shared')
   await modal.installDrafts()
   await modal.finishFlow()
@@ -43,16 +70,15 @@ test('固定共享入口发布到共享 API，完成返回实际安装 slug，�
   assert.deepEqual(calls[0].slugs, ['guide'])
   assert.equal(calls[0].share.read_scope.access_level, 'global')
   assert.deepEqual(events, [['completed', { success: 1, failed: 0, slugs: ['installed-guide'] }], ['close']])
-  const defaultModal = setupModal('SkillInstallFlowModal', { open: true, flow, target: '' }, dependencies).modal
+  const { modal: defaultModal } = await setupModal('SkillInstallFlowModal', { open: true, flow, target: '' }, dependencies)
   assert.equal(defaultModal.installTarget.value, 'personal')
 })
 
 test('独立 MCP 发布等待时禁止重复提交与关闭，成功才返回资源标识', async () => {
   let resolveCreate
   const calls = []
-  const { modal, events } = setupModal('McpFormModal', { open: true, editMode: false, editData: null }, {
-    CollapseTransition: {}, ChevronRight: {}, Plug: {},
-    parseMcpManifest, message: { success() {}, error: (message) => assert.fail(message) },
+  const { modal, events } = await setupModal('McpFormModal', { open: true, editMode: false, editData: null }, {
+    message: { success() {}, error: (message) => assert.fail(message) },
     mcpApi: { createMcpServer: (data) => { calls.push(data); return new Promise((resolve) => { resolveCreate = resolve }) } }
   })
   Object.assign(modal.form, { slug: 'query', name: '查询', url: 'https://example.com/mcp' })

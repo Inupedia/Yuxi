@@ -1,20 +1,45 @@
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
-import test from 'node:test'
-import { compileScript, parse } from 'vue/compiler-sfc'
-import { computed, ref } from 'vue'
+import test, { before, after } from 'node:test'
+import { createSSRApp, h } from 'vue'
+import { renderToString } from 'vue/server-renderer'
+import { createPinia, setActivePinia, disposePinia } from 'pinia'
+import { message } from 'ant-design-vue'
+import { createTestServer } from '../helpers/createTestServer.js'
 
-/** 编译真实设置逻辑，以隔离的 API 验证编辑与保存结果。 */
-function createForm(deps) {
-  const source = readFileSync(
-    new URL('../../src/modules/settings/ui/OCRSettingsSection.vue', import.meta.url),
-    'utf8'
-  )
-  const executable = compileScript(parse(source).descriptor, { id: 'ocr-settings' })
-    .content.replace(/^import[\s\S]*?from '[^']+'\n/gm, '')
-    .replace('export default', 'return')
-  const component = new Function(...Object.keys(deps), executable)(...Object.values(deps))
-  return component.setup({}, { expose() {} })
+let server, component
+const pinia = createPinia()
+const originalMessage = { error: message.error, success: message.success }
+before(async () => {
+  setActivePinia(pinia)
+  server = await createTestServer({
+    server: { middlewareMode: true, hmr: false }, appType: 'custom',
+    plugins: [{ name: 'ocr-api-boundary', enforce: 'pre', load(id) {
+      if (id.endsWith('/src/apis/system_api.js')) return `
+        export const configOptionsApi = new Proxy({}, { get: (_, key) => globalThis.__ocrTestApi[key] })
+        export const configApi = {}`
+    } }]
+  })
+  ;({ default: component } = await server.ssrLoadModule('/src/modules/settings/ui/OCRSettingsSection.vue'))
+})
+after(async () => {
+  await server?.close()
+  disposePinia(pinia)
+  Object.assign(message, originalMessage)
+  delete globalThis.__ocrTestApi
+})
+
+/** 在真实组件中注入 API 并建立 Vue 上下文。 */
+async function createForm(deps) {
+  globalThis.__ocrTestApi = deps.configOptionsApi
+  Object.assign(message, deps.message)
+  let state
+  const app = createSSRApp({ setup() {
+    state = component.setup({}, { expose() {} })
+    return () => h('div')
+  } })
+  app.use(pinia)
+  await renderToString(app)
+  return state
 }
 
 test('MinerU 旧配置显示默认值，保存选择并重载，取消与失败保留正确状态', async () => {
@@ -27,8 +52,6 @@ test('MinerU 旧配置显示默认值，保存选择并重载，取消与失败�
   let failSave = false
   const errors = []
   const deps = {
-    computed, ref, onMounted() {}, OCRSelector: {},
-    useConfigStore: () => ({ config: {} }),
     message: { success() {}, error: (value) => errors.push(value) },
     configOptionsApi: {
       getOptions: async () => ({ options: [structuredClone(saved)] }),
@@ -40,7 +63,7 @@ test('MinerU 旧配置显示默认值，保存选择并重载，取消与失败�
       }
     }
   }
-  const form = createForm(deps)
+  const form = await createForm(deps)
   await form.loadConfigOptions()
   let option = form.configOptions.value[0]
   assert.equal(form.getFieldDisplay(option, fields[1]), 'Hybrid（混合解析）')
@@ -81,9 +104,8 @@ test('Official 默认模型兼容旧记录，修改模型保留凭据，清除�
   }
   let secret = 'fixture-original-key'
   const writes = []
-  const form = createForm({
-    computed, ref, onMounted() {}, OCRSelector: {},
-    useConfigStore: () => ({ config: {} }), message: { success() {}, error: assert.fail },
+  const form = await createForm({
+    message: { success() {}, error: assert.fail },
     configOptionsApi: {
       getOptions: async () => ({ options: [structuredClone(option)] }),
       updateOption: async (key, value) => {

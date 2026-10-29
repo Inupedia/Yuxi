@@ -68,3 +68,4 @@ cache
 frontend/package-lock.json
 docker/volumes
 docs/vibe
+/backend/test/ci-reports/

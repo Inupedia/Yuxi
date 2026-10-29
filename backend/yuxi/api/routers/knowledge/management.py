@@ -789,9 +789,11 @@ async def batch_delete_documents(kb_id: str, file_ids: list[str] = Body(...), cu
             await knowledge_base_manager.delete_file(kb_id, doc_id)
             deleted_count += 1
 
+        except DomainError as e:
+            failed_items.append({"doc_id": doc_id, "error": e.message})
         except Exception as e:
             logger.error(f"批量删除过程中删除文档 {doc_id} 失败: {e}, {traceback.format_exc()}")
-            failed_items.append({"doc_id": doc_id, "error": str(e)})
+            failed_items.append({"doc_id": doc_id, "error": "删除失败，请稍后重试"})
 
     if failed_items:
         if deleted_count == 0:
@@ -946,7 +948,7 @@ async def query_knowledge_base(
         raise
     except Exception as e:
         logger.error(f"知识库查询失败 {e}, {traceback.format_exc()}")
-        return {"message": f"知识库查询失败: {e}", "status": "failed"}
+        return {"message": "知识库查询失败，请稍后重试", "status": "failed"}
 
 
 @knowledge.post("/knowledge-bases/{kb_id}/query-test")
@@ -988,7 +990,7 @@ async def update_knowledge_base_query_params(
         raise
     except Exception as e:
         logger.error(f"更新知识库查询参数失败: {e}")
-        raise HTTPException(status_code=500, detail=f"更新查询参数失败: {str(e)}")
+        raise HTTPException(status_code=500, detail="更新查询参数失败") from e
 
 
 @knowledge.get("/knowledge-bases/{kb_id}/query-params")
@@ -1002,7 +1004,7 @@ async def get_knowledge_base_query_params(kb_id: str, current_user: User = Depen
         raise
     except Exception as e:
         logger.error(f"获取知识库查询参数失败 {e}, {traceback.format_exc()}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="获取查询参数失败") from e
 
 
 # --- AI生成示例问题 ---
@@ -1022,7 +1024,7 @@ async def generate_sample_questions(
         raise
     except Exception as e:
         logger.error(f"生成知识库问题失败: {e}, {traceback.format_exc()}")
-        raise HTTPException(status_code=500, detail=f"生成问题失败: {str(e)}")
+        raise HTTPException(status_code=500, detail="生成问题失败") from e
 
 
 @knowledge.get("/knowledge-bases/{kb_id}/sample-questions")
@@ -1034,7 +1036,7 @@ async def get_sample_questions(kb_id: str, current_user: User = Depends(require_
         raise
     except Exception as e:
         logger.error(f"获取知识库问题失败: {e}, {traceback.format_exc()}")
-        raise HTTPException(status_code=500, detail=f"获取问题失败: {str(e)}")
+        raise HTTPException(status_code=500, detail="获取问题失败") from e
 
 
 # --- 文件管理分组 ---
@@ -1055,7 +1057,7 @@ async def create_folder(
         raise
     except Exception as e:
         logger.error(f"创建文件夹失败 {e}, {traceback.format_exc()}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="创建文件夹失败") from e
 
 
 @knowledge.put("/knowledge-bases/{kb_id}/folders/{folder_id}/rename")
@@ -1075,7 +1077,7 @@ async def rename_folder(
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         logger.error(f"重命名文件夹失败 {e}, {traceback.format_exc()}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="重命名文件夹失败") from e
 
 
 @knowledge.put("/knowledge-bases/{kb_id}/documents/{doc_id}/move")
@@ -1096,7 +1098,7 @@ async def move_document(
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         logger.error(f"移动文件失败 {e}, {traceback.format_exc()}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="移动文件失败") from e
 
 
 @knowledge.post("/files/fetch-url")
@@ -1131,7 +1133,7 @@ async def fetch_url(
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         logger.error(f"Failed to fetch URL {url}: {e}, {traceback.format_exc()}")
-        raise HTTPException(status_code=500, detail=f"Failed to fetch URL: {str(e)}")
+        raise HTTPException(status_code=500, detail="抓取 URL 失败") from e
 
 
 @knowledge.post("/files/import-workspace")
@@ -1427,10 +1429,11 @@ async def _enqueue_document_action_job(
             kb_info=kb_info,
             action=action,
         )
-    except HTTPException:
+    except (HTTPException, DomainError):
         raise
-    except Exception as e:
-        return {"message": f"提交失败: {e}", "status": "failed"}
+    except Exception:
+        logger.exception("提交文档处理任务失败")
+        return {"message": "提交失败，请稍后重试", "status": "failed"}
 
 
 async def _enqueue_pending_document_action_job(
@@ -1451,7 +1454,8 @@ async def _enqueue_pending_document_action_job(
             kb_info=kb_info,
             action=action,
         )
-    except HTTPException:
+    except (HTTPException, DomainError):
         raise
-    except Exception as e:
-        return {"message": f"提交失败: {e}", "status": "failed"}
+    except Exception:
+        logger.exception("提交文档处理任务失败")
+        return {"message": "提交失败，请稍后重试", "status": "failed"}

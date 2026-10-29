@@ -14,7 +14,7 @@ Owner：.github/workflows/system-tests.yml
 
 把现有 Knowledge 关闭/恢复验证整体移到初始化 E2E 管理员之后、启动共享模型重放之前。该验证使用自己启动的 HTTP 重放，不依赖两个共享进程。恢复完整拓扑后，沿用原有共享重放启动与两个 health 协议检查，后续全部消费者继续按原选择器执行。
 
-`scripts/test_ci_resource_boundaries.py` 检查 Knowledge 拓扑切换先于共享重放启动；负控恢复旧顺序必须被拒绝。不新增服务、重启补偿、超时配置或并行 job，不改变任何 E2E oracle。
+`scripts/ci/test_resource_boundaries.py` 检查 Knowledge 拓扑切换先于共享重放启动；负控恢复旧顺序必须被拒绝。不新增服务、重启补偿、超时配置或并行 job，不改变任何 E2E oracle。
 
 ## 替代方案
 

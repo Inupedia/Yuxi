@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict'
+import { setImmediate } from 'node:timers'
 import test from 'node:test'
-import { readFileSync } from 'node:fs'
-import { createPinia, setActivePinia } from 'pinia'
+import { createRenderer, ssrContextKey } from 'vue'
+import { createPinia, disposePinia, setActivePinia } from 'pinia'
 import { createTestServer } from '../helpers/createTestServer.js'
 
 test('共享智能体保存只提交修改字段，并使用后端合并结果更新基线', async () => {
@@ -151,24 +152,60 @@ test('Agent 数字主键与路由身份不同，详情和创建更新删除始�
 })
 
 
-test('会话导出按稳定 Agent 身份读取列表元数据', () => {
-  const source = readFileSync(new URL('../../src/modules/session/ui/SessionWorkspace.vue', import.meta.url), 'utf8')
-  const start = source.indexOf('const buildExportPayload = () => {')
-  const code = source.slice(start, source.indexOf('\ndefineExpose(', start))
-  const state = {
-    currentAgentId: { value: 'export-agent' },
-    agents: { value: [{ id: 301, agent_id: 'export-agent', description: '导出说明' }] },
-    currentThread: { value: { yuxi: { title: '导出会话' } } },
-    currentAgentName: { value: '导出智能体' },
-    currentAgent: { value: null },
-    runGroups: { value: [{ text: '正文' }] },
-    ongoingRunMessages: { value: [] }
+test('会话导出按稳定 Agent 身份读取列表元数据', async (t) => {
+  const previousStorage = Object.getOwnPropertyDescriptor(globalThis, 'localStorage')
+  Object.defineProperty(globalThis, 'localStorage', {
+    configurable: true, value: { getItem: () => null, setItem() {}, removeItem() {} }
+  })
+  const previousDocument = globalThis.document
+  globalThis.document = { addEventListener() {}, removeEventListener() {}, visibilityState: 'visible' }
+  const pinia = createPinia()
+  setActivePinia(pinia)
+  const server = await createTestServer({ server: { middlewareMode: true, hmr: false }, appType: 'custom' })
+  let app
+  try {
+    const { useAgentStore } = await server.ssrLoadModule('/src/modules/agents/model/agent.js')
+    const store = useAgentStore(pinia)
+    store.isInitialized = true
+    store.agents = [{ id: 301, agent_id: 'export-agent', name: '导出智能体', description: '导出说明' }]
+    const { threadApi } = await server.ssrLoadModule('/src/apis/index.js')
+    t.mock.method(threadApi, 'getThreads', async () => ({ data: [], has_more: false }))
+    const { useSessionRuntimeStore } = await server.ssrLoadModule('/src/modules/session/model/sessionRuntime.js')
+    const runtime = useSessionRuntimeStore(pinia)
+    const { default: component } = await server.ssrLoadModule('/src/modules/session/ui/SessionWorkspace.vue')
+    let state, exposed
+    const renderer = createRenderer({
+      createElement: () => ({ children: [] }), createText: () => ({}), createComment: () => ({}),
+      insert: (child, parent) => parent.children.push(child), remove() {}, setText() {}, setElementText() {},
+      parentNode: () => null, nextSibling: () => null, patchProp() {}
+    })
+    app = renderer.createApp({ setup() {
+      state = component.setup({ agentId: 'export-agent', isNewSession: true, visible: false }, {
+        expose(value) { exposed = value }, emit() {}
+      })
+      return () => null
+    } })
+    app.use(pinia)
+    app.provide(ssrContextKey, {})
+    app.mount({ children: [] })
+    await new Promise((resolve) => setImmediate(resolve))
+    state.currentThreadId.value = 'thread-export'
+    state.currentThread.value = { agent: { id: 'export-agent' }, yuxi: { title: '导出会话' } }
+    runtime.getThreadState('thread-export').optimisticInputs = { pending: [{ id: 'input', type: 'human', content: '正文', extra_metadata: {} }] }
+    const payload = exposed.getExportPayload()
+    assert.equal(payload.agentDescription, '导出说明')
+    assert.equal(payload.agentName, '导出智能体')
+    assert.equal(payload.chatTitle, '导出会话')
+    assert.match(JSON.stringify(payload.messages), /正文/)
+    assert.deepEqual(payload.messages, state.runGroups.value)
+    assert.notEqual(payload.messages, state.runGroups.value)
+  } finally {
+    app?.unmount()
+    if (previousDocument === undefined) delete globalThis.document
+    else globalThis.document = previousDocument
+    disposePinia(pinia)
+    await server.close()
+    if (previousStorage) Object.defineProperty(globalThis, 'localStorage', previousStorage)
+    else delete globalThis.localStorage
   }
-  const buildExport = new Function(...Object.keys(state), code+'\nreturn buildExportPayload')(...Object.values(state))
-  const payload = buildExport()
-  assert.equal(payload.agentDescription, '导出说明')
-  assert.equal(payload.agentName, '导出智能体')
-  assert.equal(payload.chatTitle, '导出会话')
-  assert.deepEqual(payload.messages, [{ text: '正文' }])
-  assert.notEqual(payload.messages, state.runGroups.value)
 })

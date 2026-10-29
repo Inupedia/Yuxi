@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict'
 import { after, before, test } from 'node:test'
-import { readFileSync } from 'node:fs'
-import { createSSRApp, h, nextTick, ref, watch } from 'vue'
+import { setImmediate } from 'node:timers'
+import { createRenderer, createSSRApp, h, nextTick, reactive, ssrContextKey } from 'vue'
+import { createPinia, disposePinia, setActivePinia } from 'pinia'
 import { renderToString } from 'vue/server-renderer'
 import { createTestServer } from '../helpers/createTestServer.js'
 import {
@@ -108,92 +109,87 @@ test('查看单项或选择列表成员只发起导航，不消费待办', async
 })
 
 test('慢等待点恢复后才聚焦，隐藏或轮次变化撤销聚焦', async (t) => {
-  const source = readFileSync(
-    new URL('../../src/modules/session/ui/SessionWorkspace.vue', import.meta.url),
-    'utf8'
-  )
-  const functionSource = source.slice(
-    source.indexOf('async function focusPendingAction()'),
-    source.indexOf('const handleAgentStateRefresh')
-  )
-  let ready,
-    focused = false,
-    resumed = false
-  const workspaceReady = new Promise((resolve) => {
-    ready = resolve
+  const previousStorage = globalThis.localStorage, previousDocument = globalThis.document
+  globalThis.localStorage = { getItem: () => null, setItem() {}, removeItem() {} }
+  const pinia = createPinia()
+  setActivePinia(pinia)
+  const { agentApi, knowledgeBaseApi, toolApi, threadApi } = await server.ssrLoadModule('/src/apis/index.js')
+  let ready, resumed = 0, focused = false
+  t.mock.method(agentApi, 'getAgents', () => new Promise((resolve) => { ready = resolve }))
+  t.mock.method(knowledgeBaseApi, 'getAccessibleKnowledgeBases', async () => ({ knowledge_bases: [] }))
+  t.mock.method(toolApi, 'getTools', async () => ({ data: [] }))
+  t.mock.method(agentApi, 'getAgentDetail', async () => { resumed++; return { agent: { agent_id: 'focus-agent', can_run: true } } })
+  t.mock.method(threadApi, 'getThreads', async () => ({ data: [], has_more: false }))
+  t.mock.method(threadApi, 'markThreadViewed', async () => ({}))
+  const { useSessionRuntimeStore } = await server.ssrLoadModule('/src/modules/session/model/sessionRuntime.js')
+  const { default: Workspace } = await server.ssrLoadModule('/src/modules/session/ui/SessionWorkspace.vue')
+  globalThis.document = { addEventListener() {}, removeEventListener() {}, visibilityState: 'visible' }
+  const renderer = createRenderer({
+    createElement: () => ({ children: [] }), createText: () => ({}), createComment: () => ({}),
+    insert: (child, parent) => parent.children.push(child), remove() {}, setText() {}, setElementText() {},
+    parentNode: () => null, nextSibling: () => null, patchProp() {}
   })
-  const workspaceActive = ref(true)
-  const currentApprovalModalVisible = ref(false)
-  const currentThreadState = ref({ turnStatus: 'requires_action', currentTurnId: 'turn' })
-  const pendingActionFocusTurnId = ref(null)
-  const stops = []
-  t.after(() => stops.forEach((stop) => stop()))
-  const focus = new Function(
-    'workspaceReady',
-    'resumeCurrentRunForVisiblePage',
-    'nextTick',
-    'messageInputStageRef',
-    'workspaceActive',
-    'currentThreadState',
-    'pendingActionFocusTurnId',
-    'currentApprovalModalVisible',
-    'watch',
-    `${functionSource}; return focusPendingAction`
-  )(
-    workspaceReady,
-    async () => {
-      resumed = true
-    },
-    nextTick,
-    {
-      value: {
-        querySelector: () => ({
-          focus() {
-            focused = true
-          }
-        })
-      }
-    },
-    workspaceActive,
-    currentThreadState,
-    pendingActionFocusTurnId,
-    currentApprovalModalVisible,
-    (...args) => stops.push(watch(...args))
-  )
-  const pending = focus()
+  const props = reactive({ isNewSession: true, visible: true, agentId: 'focus-agent' })
+  let state, exposed
+  const app = renderer.createApp({ setup() {
+    state = Workspace.setup(props, { expose(value) { exposed = value }, emit() {} })
+    return () => null
+  } })
+  app.use(pinia)
+  app.provide(ssrContextKey, {})
+  app.mount({ children: [] })
+  t.after(() => {
+    app.unmount()
+    disposePinia(pinia)
+    if (previousStorage === undefined) delete globalThis.localStorage; else globalThis.localStorage = previousStorage
+    if (previousDocument === undefined) delete globalThis.document; else globalThis.document = previousDocument
+  })
+  await new Promise((resolve) => setImmediate(resolve))
+  state.currentThreadId.value = 'thread-focus'
+  state.messageInputStageRef.value = { querySelector: () => ({ focus() { focused = true } }) }
+  const thread = useSessionRuntimeStore(pinia).getThreadState('thread-focus')
+  thread.turnStatus = 'requires_action'
+  thread.currentTurnId = 'turn'
   await nextTick()
-  assert.equal(resumed, false)
+  const pending = exposed.focusPendingAction()
+  await nextTick()
+  assert.equal(resumed, 0)
   assert.equal(focused, false)
-  ready()
+  ready({ agents: [] })
   await pending
-  assert.equal(resumed, true)
+  assert.equal(resumed, 1)
   assert.equal(focused, false, '导航恢复返回时，等待点仍可能未到达')
-  currentApprovalModalVisible.value = true
+  const showApproval = () => {
+    thread.pendingInterrupt = { interruptedRunId: 'run', waitpointId: 'wait' }
+    Object.assign(state.approvalState, { showModal: true, threadId: 'thread-focus', interruptedRunId: 'run', waitpointId: 'wait' })
+  }
+  const hideApproval = () => { state.approvalState.showModal = false }
+  showApproval()
   await nextTick()
   await nextTick()
   assert.equal(focused, true)
   focused = false
-  currentApprovalModalVisible.value = false
-  await focus()
-  workspaceActive.value = false
+  hideApproval()
+  await exposed.focusPendingAction()
+  props.visible = false
   await nextTick()
-  currentApprovalModalVisible.value = true
+  showApproval()
   await nextTick()
   assert.equal(focused, false, '晚到的卡片不能抢隐藏视图的焦点')
-  workspaceActive.value = true
-  currentApprovalModalVisible.value = false
-  await focus()
-  currentThreadState.value.currentTurnId = 'another-turn'
+  props.visible = true
+  hideApproval()
+  await exposed.focusPendingAction()
+  thread.currentTurnId = 'another-turn'
   await nextTick()
-  currentApprovalModalVisible.value = true
+  showApproval()
   await nextTick()
   assert.equal(focused, false)
-  currentApprovalModalVisible.value = false
-  await focus()
-  currentThreadState.value.turnStatus = 'in_progress'
+  hideApproval()
+  await exposed.focusPendingAction()
+  thread.turnStatus = 'in_progress'
   await nextTick()
-  currentThreadState.value.turnStatus = 'requires_action'
-  currentApprovalModalVisible.value = true
+  thread.turnStatus = 'requires_action'
+  showApproval()
   await nextTick()
   await nextTick()
   assert.equal(focused, false, '同一轮次恢复后，新等待点不能复用旧聚焦意图')

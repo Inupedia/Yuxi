@@ -1,11 +1,12 @@
 <script setup>
 import { computed, onMounted, ref, watch } from 'vue'
 import { message, Modal } from 'ant-design-vue'
-import { ExternalLink, Pause, Play, Plus, RefreshCw, Trash2, X, Zap } from '@lucide/vue'
+import { Pause, Play, Plus, RefreshCw, Trash2, X, Zap } from '@lucide/vue'
 import { onBeforeRouteLeave, useRouter } from 'vue-router'
 
 import { scheduledAgentApi } from '@/apis/scheduled_agent_api'
 import ScheduledAgentEditor from '@/modules/agents/ui/ScheduledAgentEditor.vue'
+import ScheduledAgentHistory from '@/modules/agents/ui/ScheduledAgentHistory.vue'
 import {
   createRetriableRequestIds,
   createScheduledAgentAutosave
@@ -17,6 +18,7 @@ import { describeSchedule, parseCronExpression } from '@/modules/agents/model/sc
 const router = useRouter()
 const agentStore = useAgentStore()
 const jobs = ref([])
+const historyRevision = ref(0)
 const loading = ref(false)
 const saving = ref(false)
 const listError = ref('')
@@ -36,24 +38,8 @@ const ACCEPTED_RUN_NOW_STATUSES = new Set([
   'pending',
   'running'
 ])
-const RUN_STATUS_LABELS = {
-  dispatching: '提交中',
-  submitted: '已提交',
-  queued: '排队中',
-  dispatched: '已派发',
-  pending: '等待中',
-  running: '运行中',
-  completed: '已完成',
-  skipped: '已跳过',
-  failed: '失败',
-  rejected: '已拒绝',
-  cancelled: '已取消',
-  interrupted: '已中断'
-}
 
-const availableAgents = computed(() =>
-  (agentStore.agents || []).filter((agent) => agent.can_run)
-)
+const availableAgents = computed(() => (agentStore.agents || []).filter((agent) => agent.can_run))
 const selectedJob = computed(() => jobs.value.find((job) => job.id === selectedJobId.value) || null)
 const detailOpen = computed(() => creatingDraft.value || Boolean(selectedJob.value))
 const detailStatusLabel = computed(() => {
@@ -84,6 +70,7 @@ async function load({ silent = false } = {}) {
   listError.value = ''
   try {
     jobs.value = (await scheduledAgentApi.list()).jobs || []
+    historyRevision.value += 1
     if (selectedJobId.value && !jobs.value.some((job) => job.id === selectedJobId.value)) {
       selectedJobId.value = ''
     }
@@ -100,8 +87,7 @@ function scheduleLabel(job) {
 
 function agentLabel(job) {
   return (
-    availableAgents.value.find((agent) => agent.agent_id === job.agent_slug)?.name ||
-    job.agent_slug
+    availableAgents.value.find((agent) => agent.agent_id === job.agent_slug)?.name || job.agent_slug
   )
 }
 
@@ -222,43 +208,10 @@ function remove(job) {
   })
 }
 
-function formatRunTime(value) {
-  if (!value) return '等待调度'
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) return value
-  return new Intl.DateTimeFormat('zh-CN', {
-    month: 'numeric',
-    day: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit'
-  }).format(date)
-}
-
-function runStatusLabel(run) {
-  return RUN_STATUS_LABELS[run.status] || run.status
-}
-
-function runStatusTone(run) {
-  if (run.status === 'completed') return 'success'
-  if (['failed', 'rejected', 'cancelled', 'interrupted'].includes(run.status)) return 'danger'
-  if (run.status === 'skipped') return 'warning'
-  return 'active'
-}
-
-function canOpenSession(run) {
-  return Boolean(run.session_available && run.thread_id)
-}
-
 async function openSession(run) {
-  if (!canOpenSession(run)) return
+  if (!run.session_available || !run.thread_id) return
   if (!(await flushAutoSave())) return
   await router.push({ name: 'AgentCompWithThreadId', params: { thread_id: run.thread_id } })
-}
-
-function runRecordLabel(run) {
-  const trigger = run.trigger === 'manual' ? '手动运行' : '定时运行'
-  const availability = canOpenSession(run) ? '打开对应对话' : '没有可用对话'
-  return `${trigger}，${runStatusLabel(run)}，${formatRunTime(run.scheduled_for)}，${availability}`
 }
 
 watch([searchQuery, statusFilter], () => {
@@ -407,45 +360,12 @@ defineExpose({ beforeLeave: flushAutoSave, loading, saving })
             @change="queueAutoSave"
           />
 
-          <section v-if="selectedJob" class="history-section" aria-labelledby="runs-heading">
-            <header>
-              <div>
-                <h3 id="runs-heading">运行历史记录</h3>
-                <p>点击记录进入本次运行创建的对话。</p>
-              </div>
-              <span>{{ selectedJob.runs?.length || 0 }} 条</span>
-            </header>
-
-            <div v-if="selectedJob.runs?.length" class="run-list">
-              <button
-                v-for="run in selectedJob.runs"
-                :key="run.id"
-                type="button"
-                class="run-row"
-                :class="{ actionable: canOpenSession(run) }"
-                :disabled="!canOpenSession(run)"
-                :aria-label="runRecordLabel(run)"
-                @click="openSession(run)"
-              >
-                <span class="run-status" :class="runStatusTone(run)">{{
-                  runStatusLabel(run)
-                }}</span>
-                <span class="run-copy">
-                  <strong>{{ run.trigger === 'manual' ? '手动运行' : '定时运行' }}</strong>
-                  <small v-if="run.error_message" :title="run.error_message">{{
-                    run.error_message
-                  }}</small>
-                  <small v-else>{{
-                    canOpenSession(run) ? '查看对话和运行结果' : '尚未创建对话'
-                  }}</small>
-                </span>
-                <time :datetime="run.scheduled_for">{{ formatRunTime(run.scheduled_for) }}</time>
-                <ExternalLink v-if="canOpenSession(run)" :size="15" aria-hidden="true" />
-                <span v-else class="no-session">无对话</span>
-              </button>
-            </div>
-            <p v-else class="runs-empty">任务运行后，记录会显示在这里。</p>
-          </section>
+          <ScheduledAgentHistory
+            v-if="selectedJob"
+            :job-id="selectedJob.id"
+            :revision="historyRevision"
+            @open-session="openSession"
+          />
         </main>
       </Transition>
     </section>
@@ -731,130 +651,6 @@ defineExpose({ beforeLeave: flushAutoSave, loading, saving })
   }
 }
 
-.history-section {
-  padding: 0 22px 24px;
-
-  > header {
-    display: flex;
-    padding: 10px 0 6px;
-    border-bottom: 1px solid var(--gray-150);
-    align-items: flex-end;
-    justify-content: space-between;
-
-    h3 {
-      margin: 0;
-      color: var(--gray-700);
-      font-size: 12px;
-      font-weight: 500;
-    }
-
-    p {
-      margin: 2px 0 0;
-      color: var(--gray-400);
-      font-size: 11px;
-    }
-
-    > span {
-      color: var(--gray-400);
-      font-size: 11px;
-    }
-  }
-}
-
-.run-list {
-  border-bottom: 1px solid var(--gray-100);
-}
-
-.run-row {
-  display: grid;
-  width: 100%;
-  min-height: 44px;
-  padding: 10px 12px;
-  border: 0;
-  border-bottom: 1px solid var(--gray-100);
-  background: transparent;
-  color: inherit;
-  font: inherit;
-  text-align: left;
-  grid-template-columns: 58px minmax(0, 1fr) auto 18px;
-  align-items: center;
-  gap: 10px;
-
-  &:last-child {
-    border-bottom: 0;
-  }
-
-  &.actionable {
-    cursor: pointer;
-
-    &:hover {
-      background: var(--gray-25);
-    }
-  }
-
-  &:focus-visible {
-    outline: 2px solid var(--main-color);
-    outline-offset: 1px;
-  }
-
-  time,
-  svg,
-  .no-session {
-    color: var(--gray-400);
-    font-size: 11px;
-    font-variant-numeric: tabular-nums;
-  }
-}
-
-.run-status {
-  color: var(--color-info-700);
-  font-size: 11px;
-
-  &.success {
-    color: var(--color-success-700);
-  }
-
-  &.danger {
-    color: var(--color-error-700);
-  }
-
-  &.warning {
-    color: var(--color-warning-900);
-  }
-}
-
-.run-copy {
-  display: grid;
-  min-width: 0;
-  gap: 2px;
-
-  strong,
-  small {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  strong {
-    color: var(--gray-800);
-    font-size: 12px;
-    font-weight: 550;
-  }
-
-  small {
-    color: var(--gray-400);
-    font-size: 11px;
-  }
-}
-
-.runs-empty {
-  margin: 0;
-  padding: 22px 0;
-  border-bottom: 1px solid var(--gray-100);
-  color: var(--gray-400);
-  font-size: 12px;
-}
-
 .detail-slide-enter-active {
   transition:
     flex-basis 160ms cubic-bezier(0.16, 1, 0.3, 1),
@@ -919,19 +715,6 @@ defineExpose({ beforeLeave: flushAutoSave, loading, saving })
     padding: 0;
     font-size: 0;
     gap: 0;
-  }
-
-  .history-section {
-    padding-inline: 16px;
-  }
-
-  .run-row {
-    grid-template-columns: 52px minmax(0, 1fr) 18px;
-
-    time,
-    .no-session {
-      display: none;
-    }
   }
 }
 

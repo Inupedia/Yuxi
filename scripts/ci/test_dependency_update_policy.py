@@ -8,7 +8,7 @@ from pathlib import Path
 from textwrap import dedent
 
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 
 
 def verify_policy(root: Path) -> list[str]:
@@ -55,17 +55,12 @@ def verify_policy(root: Path) -> list[str]:
         '"docs/package.json"',
         '"docs/pnpm-lock.yaml"',
         '"docs/pnpm-workspace.yaml"',
-        '"scripts/dependency-audit-fixtures/**"',
+        '"scripts/ci/dependency-audit-fixtures/**"',
     )
-    pull_request_paths = workflow.split("  pull_request:\n", 1)[-1].split(
-        "  push:\n", 1
-    )[0]
     push_paths = workflow.split("  push:\n", 1)[-1].split(
         "  workflow_dispatch:\n", 1
     )[0]
     for path in required_paths:
-        if pull_request_paths.count(path) != 1:
-            errors.append(f"dependency audit 的 PR paths 缺少：{path}")
         if push_paths.count(path) != 1:
             errors.append(f"dependency audit 的 push paths 缺少：{path}")
 
@@ -130,7 +125,7 @@ class DependencyUpdatePolicyTest(unittest.TestCase):
             )
 
             self.assertIn(
-                'dependency audit 的 PR paths 缺少："frontend/pnpm-lock.yaml"',
+                'dependency audit 的 push paths 缺少："frontend/pnpm-lock.yaml"',
                 verify_policy(root),
             )
 

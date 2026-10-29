@@ -12,7 +12,7 @@ class BumpVersionScriptTests(unittest.TestCase):
         """创建包含重复版本入口和历史记录的最小仓库。"""
         script = root / "scripts/bump-version.sh"
         script.parent.mkdir(parents=True)
-        shutil.copy2(Path(__file__).with_name("bump-version.sh"), script)
+        shutil.copy2(Path(__file__).resolve().parents[1] / "bump-version.sh", script)
 
         fixtures = {
             ".env.template": "# SANDBOX_CONTAINER_IMAGE=yuxi-sandbox:0.7.2.beta1\n",
@@ -154,7 +154,7 @@ class BumpVersionScriptTests(unittest.TestCase):
             root = Path(temp_dir)
             script = root / "scripts/bump-version.sh"
             script.parent.mkdir(parents=True)
-            shutil.copy2(Path(__file__).with_name("bump-version.sh"), script)
+            shutil.copy2(Path(__file__).resolve().parents[1] / "bump-version.sh", script)
 
             result = subprocess.run(
                 ["bash", str(script), "0.7.2;touch-pwned"],

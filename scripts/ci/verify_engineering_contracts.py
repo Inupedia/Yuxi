@@ -7,7 +7,6 @@ import ast
 import json
 import re
 import sys
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -66,7 +65,9 @@ WORKSPACE_HOST_PATH_EXPORTS = frozenset(
         "user_workdir_host_dir",
     }
 )
-PERSONAL_SKILL_WORKSPACE_OWNER = Path("backend/yuxi/modules/extensions/skills/personal.py")
+PERSONAL_SKILL_WORKSPACE_OWNER = Path(
+    "backend/yuxi/modules/extensions/skills/personal.py"
+)
 DIRECT_FRONTEND_API_LITERAL = re.compile(r"(?P<quote>['\"`])/api(?:[/ ?]|(?P=quote))")
 AGENTS_FILE_BUDGETS = {
     "AGENTS.md": 5000,
@@ -87,93 +88,31 @@ MARKDOWN_LIST_ITEM = re.compile(
 )
 
 
-@dataclass(frozen=True)
-class WorkflowContract:
-    """由 workflow 文件自身拥有的最小可执行接线要求。"""
-
-    path: str
-    commands: tuple[str, ...]
-    trigger: str = "pull_request"
-    required_paths: tuple[str, ...] = ()
-    unfiltered_pull_request: bool = False
-
-
-WORKFLOW_CONTRACTS = (
-    WorkflowContract(
-        path=".github/workflows/trust.yml",
-        commands=(
-            "python3 scripts/verify_engineering_contracts.py",
-            "python3 -m unittest scripts.test_verify_engineering_contracts",
-        ),
-        unfiltered_pull_request=True,
+# 入口由各 workflow 拥有，具体 pytest 节点和参数不在这里复制。
+WORKFLOW_ENTRIES = {
+    "trust.yml": (
+        "scripts/ci/verify_engineering_contracts.py",
+        "scripts.ci.test_verify_engineering_contracts",
     ),
-    WorkflowContract(
-        path=".github/workflows/test.yml",
-        commands=(
-            "uv run pytest test/unit -m 'not slow' -q",
-            "pwsh -NoProfile -File scripts/test_init_security.ps1",
-        ),
-        required_paths=(
-            ".env.template",
-            "backend/**",
-            "docker/**",
-            "scripts/init.sh",
-            "scripts/init.ps1",
-            "scripts/test_init_security.ps1",
-            ".github/workflows/test.yml",
-        ),
+    "test.yml": ("pytest test/unit", "scripts/ci/test_init_security.ps1"),
+    "frontend.yml": ("pnpm run lint:check", "pnpm run test:unit", "pnpm run build"),
+    "service-integration.yml": ("scripts/ci/run_service_integration.sh",),
+    "system-tests.yml": (
+        "backend/test/run_tests.sh e2e",
+        "test/integration/sandbox/test_container_sandbox.py",
     ),
-    WorkflowContract(
-        path=".github/workflows/frontend.yml",
-        commands=("pnpm run lint:check && pnpm run test:unit && pnpm run build",),
-        required_paths=("frontend/**", ".github/workflows/frontend.yml"),
-    ),
-    WorkflowContract(
-        path=".github/workflows/system-tests.yml",
-        commands=(
-            "docker compose exec -T api uv run --no-sync --no-dev pytest test/integration/api/test_system_router_api.py::test_health_endpoint_is_public test/integration/api/test_system_router_api.py::test_readiness_endpoint_proves_core_runtime_dependencies test/integration/api/test_system_router_api.py::test_discovery_and_openapi_declare_full_knowledge_capabilities -q",
-            "docker compose exec -T -e TEST_BASE_URL=http://127.0.0.1:1 -e CUBE_API_URL=http://127.0.0.1:1 -e TEST_USERNAME=fixture-probe -e TEST_PASSWORD=fixture-probe api uv run --no-sync --no-dev pytest test/integration/services/test_input_attachments.py -q",
-            'docker compose exec -T -e TEST_USERNAME="$E2E_USERNAME" -e TEST_PASSWORD="$E2E_PASSWORD" api uv run --no-sync --no-dev pytest test/integration/api/test_turn_result_causality.py -q',
-            'docker compose exec -T -e TEST_USERNAME="$E2E_USERNAME" -e TEST_PASSWORD="$E2E_PASSWORD" api uv run --no-sync --no-dev pytest test/integration/api/test_chat_router.py::test_public_thread_endpoints_require_authentication test/integration/api/test_chat_router.py::test_public_create_rejects_empty_input test/integration/api/test_chat_router.py::test_public_missing_thread_and_turn_return_not_found test/integration/api/test_chat_router.py::test_public_input_rejects_unbound_attachment_without_persisting_receipt test/integration/api/test_removed_api_endpoints.py::test_removed_agent_session_entrypoints_are_unreachable test/integration/api/test_public_agents_key_boundary.py test/integration/services/test_agent_input_schema.py test/integration/services/test_project_thread_archive.py test/integration/services/test_run_stream_redis.py -q',
-            'docker compose exec -T -e TEST_USERNAME="$E2E_USERNAME" -e TEST_PASSWORD="$E2E_PASSWORD" api uv run --no-sync --no-dev pytest test/integration/api/test_public_knowledge_tools.py::test_knowledge_key_tool_route_boundary_without_kb test/integration/api/test_public_knowledge_tools.py::test_agents_key_cannot_access_public_knowledge_api test/integration/api/test_removed_api_endpoints.py::test_public_knowledge_does_not_expose_management_routes -q',
-            'docker compose exec -T -e TEST_USERNAME="$E2E_USERNAME" -e TEST_PASSWORD="$E2E_PASSWORD" api uv run --no-sync --no-dev pytest test/integration/api/test_chat_router.py::test_thread_message_audits_return_persisted_facts_without_leaking_into_history test/integration/api/test_chat_router.py::test_debug_messages_follow_database_sequence_and_include_unassigned_inputs -q --setup-show -o faulthandler_timeout=60',
-            'docker compose exec -T -e TEST_USERNAME="$E2E_USERNAME" -e TEST_PASSWORD="$E2E_PASSWORD" api uv run --no-sync --no-dev pytest test/integration/api/test_chat_router.py::test_thread_artifact_uses_image_signature_for_content_type test/integration/api/test_public_agent_files.py -q',
-            'TEST_USERNAME="$E2E_USERNAME" TEST_PASSWORD="$E2E_PASSWORD" bash backend/test/run_tests.sh e2e',
-            'docker compose exec -T -e TEST_USERNAME="$E2E_USERNAME" -e TEST_PASSWORD="$E2E_PASSWORD" api uv run --no-sync --no-dev pytest test/integration/services/test_identity_admin_service.py test/integration/services/test_api_key_user_lifecycle.py test/integration/api/test_apikey_router.py -q',
-            'docker compose exec -T -e TEST_USERNAME="$E2E_USERNAME" -e TEST_PASSWORD="$E2E_PASSWORD" api uv run --no-sync --no-dev pytest test/integration/services/test_project_workdir.py::test_sessions_share_workdir_only_through_project test/integration/services/test_user_skill_projection.py test/integration/api/test_skill_artifact_authorization.py -q',
-            "docker compose exec -T -e E2E_USERNAME -e E2E_PASSWORD -e CONTAINER_E2E_REPLAY_URL_TEMPLATE api uv run --no-sync --no-dev pytest test/e2e/test_container_agent_execution_e2e.py -q",
-            """SANDBOX_CONTAINER_TEST=1 SANDBOX_CONTAINER_IMAGE="$(docker compose config --format json | jq -r '.services["sandbox-image"].image')" uv run --project backend --locked --group test pytest backend/test/integration/sandbox/test_container_sandbox.py -q""",
-        ),
-        required_paths=(
-            "backend/yuxi/**",
-            "backend/test/integration/**",
-            "backend/test/e2e/**",
-            "backend/test/support/**",
-            "backend/test/run_tests.sh",
-            "docker/**",
-            "scripts/ci_prepare_system_tests_env.sh",
-            "scripts/ci_build_topology_images.sh",
-            ".github/workflows/system-tests.yml",
-        ),
-    ),
-    WorkflowContract(
-        path=".github/workflows/service-integration.yml",
-        commands=("bash scripts/ci_run_service_integration.sh",),
-        required_paths=(
-            "backend/**",
-            "scripts/ci_run_service_integration.sh",
-            ".github/workflows/service-integration.yml",
-        ),
-    ),
-    WorkflowContract(
-        path=".github/workflows/real-provider-probe.yml",
-        trigger="workflow_dispatch",
-        commands=(
-            'if [ -z "$SILICONFLOW_API_KEY" ]; then\necho "SILICONFLOW_API_KEY repository secret is required for this manual probe." >&2\nexit 1\nfi',
-            "docker compose exec -T -e E2E_USERNAME -e E2E_PASSWORD api uv run --no-sync --no-dev pytest test/e2e/test_real_provider_e2e.py -q",
-        ),
-    ),
-)
+    "real-provider-probe.yml": ("test/e2e/test_real_provider_e2e.py",),
+}
+CI_WORKFLOWS = {
+    "trust": "trust.yml",
+    "backend": "test.yml",
+    "ruff": "ruff.yml",
+    "frontend": "frontend.yml",
+    "service": "service-integration.yml",
+    "system": "system-tests.yml",
+    "docs": "docs-check.yml",
+    "dependencies": "dependency-audit.yml",
+}
 
 
 def _require_repository_path(
@@ -471,84 +410,133 @@ def _workflow_has_trigger(text: str, trigger: str) -> bool:
 
 
 def _validate_workflows(root: Path, errors: list[str]) -> list[dict[str, Any]]:
-    runner = root / "backend/test/run_tests.sh"
-    runner_text = runner.read_text() if runner.is_file() else ""
-    selector = re.search(r"LIFECYCLE_E2E_TESTS=\((.*?)\)", runner_text, re.S)
-    selected = set(selector.group(1).split()) if selector else set()
-    for name in ("test_agent_lifecycle_e2e.py", "test_agent_lifecycle_extended_e2e.py", "test_input_projection_recovery_e2e.py", "test_draft_attachments_e2e.py", "test_session_cooperation_e2e.py", "test_agent_lifecycle_key_scope_e2e.py", "test_openai_events_e2e.py", "test_agent_feedback_e2e.py"):
-        if f"test/e2e/{name}" not in selected:
-            errors.append(f"E2E runner 缺少原 CI 用例：{name}")
-    if '"${PYTEST_CMD[@]}" "${LIFECYCLE_E2E_TESTS[@]}" -m e2e' not in runner_text:
-        errors.append("E2E runner selector 未连接 pytest")
+    """检查稳定入口和 PR 汇总的实际接线。"""
     projection: list[dict[str, Any]] = []
-    for contract in WORKFLOW_CONTRACTS:
+    names = set(CI_WORKFLOWS.values()) | {"real-provider-probe.yml"}
+    for name in sorted(names):
+        path = f".github/workflows/{name}"
         workflow = _require_repository_path(
-            root, contract.path, "workflow", errors, file_only=True
+            root, path, "workflow", errors, file_only=True
         )
         if workflow is None:
             continue
         text = workflow.read_text(encoding="utf-8")
+        trigger = (
+            "workflow_dispatch"
+            if name == "real-provider-probe.yml"
+            else "workflow_call"
+        )
+        if not _workflow_has_trigger(text, trigger):
+            errors.append(f"workflow 不监听 {trigger}：{path}")
         steps = _workflow_run_steps(text)
-        for command in contract.commands:
-            if _command_swallows_failure(command):
-                errors.append(
-                    f"workflow contract 不得登记吞错命令：{contract.path} -> {command}"
-                )
-            normalized_command = _normalized(command)
-            matching = [
-                step
-                for step in steps
-                if _normalized(step["command"]) == normalized_command
-            ]
+        for entry in WORKFLOW_ENTRIES.get(name, ()):
+            matching = [step for step in steps if entry in _normalized(step["command"])]
             if not matching:
-                swallowing = [
-                    step
-                    for step in steps
-                    if normalized_command in _normalized(step["command"])
-                    and _command_swallows_failure(step["command"])
-                ]
-                if swallowing:
-                    errors.append(
-                        f"workflow 命令不得吞掉失败：{contract.path} -> {command}"
-                    )
-                else:
-                    errors.append(
-                        f"workflow 缺少实际 run step：{contract.path} -> {command}"
-                    )
-            elif not any(_run_step_is_blocking(step) for step in matching):
-                errors.append(
-                    f"workflow 命令只存在于被跳过或吞错的 step：{contract.path} -> {command}"
-                )
-        paths: list[str] | None = None
-        if contract.trigger == "pull_request":
-            has_pr, paths, paths_ignore = _workflow_pull_request_filters(text)
-            if not has_pr:
-                errors.append(f"workflow 不监听 pull_request：{contract.path}")
-            if contract.unfiltered_pull_request and (paths is not None or paths_ignore):
-                errors.append(
-                    f"全仓信任 workflow 不得使用 path filter：{contract.path}"
-                )
-            if paths_ignore:
-                errors.append(
-                    f"阻断 workflow 不得用 paths-ignore 隐藏变更：{contract.path}"
-                )
-            if contract.required_paths:
-                actual_paths = set(paths or [])
-                missing_paths = sorted(set(contract.required_paths) - actual_paths)
-                if missing_paths:
-                    errors.append(
-                        f"workflow PR paths 缺少 owning scope：{contract.path} -> {missing_paths}"
-                    )
-        elif not _workflow_has_trigger(text, contract.trigger):
-            errors.append(f"workflow 不监听 {contract.trigger}：{contract.path}")
+                errors.append(f"workflow 缺少实际 run step：{path} -> {entry}")
+            elif not any(
+                _run_step_is_blocking(step)
+                and not _command_swallows_failure(step["command"])
+                for step in matching
+            ):
+                errors.append(f"workflow 入口被跳过或吞错：{path} -> {entry}")
         projection.append(
             {
-                "path": contract.path,
-                "trigger": contract.trigger,
-                "pull_request_paths": paths,
+                "path": path,
+                "trigger": trigger,
                 "commands": [step["command"] for step in steps],
             }
         )
+
+    path = ".github/workflows/ci.yml"
+    caller = _require_repository_path(root, path, "workflow", errors, file_only=True)
+    if caller is None:
+        return projection
+    text = caller.read_text(encoding="utf-8")
+    has_pr, paths, paths_ignore = _workflow_pull_request_filters(text)
+    if not has_pr or paths is not None or paths_ignore:
+        errors.append("CI caller 必须监听无路径过滤的 pull_request")
+    if _workflow_has_trigger(text, "pull_request_target") or re.search(
+        r"(?m)^\s*secrets:\s*inherit\s*$", text
+    ):
+        errors.append("CI caller 不得使用 pull_request_target 或继承 secrets")
+    jobs_match = re.search(r"(?ms)^jobs:\s*\n(.*?)(?=^\S|\Z)", text)
+    jobs_text = jobs_match.group(1) if jobs_match else ""
+    jobs = {
+        match.group(1): match.group(2)
+        for match in re.finditer(
+            r"(?ms)^  ([\w-]+):\s*\n(.*?)(?=^  [\w-]+:\s*(?:#.*)?$|\Z)", jobs_text
+        )
+    }
+    for job, workflow in CI_WORKFLOWS.items():
+        block = jobs.get(job, "")
+        if not re.search(
+            rf"(?m)^    uses:\s*\./\.github/workflows/{re.escape(workflow)}\s*$", block
+        ):
+            errors.append(f"CI caller 缺少 workflow 调用：{job}")
+        conditions = re.findall(r"(?m)^    if:\s*(.*?)\s*$", block)
+        expected = f"fromJSON(needs.changes.outputs.selected).{job}"
+        if (job == "trust" and conditions) or (
+            job != "trust"
+            and (
+                len(conditions) != 1
+                or _yaml_scalar(conditions[0])
+                .removeprefix("${{")
+                .removesuffix("}}")
+                .strip()
+                != expected
+            )
+        ):
+            errors.append(f"CI caller 条件错误：{job}")
+        if job != "trust" and not re.search(
+            r"(?m)^    needs:\s*(?:changes|\[changes\])\s*$", block
+        ):
+            errors.append(f"CI caller 缺少选择依赖：{job}")
+        if re.search(r"(?m)^    continue-on-error:\s*(?!false\s*$)", block):
+            errors.append(f"CI caller 不得吞错：{job}")
+    required = jobs.get("required", "")
+    if not re.search(
+        r"(?m)^    name:\s*['\"]?CI required['\"]?\s*$", required
+    ) or not re.search(
+        r"(?m)^    if:\s*(?:\$\{\{\s*)?always\(\)(?:\s*\}\})?\s*$", required
+    ):
+        errors.append("CI required 必须始终运行")
+    needs = re.search(r"(?m)^    needs:\s*\[([^]]*)\]", required)
+    if not needs or {_yaml_scalar(item) for item in needs.group(1).split(",")} != set(
+        CI_WORKFLOWS
+    ) | {"changes"}:
+        errors.append("CI required 必须依赖所有检查")
+    for job, entry in (
+        ("required", "scripts/ci/gate.py check"),
+        ("changes", "scripts/ci/gate.py select"),
+    ):
+        matching = [
+            step
+            for step in _workflow_run_steps(
+                "jobs:\n  " + job + ":\n" + jobs.get(job, "")
+            )
+            if re.search(re.escape(entry) + r"(?=\s|$)", step["command"])
+        ]
+        if job == "required":
+            for step in matching:
+                step.pop("job-if", None)  # 已单独验证 always()。
+        if not any(
+            _run_step_is_blocking(step)
+            and not _command_swallows_failure(step["command"])
+            for step in matching
+        ):
+            errors.append(f"CI caller 缺少有效入口：{job}")
+    if not re.search(
+        r"(?m)^\s*NEEDS_JSON:\s*\$\{\{\s*toJSON\(needs\)\s*\}\}\s*$", required
+    ):
+        errors.append("CI required 缺少结果输入")
+    projection.append(
+        {
+            "path": path,
+            "trigger": "pull_request",
+            "pull_request_paths": paths,
+            "commands": [],
+        }
+    )
     return projection
 
 
@@ -957,7 +945,11 @@ def _validate_workspace_host_path_boundary(root: Path, errors: list[str]) -> int
     """普通 use-case 与 repository 不得取得 UserWorkspace 宿主路径。"""
 
     checked = 0
-    for source_root in sorted((root / "backend/yuxi/modules").glob("*/services")) + sorted((root / "backend/yuxi/modules").glob("*/repositories")) + [root / "backend/yuxi/modules/extensions/skills"]:
+    for source_root in (
+        sorted((root / "backend/yuxi/modules").glob("*/services"))
+        + sorted((root / "backend/yuxi/modules").glob("*/repositories"))
+        + [root / "backend/yuxi/modules/extensions/skills"]
+    ):
         for path in sorted(source_root.rglob("*.py")):
             checked += 1
             relative = path.relative_to(root)
@@ -979,11 +971,15 @@ def _validate_workspace_host_path_boundary(root: Path, errors: list[str]) -> int
                     )
                     if relative == PERSONAL_SKILL_WORKSPACE_OWNER:
                         forbidden.discard("user_workspace_dir")
-                elif isinstance(node, ast.ImportFrom) and node.module == "yuxi.infrastructure.runtime_settings":
+                elif (
+                    isinstance(node, ast.ImportFrom)
+                    and node.module == "yuxi.infrastructure.runtime_settings"
+                ):
                     if any(alias.name == "get_user_data_dir" for alias in node.names):
                         forbidden.add("get_user_data_dir")
                 elif (
-                    isinstance(node, ast.ImportFrom) and node.module == "yuxi.modules.workspace"
+                    isinstance(node, ast.ImportFrom)
+                    and node.module == "yuxi.modules.workspace"
                 ):
                     if any(alias.name == "paths" for alias in node.names):
                         forbidden.add("paths module")
@@ -1052,7 +1048,7 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    root = Path(__file__).resolve().parents[1]
+    root = Path(__file__).resolve().parents[2]
     errors, projection = verify(root)
     if args.report:
         print(json.dumps(projection, ensure_ascii=False, indent=2))

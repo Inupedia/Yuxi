@@ -18,7 +18,7 @@ runner 的十类准入拒绝共用一个失败结算出口。`RunAdmissionReject
 
 准入拒绝在相同的用户加载阶段调用[Run 生命周期结算](2026-10-21-run-terminal-lifecycle.md)。用户尚未加载时保留 available:false；用户已加载时继续读取仅归属于指定 Run 的 checkpoint 用量。没有证据支持“准入会静默丢失当前模型用量”的额外修复；本决定保持现有用量契约。
 
-`scripts/ci_run_service_integration.sh` 的显式测试枚举包含 `test_run_admission.py` 与 `test_agent_run_manifest_and_attempts.py`，复用现有 service integration workflow 执行持久证据。
+`scripts/ci/run_service_integration.sh` 的显式测试枚举包含 `test_run_admission.py` 与 `test_agent_run_manifest_and_attempts.py`，复用现有 service integration workflow 执行持久证据。
 
 ## 替代方案
 
