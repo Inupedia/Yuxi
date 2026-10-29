@@ -54,6 +54,8 @@ jobs:
           grep -q "GHSA-cq5v-8q36-5273" python-audit-negative.log
       - name: Audit Python transitive licenses
         working-directory: backend
+        env:
+          UV_HTTP_TIMEOUT: 120
         run: uv run --isolated --no-dev --with pip-licenses pip-licenses --from mixed --format markdown
 
   node:

@@ -41,7 +41,7 @@ Documents service 将健康检查投影为已知状态与固定说明，保持 `
 | OCR 与模型诊断不发布提供者载荷 | Documents/Models service 与 HTTP 出口 | 同一真实 HTTP 集合覆盖配置异常、抛出异常、直接返回详情、未知状态及成功/失败结果 | 人工敏感标记不得出现在 HTTP 正文，领域错误与模型身份独立断言 |
 | 锁定依赖避开已知漏洞 | manifest、uv.lock、dependency-audit | uv lock --check 通过；uv audit --locked --no-dev 检查 195 包无已知漏洞 | 现有依赖审计漏洞夹具保持不变 |
 | 当前文件与密码边界拒绝历史缺陷 | Workspace 与 Identity | 完整宿主 unit：3483 passed，1 skipped；涵盖 v3 流式工具调用与 reasoning 回归 | 祖先目录换成外部 symlink 后读取被拒绝；旧 SHA-256 密码被拒绝 |
-| 持续 CodeQL 接线不缺失 | codeql.yml 与 release workflow tests | 工程契约与 101 项脚本测试通过；后端全源码 Ruff 通过 | 删除触发、语言、category 或上传步骤时接线检查拒绝 |
+| 持续 CodeQL 接线不缺失 | codeql.yml 与 release workflow tests | 工程契约与 102 项脚本测试通过；后端全源码 Ruff 通过 | 删除触发、语言、category 或上传步骤时接线检查拒绝 |
 
 实际命令：
 

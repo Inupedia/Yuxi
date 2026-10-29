@@ -178,6 +178,9 @@ jobs:
           docker compose exec -T api uv run --no-sync --no-dev pytest --junitxml=test/ci-reports/system-05.xml --durations=20 \
             test/integration/graphs/test_file_graph_clear.py \
             test/integration/services/test_knowledge_document_resets.py -q
+      - name: Make container test reports readable
+        if: always()
+        run: sudo chown -R "$(id -u):$(id -g)" backend/test/ci-reports
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -487,6 +490,9 @@ jobs:
             sleep 2
           done
           docker compose exec -T -e E2E_USERNAME -e E2E_PASSWORD api uv run --no-sync --no-dev pytest --junitxml=test/ci-reports/system-34.xml --durations=20 test/e2e/test_web_tools_e2e.py -q
+      - name: Make container test reports readable
+        if: always()
+        run: sudo chown -R "$(id -u):$(id -g)" backend/test/ci-reports
       - uses: actions/upload-artifact@v4
         if: always()
         with:

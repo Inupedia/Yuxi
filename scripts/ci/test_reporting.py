@@ -9,6 +9,8 @@ import unittest
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
+import yaml
+
 ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -137,6 +139,67 @@ class TestCIReporting(unittest.TestCase):
         self.assertIsNotNone(cases["test_skip"].find("skipped"))
         self.assertIsNone(cases["test_pass"].find("failure"))
         self.assertIsNone(cases["test_pass"].find("skipped"))
+
+    def test_container_reports_are_readable_by_host_uploader(self):
+        """真实私有报告先拒绝宿主读取，再由 workflow 归属步骤交给上传者。"""
+        workflow = yaml.safe_load(
+            (ROOT / ".github/workflows/system-tests.yml").read_text()
+        )
+        checked = 0
+        for name, job in workflow["jobs"].items():
+            steps = job.get("steps", [])
+            uploads = [
+                step
+                for step in steps
+                if step.get("uses", "").startswith("actions/upload-artifact@")
+            ]
+            if not uploads:
+                continue
+            with self.subTest(job=name):
+                directory = self.path / name
+                report = directory / "backend/test/ci-reports/result.xml"
+                report.parent.mkdir(parents=True)
+                subprocess.run(
+                    [
+                        "sudo",
+                        "-n",
+                        "sh",
+                        str(ROOT / "docker/api-entrypoint.sh"),
+                        "sh",
+                        "-c",
+                        "printf '%s\\n' '<testsuite tests=\"1\"/>' > backend/test/ci-reports/result.xml",
+                    ],
+                    cwd=directory,
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+                self.assertEqual(report.stat().st_mode & 0o777, 0o600)
+                with self.assertRaises(PermissionError):
+                    report.read_bytes()
+                normalize = next(
+                    (
+                        step
+                        for step in steps
+                        if step.get("name") == "Make container test reports readable"
+                    ),
+                    None,
+                )
+                self.assertIsNotNone(normalize, "容器私有报告缺少上传前归属步骤")
+                self.assertLess(steps.index(normalize), steps.index(uploads[0]))
+                self.assertEqual(normalize.get("if"), "always()")
+                subprocess.run(
+                    ["bash", "-ec", normalize["run"]],
+                    cwd=directory,
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+                self.assertEqual(ET.parse(report).getroot().get("tests"), "1")
+                self.assertEqual(report.stat().st_uid, os.getuid())
+                self.assertEqual(report.stat().st_mode & 0o777, 0o600)
+                checked += 1
+        self.assertGreater(checked, 0)
 
 
 if __name__ == "__main__":
