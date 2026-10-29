@@ -312,9 +312,10 @@ async def test_dashboard_service_thread_analytics(dashboard_db):
     assert summary["active_threads"] >= 1
     assert summary["pinned_threads"] == 1
     assert summary["total_messages"] == 4
-    assert summary["total_tokens"] == 0  # 无 Run 用量事实时不再回退旧汇总表
+    assert summary["total_tokens"] is None  # 无 Run 用量事实时保留未知
+    assert summary["token_usage_complete"] is False
     assert summary["avg_messages_per_thread"] > 0
-    assert summary["avg_tokens_per_thread"] == 0
+    assert summary["avg_tokens_per_thread"] is None
 
     assert len(analytics["daily_trends"]) == 7
 
@@ -485,8 +486,8 @@ async def test_session_tokens_use_runs_and_expose_missing_usage(dashboard_db):
     await dashboard_db.flush()
     for index, usage in enumerate(
         [
-            {"total": {"total_tokens": 120}, "complete": True, "usage_reported_call_count": 1},
-            {"total": {"total_tokens": 80}, "complete": True, "usage_reported_call_count": 1},
+            {"total": {"input_tokens": 100, "output_tokens": 20, "total_tokens": 120}, "complete": True, "usage_reported_call_count": 1},
+            {"total": {"input_tokens": 50, "output_tokens": 30, "total_tokens": 80}, "complete": True, "usage_reported_call_count": 1},
         ]
     ):
         dashboard_db.add(
@@ -520,13 +521,13 @@ async def test_session_tokens_use_runs_and_expose_missing_usage(dashboard_db):
     assert item["token_usage_complete"] is False
 
     run = await dashboard_db.get(AgentRun, "usage-run-0")
-    run.token_usage = {"total": {"total_tokens": 0}, "complete": False, "usage_reported_call_count": 0}
+    run.token_usage = {"total": {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}, "complete": False, "usage_reported_call_count": 0}
     await dashboard_db.commit()
     item = (await service.list_sessions(search="thread-102"))["items"][0]
     assert item["total_tokens"] is None
     assert item["token_usage_complete"] is False
 
-    run.token_usage = {"total": {"total_tokens": 0}, "complete": True, "usage_reported_call_count": 1}
+    run.token_usage = {"total": {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}, "complete": True, "usage_reported_call_count": 1}
     await dashboard_db.delete(await dashboard_db.get(AgentRun, "usage-run-1"))
     await dashboard_db.commit()
     item = (await service.list_sessions(search="thread-102"))["items"][0]

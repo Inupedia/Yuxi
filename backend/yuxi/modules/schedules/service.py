@@ -177,6 +177,20 @@ async def list_scheduled_jobs(*, user: User, db: AsyncSession) -> dict:
     return {"jobs": result}
 
 
+async def list_scheduled_job_history(*, job_id: str, user: User, db: AsyncSession, limit: int, offset: int) -> dict | None:
+    """分页读取用户自有任务的执行历史，沿用统一执行状态投影。"""
+    repo = ScheduledAgentRepository(db)
+    if await repo.get_job(job_id, str(user.uid)) is None:
+        return None
+    rows, total = await repo.list_run_history(job_id, str(user.uid), limit=limit, offset=offset)
+    return {
+        "items": [_execution_to_dict(*row) for row in rows],
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+    }
+
+
 def _execution_to_dict(scheduled_run, input_item, run) -> dict:
     """从 Input 与当前 Turn/Run 装配调度记录摘要。"""
     data = scheduled_run.to_dict()

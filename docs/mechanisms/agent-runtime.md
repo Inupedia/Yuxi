@@ -92,11 +92,23 @@ Viewer、正式附件和 artifact API 通过持久化 Workspace/Workdir 读取�
 
 Web 附件上传框在打开时固定目标会话草稿；上传期间切换会话，确认后附件仍归原草稿。首次创建正式 Thread 时，未发送附件与仍打开的上传流程一起迁移到该 Thread。
 
+## 用量统计
+
+Dashboard 的 Token 趋势、会话审计和会话汇总从 `AgentRun.token_usage` 累加每个执行段自己的快照，不读取 Message 的旧用量元数据，也不累加线程累计快照。恢复 Run 和协作子会话各自计入一次。快照在运行结算时保存；执行中的用量可能尚未上报。实时上下文面板读取当前 LangGraph state，因此观察时点与已持久化统计不同。
+
+Token 趋势按 Run 创建时间归入上海时区的十四个小时、日或周，排除未来记录、已删除会话、已删除用户及无法解析 Agent 的会话。会话审计只汇总所选会话的全部 Run，允许超级管理员检查历史归属；会话汇总沿用当前可见会话范围，其时间筛选只限制每日趋势。比较结果前须对齐会话范围和 Run 创建时间。
+
+有上报的快照累加观测值；未上报保留 `null`，部分缺报返回已知部分并标记 `token_usage_complete=false`。全缺报不能显示成零，明确上报的零才是零消耗；没有运行的趋势区间返回零并显示无运行记录。会话没有 Run 快照时审计返回未知。页面在部分缺报时将汇总标为“已报”，图表保留未知间隙。
+
+“上报完整”只表示当前采集范围没有缺报，不代表完整费用：统计覆盖主 Agent 模型调用，内部摘要、标题、来源标注、知识处理等独立模型调用不计入；不可信供应商用量的排除规则由[中间件](../agents/middleware.md#token-用量)维护。供应商账单仍是费用对账依据。聚合和证据入口见 [Dashboard repository](https://github.com/xerrors/Yuxi/blob/main/backend/yuxi/modules/system/repositories/dashboard.py) 与[真实 HTTP 用量回归](https://github.com/xerrors/Yuxi/blob/main/backend/test/integration/api/test_dashboard_usage.py)。
+
 ## 用户定时 Agent
 
 用户定时 Agent 由 `scheduled_agent_jobs` 保存 Project、Agent、提示词、审批模式和计划，worker 在 PostgreSQL 行锁下为到期任务创建唯一 occurrence。每次 occurrence 通过统一接收用例创建绑定原 Project 的独立 Thread、首个 Input 和 Turn/Run；触发记录保存输入关联，排队与执行状态分别从 Input、Turn 和 Run 读取。明确的领域错误终结 occurrence，未知瞬时错误在下一轮用确定的幂等键重查已接收输入；单条失败不阻断同批任务。Redis/ARQ 只负责唤醒。
 
 任务 API 只返回当前用户拥有且未删除的任务，并在创建、更新和触发时重新校验 Project 归属与 Agent 可见性。停用或任务软删除只阻止未来触发；账号软删除在同一事务删除任务及 occurrence。任务支持 Run now、5 段 cron 和 IANA 时区，数据库保存 UTC 下一次触发时间；错过多个周期只合并一次，已有非终态执行时记录 skipped。
+
+任务详情按每页十条查看全部运行历史，包含失败原因、跳过及排队状态，有对应会话时可跳转。`GET /api/scheduled-tasks/{job_id}/runs` 是产品内部接口，按当前用户归属查询，支持 `limit`（1–100，默认 10）与非负 `offset`，返回 `items/total/limit/offset`；未知、其他用户及已软删除任务均返回 404。排序使用计划触发时间和 ID 倒序；新记录可能使相邻 offset 页移动，刷新从第一页重读，不承诺跨请求快照。历史读取不改变调度或执行状态。实现与验证见 [repository](https://github.com/xerrors/Yuxi/blob/main/backend/yuxi/modules/schedules/repository.py) 和[HTTP 分页回归](https://github.com/xerrors/Yuxi/blob/main/backend/test/integration/api/test_scheduled_agent_history.py)。
 
 ## 恢复和失败
 
