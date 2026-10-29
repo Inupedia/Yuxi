@@ -6,34 +6,43 @@ Owner：frontend/src/modules/knowledge/model/knowledgeBase.js
 
 ## 问题
 
-用户提交解析/入库后，文件停在 `uploaded` 等待 ARQ worker 领取；领取前 `processing_count` 为 0 且 `uploaded` 不属于 `isProcessingFile`，`ensureAutoRefreshForProcessing` 在下一次后台读取时立即判定"无处理活动"并停止自动刷新，列表停在"等待领取"直到用户手动刷新。上一版实现改为由全局后台任务 store 维持轮询，作者指出这会让与本 KB 无关的活跃任务延长当前页轮询，要求围绕知识库自身作业状态判断、避免全局轮询，并保留手动停止。
+提交解析或入库后、worker 领取前，文件仍保持提交前状态：解析为 `uploaded`，入库为 `parsed`，重试为 `error_parsing` 或 `error_indexing`。此时 `processing_count` 为 0，这些状态不属于正在处理，列表自动刷新会提前停止。测试必须使用对应动作的真实前置状态，不能以 `uploaded` 模拟入库。
+
+轮询只由当前知识库自己的文件与统计驱动；其他知识库和全局任务不能延长当前页轮询，用户手动停止也必须优先。
 
 ## 决策
 
 ### 实现方案
 
-停止判定仍只看当前 KB 自己读到的文件与统计，不引入任何全局信号。提交类动作（解析/入库）成功时授予 `AUTO_REFRESH_SUBMISSION_GRACE_POLLS=12` 轮宽限；`ensureAutoRefreshForProcessing` 在"无 pending"分支先经纯函数 `consumeSubmissionGrace` 判定：仅当本 KB 列表中存在 `uploaded`（等待领取）文件且宽限未耗尽时继续轮询并递减，否则按僵尸状态停止。tick 的 stale 退避停止路径同样先消耗宽限。`toggleAutoRefresh` 保持原语义：用户手动关闭得到 `autoRefreshManualOverride`（auto 信号不得重启），手动开启视为新一轮观察并重置宽限，manual 来源不受 ensure 自动停止。元信息接口 `getKnowledgeBaseInfo` 的响应可能不含 files，改为 `ensureAutoRefreshForProcessing(..., hasFileSignal)` 携带信号完整度：files 缺失时只能开启、不能当作"无活动"停止或消耗宽限（旧实现同样存在此误判）。
+`knowledgeBase.js` 的解析、入库共用提交入口在成功后授予 12 次文件回读宽限。停止判定只消费当前知识库文件与统计；仅当列表存在 `uploaded`、`parsed`、`error_parsing` 或 `error_indexing` 且宽限未耗尽时继续轮询。自动或手动开启后提交都由文件回读消耗一次宽限，同一 tick 的无进展检查不重复扣减；若文件回读持续失败，则达到无进展上限后每轮扣减一次，避免旧快照让宽限永久保留。没有本轮提交的静止文件不会获得宽限。
+
+知识库或账号切换时同步清零宽限；提交响应到达时再次核对提交时的知识库和账号，旧响应只登记原作业，不开启新页面轮询。用户手动关闭优先于自动开启，手动开启会清零旧提交宽限。作业终态仍由已有的、绑定提交上下文的回调回读文件和统计。
+
+元信息响应可能不含 `files`；`hasFileSignal` 区分信号完整度，缺少文件信号时只能开启轮询，不能据此停止或消耗宽限。公开 API、后台作业状态与持久化机制不变。
 
 ## 替代方案
 
-- 全局后台任务 store 维持轮询：被作者拒绝——无关任务延长当前 KB 轮询，且轮询信号不再由 KB 数据拥有。
-- worker 领取时更新状态、前端不感知：拒绝——前端无法区分"排队等待领取"与"僵尸 uploaded"，只能无限轮询或提前停止。
-- 延长 stale 上限：拒绝——全局放宽，僵尸状态收尾更慢，且不针对领取间隙。
+- 全局后台任务 store 维持轮询：不采用，无关任务会延长当前知识库轮询。
+- 无提交记录时也对所有待处理状态轮询：不采用，无法区分闲置文件与本轮等待领取，会恢复无界空闲开销。
+- 改变后端提交与文件状态协议：本修复不采用，局部前端宽限即可覆盖当前等待窗口，不扩大持久化与 worker 变更范围。
+- 延长所有无进展轮询上限：不采用，无法修复第一次列表读取时就停止的问题。
 
 ## 后果
 
-- 提交后的领取间隙内列表持续自动更新，最长额外 12 轮（间隔 10s、按退避封顶 30s），有界；无关 KB/全局任务不影响本 KB 轮询决策。
-- 僵尸 `uploaded`（无提交动作）仍按原判定立即停止；手动停止行为不变。
-- `consumeSubmissionGrace` 为导出纯函数，停止决策可脱离定时器单测。
+- 解析、入库与失败重试的等待领取窗口共享有界刷新；切换知识库或账号不继承旧宽限。
+- 宽限按文件回读计数，提交后的延迟回读也计入；它不是固定时长保证，额外手动回读也会消耗预算。
+- 无关任务、无本轮提交的闲置文件不会延长轮询；`indexed` 等终态沿用原有停止逻辑。
+- 当前页之外的排队文件、已入库文件重新入库的领取窗口及长时间处理的无进展停止策略不在本次局部修复范围；既有作业终态回调继续负责最终回读。
 
 ## 验证
 
 | 验收主张 | 失败面 | 语义 Owner | 直接证据 / 命令 | 负向案例 | 当前结果 |
 |---|---|---|---|---|---|
-| 提交后 uploaded 等待领取期间保持轮询 | 间隙被立即停止、需手动刷新 | `submitFileJob` + `ensureAutoRefreshForProcessing` | `test/unit/knowledge_auto_refresh_gap.test.js`（提交后 8 轮读取仍轮询） | 移除提交时宽限授予后该用例失败（实测） | Passed |
-| 宽限有界，僵尸等待最终自动停止 | 无限轮询 | `consumeSubmissionGrace` | 同文件"宽限有界"用例（≤16 次读取内停止） | 宽限耗尽仍继续时断言失败 | Passed |
-| 宽限只由提交授予、manual 语义保留 | 无关 uploaded 延长轮询 / 手动开关被破坏 | `toggleAutoRefresh` + ensure 分支 | 同文件"手动开启"与"processing 收尾"用例 | 不适用 | Passed |
-| 元信息无 files 不误判为无活动 | 提前停止且清零宽限 | `getKnowledgeBaseInfo` | `hasFileSignal` 参数 + 上述提交用例（info mock 无 files） | 恢复无条件 stop 分支时提交用例失败 | Passed |
-| 回归 | 既有知识库行为漂移 | `test/unit` | `pnpm run test:unit` → 884 passed；`eslint` 干净；`pnpm run build` 成功 | 不适用 | Passed |
+| 解析、入库及重试等待领取期间保持刷新 | 入库测试用错前置状态而漏报 | `submitFileJob` + `ensureAutoRefreshForProcessing` | `frontend` 内 `node --test test/unit/knowledge_auto_refresh_gap.test.js`，17 项通过 | 仅保留 uploaded 判断时，parsed/error_indexing/error_parsing 三个场景失败 | Passed |
+| 宽限有界且同一 tick 不重复扣减 | 预算提前耗尽或无限轮询 | 文件回读与 `runAutoRefreshTick` | 同文件虚拟时钟经过真实 tick，自动与手动开启后提交均断言第九轮仍开启、随后停止 | 恢复 tick 重复扣减时第九轮断言失败 | Passed |
+| 文件列表持续失败仍有界停止 | 旧文件快照与未消费的预算让轮询永久继续 | `runAutoRefreshTick` | 同文件提交成功后持续返回 503，推进 tick 后断言停止 | 移除失败轮预算扣减后仍为开启 | Passed |
+| 知识库或账号切换清除旧宽限 | 旧提交延长新页面轮询 | store 会话 watcher | 同文件分别切换知识库和账号后断言停止 | 移除清零 watcher 时两个场景失败 | Passed |
+| 旧提交响应不向新会话授予宽限 | 请求在切换后返回并污染新页面 | `submitFileJob` 提交上下文检查 | 同文件两个迟到响应场景 | 移除响应上下文检查后，新会话被错误开启 | Passed |
+| 手动停止与正常终态保留 | 自动信号重启用户停止的轮询、完成后仍刷新 | `toggleAutoRefresh` + ensure 分支 | 同文件覆盖停止后再提交、处理信号和完成状态 | 无本轮提交的待处理文件不自动开启 | Passed |
 
-未验证范围：真实浏览器中 worker 领取后的端到端刷新时序 `Not run`（单元层以列表 mock 覆盖状态序列；后端队列语义由既有集成测试拥有）。
+浏览器验证与全量检查记录在提交证据中；受控接口回放不替代真实 API/worker 的端到端语义。后端协议和作业生命周期未修改。

@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia'
-import { ref, reactive } from 'vue'
+import { ref, reactive, watch } from 'vue'
 import { message, Modal } from 'ant-design-vue'
 import { knowledgeBaseApi, documentApi, queryApi } from '@/apis/knowledge_api'
 import { useBackgroundJobsStore } from '@/modules/background-jobs'
@@ -13,13 +13,14 @@ import { canSelectFile, isProcessingFile } from '@/modules/knowledge/model/knowl
 const AUTO_REFRESH_POLL_INTERVAL_MS = 10000
 const AUTO_REFRESH_MAX_INTERVAL_MS = 30000
 const AUTO_REFRESH_STALE_POLLS_LIMIT = 6
-// 提交解析/入库后、worker 领取前的宽限轮数：uploaded 文件等待领取时处理计数为 0，
+// 提交解析/入库后、worker 领取前的宽限轮数：文件仍保持提交前状态，处理计数为 0，
 // 若立即停止轮询，列表会停在"等待领取"直到用户手动刷新。宽限有界，僵尸状态不会无限轮询。
 const AUTO_REFRESH_SUBMISSION_GRACE_POLLS = 12
+const SUBMISSION_WAITING_STATUSES = new Set(['uploaded', 'parsed', 'error_parsing', 'error_indexing'])
 
-/** 消耗一次提交宽限：仅当存在等待 worker 领取的 uploaded 文件且宽限未耗尽时继续轮询。 */
-export function consumeSubmissionGrace({ hasUploadedWaiting, gracePolls }) {
-  if (!hasUploadedWaiting || gracePolls <= 0) return { continuePolling: false, gracePolls }
+/** 仅在存在等待领取的文件且宽限未耗尽时继续轮询。 */
+export function consumeSubmissionGrace({ hasWaitingFiles, gracePolls }) {
+  if (!hasWaitingFiles || gracePolls <= 0) return { continuePolling: false, gracePolls }
   return { continuePolling: true, gracePolls: gracePolls - 1 }
 }
 
@@ -75,6 +76,13 @@ export const useKnowledgeBaseStore = defineStore('knowledgeBase', () => {
   let infoRequestId = 0
   let fileRequestId = 0
   let fileSnapshotRevision = 0
+
+  // 观察会话切换时同步失效，旧知识库或账号的提交不能延长新页面轮询。
+  watch(
+    [kbId, () => userStore.token],
+    () => { refreshSubmissionGracePolls = 0 },
+    { flush: 'sync' }
+  )
 
   function setCurrentFileMap(items = []) {
     knowledgeBase.value = {
@@ -360,10 +368,10 @@ export const useKnowledgeBaseStore = defineStore('knowledgeBase', () => {
     const hasPending = files.some((file) => isProcessingFile(file))
     if (hasPending) {
       enableAutoRefresh('auto')
-    } else if (hasFileSignal && autoRefreshSource === 'auto' && state.autoRefresh) {
+    } else if (hasFileSignal && state.autoRefresh) {
       // 领取间隙内用有界宽限继续轮询；宽限耗尽按僵尸状态停止。
       const grace = consumeSubmissionGrace({
-        hasUploadedWaiting: files.some((file) => file.status === 'uploaded'),
+        hasWaitingFiles: files.some((file) => SUBMISSION_WAITING_STATUSES.has(file.status)),
         gracePolls: refreshSubmissionGracePolls
       })
       refreshSubmissionGracePolls = grace.gracePolls
@@ -371,6 +379,7 @@ export const useKnowledgeBaseStore = defineStore('knowledgeBase', () => {
         enableAutoRefresh('auto')
         return true
       }
+      if (autoRefreshSource !== 'auto') return false
       state.autoRefresh = false
       autoRefreshSource = null
       autoRefreshManualOverride = false
@@ -581,6 +590,8 @@ export const useKnowledgeBaseStore = defineStore('knowledgeBase', () => {
 
   /** 提交解析或入库作业，共用反馈、登记与刷新时序。 */
   async function submitFileJob(submit, successMessage) {
+    const submittedKbId = kbId.value
+    const token = userStore.token
     const registerJob = createFileJobRegistration()
     state.chunkLoading = true
     try {
@@ -589,12 +600,13 @@ export const useKnowledgeBaseStore = defineStore('knowledgeBase', () => {
         message.error(data.message || '提交失败')
         return false
       }
-      refreshSubmissionGracePolls = AUTO_REFRESH_SUBMISSION_GRACE_POLLS
-      enableAutoRefresh('auto')
-      message.success(data.message || successMessage)
       if (data.job_id) {
         registerJob({ job_id: data.job_id })
       }
+      if (submittedKbId !== kbId.value || token !== userStore.token) return true
+      refreshSubmissionGracePolls = AUTO_REFRESH_SUBMISSION_GRACE_POLLS
+      enableAutoRefresh('auto')
+      message.success(data.message || successMessage)
       await delayedRefresh()
       return true
     } catch (error) {
@@ -661,6 +673,7 @@ export const useKnowledgeBaseStore = defineStore('knowledgeBase', () => {
 
   async function runAutoRefreshTick() {
     const generation = refreshGeneration
+    const gracePollsBeforeTick = refreshSubmissionGracePolls
     refreshTimer = null
     if (!state.autoRefresh) return
 
@@ -686,11 +699,11 @@ export const useKnowledgeBaseStore = defineStore('knowledgeBase', () => {
 
     if (
       refreshStablePolls >= AUTO_REFRESH_STALE_POLLS_LIMIT &&
-      documentFiles.value.some((file) => file.status === 'uploaded') &&
+      documentFiles.value.some((file) => SUBMISSION_WAITING_STATUSES.has(file.status)) &&
       refreshSubmissionGracePolls > 0
     ) {
-      // 等待领取期间处理计数本就稳定：消耗提交宽限而不是按僵尸状态停止。
-      refreshSubmissionGracePolls -= 1
+      // 正常回读已扣减；列表失败时仍消耗预算，避免旧快照无限续轮。
+      if (refreshSubmissionGracePolls === gracePollsBeforeTick) refreshSubmissionGracePolls -= 1
       scheduleAutoRefresh()
       return
     }
