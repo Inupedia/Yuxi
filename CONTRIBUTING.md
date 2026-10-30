@@ -28,8 +28,8 @@ docker compose logs --tail=100 api
 ```bash
 make lint
 make test
-python3 scripts/verify_engineering_contracts.py
-python3 -m unittest scripts.test_verify_engineering_contracts
+python3 scripts/ci/verify_engineering_contracts.py
+python3 -m unittest scripts.ci.test_verify_engineering_contracts
 git diff --check
 ```
 

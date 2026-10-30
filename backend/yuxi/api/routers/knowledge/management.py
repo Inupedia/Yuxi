@@ -296,6 +296,12 @@ async def get_graph_build_status(kb_id: str, current_user: User = Depends(requir
         raise HTTPException(status_code=500, detail=f"获取图谱构建状态失败: {e}")
 
 
+@knowledge.get("/knowledge-bases/{kb_id}/graph-build/files/{file_id}/status")
+async def get_file_graph_build_status(kb_id: str, file_id: str, current_user: User = Depends(require_knowledge_base_read)):
+    """读取单文件待构建图谱的分块数。"""
+    return await graph_build.get_file_graph_build_status(kb_id, file_id)
+
+
 @knowledge.post("/knowledge-bases/{kb_id}/graph-build/config")
 async def configure_graph_build(
     kb_id: str,
@@ -324,11 +330,18 @@ async def configure_graph_build(
 @knowledge.post("/knowledge-bases/{kb_id}/graph-build/index")
 async def index_graph_build(
     kb_id: str,
+    data: dict | None = Body(default=None),
     current_user: User = Depends(require_knowledge_base_manage),
 ):
     """提交图谱向量索引构建任务。"""
     try:
-        job = await graph_build.start_graph_build(kb_id)
+        if data is not None and "file_id" in data:
+            file_id = data["file_id"]
+            if not isinstance(file_id, str) or not file_id.strip():
+                raise ValueError("file_id 必须是非空字符串")
+            job = await graph_build.start_graph_build(kb_id, file_id=file_id)
+        else:
+            job = await graph_build.start_graph_build(kb_id)
         return {"message": "图谱构建任务已提交", "status": "queued", "job_id": job.id}
     except (HTTPException, DomainError):
         raise
@@ -337,6 +350,13 @@ async def index_graph_build(
     except Exception as e:
         logger.error(f"提交图谱构建任务失败 {e}, {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=f"提交图谱构建任务失败: {e}")
+
+
+@knowledge.post("/knowledge-bases/{kb_id}/graph-build/files/{file_id}/clear")
+async def clear_file_graph(kb_id: str, file_id: str, current_user: User = Depends(require_knowledge_base_manage)):
+    """登记单文件图谱撤销，后台任务拥有外部清理与最终结果。"""
+    job = await graph_build.clear_file_graph(kb_id, file_id)
+    return {"message": "清除图谱任务已提交", "status": "queued", "job_id": job.id}
 
 
 @knowledge.get("/knowledge-bases/{kb_id}/graph-build/failed-chunks")
@@ -692,6 +712,44 @@ async def get_document_basic_info(kb_id: str, doc_id: str, current_user: User = 
         return {"message": "Failed to get file basic info", "status": "failed"}
 
 
+@knowledge.post("/knowledge-bases/{kb_id}/documents/{doc_id}/reparse")
+async def reparse_document(
+    kb_id: str,
+    doc_id: str,
+    data: dict | None = Body(default=None),
+    current_user: User = Depends(require_knowledge_base_manage),
+):
+    """从保留原件重新解析，后台执行器拥有撤销及新结果发布。"""
+    from yuxi.modules.knowledge.services.document_resets import submit_document_reset
+
+    return await submit_document_reset(kb_id, doc_id, action="reparse", operator_id=current_user.uid, params=(data or {}).get("params"))
+
+
+@knowledge.get("/knowledge-bases/{kb_id}/documents/{doc_id}/markdown")
+async def get_document_markdown(kb_id: str, doc_id: str, current_user: User = Depends(require_knowledge_base_manage)):
+    """读取编辑用的可靠正文和修订，不以分块或空串替代读取失败。"""
+    from yuxi.modules.knowledge.services.document_resets import read_markdown_for_edit
+
+    return await read_markdown_for_edit(kb_id, doc_id)
+
+
+@knowledge.post("/knowledge-bases/{kb_id}/documents/{doc_id}/markdown")
+async def save_document_markdown(
+    kb_id: str, doc_id: str, data: dict = Body(...), current_user: User = Depends(require_knowledge_base_manage)
+):
+    """登记正文保存任务，由执行器撤销下游并条件发布新正文。"""
+    from yuxi.modules.knowledge.services.document_resets import submit_document_reset
+
+    return await submit_document_reset(
+        kb_id,
+        doc_id,
+        action="save_markdown",
+        operator_id=current_user.uid,
+        expected_revision=data.get("expected_revision"),
+        content=data.get("content"),
+    )
+
+
 @knowledge.get("/knowledge-bases/{kb_id}/documents/{doc_id}/content")
 async def get_document_content(kb_id: str, doc_id: str, current_user: User = Depends(require_knowledge_base_read)):
     """获取文档内容信息（chunks和lines）"""
@@ -731,9 +789,11 @@ async def batch_delete_documents(kb_id: str, file_ids: list[str] = Body(...), cu
             await knowledge_base_manager.delete_file(kb_id, doc_id)
             deleted_count += 1
 
+        except DomainError as e:
+            failed_items.append({"doc_id": doc_id, "error": e.message})
         except Exception as e:
             logger.error(f"批量删除过程中删除文档 {doc_id} 失败: {e}, {traceback.format_exc()}")
-            failed_items.append({"doc_id": doc_id, "error": str(e)})
+            failed_items.append({"doc_id": doc_id, "error": "删除失败，请稍后重试"})
 
     if failed_items:
         if deleted_count == 0:
@@ -888,7 +948,7 @@ async def query_knowledge_base(
         raise
     except Exception as e:
         logger.error(f"知识库查询失败 {e}, {traceback.format_exc()}")
-        return {"message": f"知识库查询失败: {e}", "status": "failed"}
+        return {"message": "知识库查询失败，请稍后重试", "status": "failed"}
 
 
 @knowledge.post("/knowledge-bases/{kb_id}/query-test")
@@ -930,7 +990,7 @@ async def update_knowledge_base_query_params(
         raise
     except Exception as e:
         logger.error(f"更新知识库查询参数失败: {e}")
-        raise HTTPException(status_code=500, detail=f"更新查询参数失败: {str(e)}")
+        raise HTTPException(status_code=500, detail="更新查询参数失败") from e
 
 
 @knowledge.get("/knowledge-bases/{kb_id}/query-params")
@@ -944,7 +1004,7 @@ async def get_knowledge_base_query_params(kb_id: str, current_user: User = Depen
         raise
     except Exception as e:
         logger.error(f"获取知识库查询参数失败 {e}, {traceback.format_exc()}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="获取查询参数失败") from e
 
 
 # --- AI生成示例问题 ---
@@ -964,7 +1024,7 @@ async def generate_sample_questions(
         raise
     except Exception as e:
         logger.error(f"生成知识库问题失败: {e}, {traceback.format_exc()}")
-        raise HTTPException(status_code=500, detail=f"生成问题失败: {str(e)}")
+        raise HTTPException(status_code=500, detail="生成问题失败") from e
 
 
 @knowledge.get("/knowledge-bases/{kb_id}/sample-questions")
@@ -976,7 +1036,7 @@ async def get_sample_questions(kb_id: str, current_user: User = Depends(require_
         raise
     except Exception as e:
         logger.error(f"获取知识库问题失败: {e}, {traceback.format_exc()}")
-        raise HTTPException(status_code=500, detail=f"获取问题失败: {str(e)}")
+        raise HTTPException(status_code=500, detail="获取问题失败") from e
 
 
 # --- 文件管理分组 ---
@@ -997,7 +1057,7 @@ async def create_folder(
         raise
     except Exception as e:
         logger.error(f"创建文件夹失败 {e}, {traceback.format_exc()}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="创建文件夹失败") from e
 
 
 @knowledge.put("/knowledge-bases/{kb_id}/folders/{folder_id}/rename")
@@ -1017,7 +1077,7 @@ async def rename_folder(
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         logger.error(f"重命名文件夹失败 {e}, {traceback.format_exc()}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="重命名文件夹失败") from e
 
 
 @knowledge.put("/knowledge-bases/{kb_id}/documents/{doc_id}/move")
@@ -1038,7 +1098,7 @@ async def move_document(
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         logger.error(f"移动文件失败 {e}, {traceback.format_exc()}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="移动文件失败") from e
 
 
 @knowledge.post("/files/fetch-url")
@@ -1073,7 +1133,7 @@ async def fetch_url(
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         logger.error(f"Failed to fetch URL {url}: {e}, {traceback.format_exc()}")
-        raise HTTPException(status_code=500, detail=f"Failed to fetch URL: {str(e)}")
+        raise HTTPException(status_code=500, detail="抓取 URL 失败") from e
 
 
 @knowledge.post("/files/import-workspace")
@@ -1369,10 +1429,11 @@ async def _enqueue_document_action_job(
             kb_info=kb_info,
             action=action,
         )
-    except HTTPException:
+    except (HTTPException, DomainError):
         raise
-    except Exception as e:
-        return {"message": f"提交失败: {e}", "status": "failed"}
+    except Exception:
+        logger.exception("提交文档处理任务失败")
+        return {"message": "提交失败，请稍后重试", "status": "failed"}
 
 
 async def _enqueue_pending_document_action_job(
@@ -1393,7 +1454,8 @@ async def _enqueue_pending_document_action_job(
             kb_info=kb_info,
             action=action,
         )
-    except HTTPException:
+    except (HTTPException, DomainError):
         raise
-    except Exception as e:
-        return {"message": f"提交失败: {e}", "status": "failed"}
+    except Exception:
+        logger.exception("提交文档处理任务失败")
+        return {"message": "提交失败，请稍后重试", "status": "failed"}

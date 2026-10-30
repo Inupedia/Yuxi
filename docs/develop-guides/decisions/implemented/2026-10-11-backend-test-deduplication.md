@@ -16,7 +16,7 @@ Owner：docs/develop-guides/testing-guidelines.md
 
 `backend/test/integration/conftest.py` 根据整个收集集判断共享服务需求。仅当用例不需要共享 schema/API/沙盒 session fixture，且自行创建和回收资源时，才显式声明 `self_managed_resources`；纯自管批次跳过共享 schema 检查及 API/沙盒清理；任一未标记 integration consumer 使混合批次继续执行这些检查和清理。该标记不承诺独立 PostgreSQL schema。协作状态 HTTP 用例只豁免沙盒清理，保留局部 fixture 以表达这一独有消费关系。marker 注册由 `backend/pyproject.toml` 维护。
 
-`.github/workflows/system-tests.yml` 随归并更新节点；FIFO 批次包含迁出的标题持久化用例，并使用不可达 API/沙盒地址及占位凭据作为外部依赖负控。`scripts/verify_engineering_contracts.py` 与其删除选择器负例继续约束实际 workflow 接线。`backend/test/run_tests.sh` 的 integration/all 按 unit、API、其余 integration 子树、E2E 套件分别执行，保留原选择范围及模块/helper 加载边界。
+`.github/workflows/system-tests.yml` 随归并更新节点；FIFO 批次包含迁出的标题持久化用例，并使用不可达 API/沙盒地址及占位凭据作为外部依赖负控。`scripts/ci/verify_engineering_contracts.py` 与其删除选择器负例继续约束实际 workflow 接线。`backend/test/run_tests.sh` 的 integration/all 按 unit、API、其余 integration 子树、E2E 套件分别执行，保留原选择范围及模块/helper 加载边界。
 
 不同仓储写入口的 lease fencing、model/tool 的 monotonic timing、history/memory 两种读取入口、workspace/viewer 预算传递、查询期间资源删除的 404 映射仍保留独立证据。持久环境 cleanup 的 legacy 标题与 marker 仍有消费者；退役需要先证明历史资源已清理。纯命名或长函数拆分只在消除重复或改善当前消费者定位时执行。
 

@@ -1,6 +1,6 @@
 """用户 Agent 定时任务 HTTP 适配层。"""
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -9,6 +9,7 @@ from yuxi.modules.identity.models import User
 from yuxi.modules.schedules.service import (
     create_scheduled_job,
     delete_scheduled_job,
+    list_scheduled_job_history,
     list_scheduled_jobs,
     run_scheduled_job_now,
     update_scheduled_job,
@@ -80,6 +81,21 @@ async def create_job(
 ):
     """创建一个用户自有的定时 Agent。"""
     return await create_scheduled_job(user=current_user, db=db, data=payload.model_dump())
+
+
+@scheduled_agents.get("/{job_id}/runs")
+async def list_job_history(
+    job_id: str,
+    limit: int = Query(10, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+    current_user: User = Depends(get_required_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """分页读取当前用户任务的完整执行历史。"""
+    result = await list_scheduled_job_history(job_id=job_id, user=current_user, db=db, limit=limit, offset=offset)
+    if result is None:
+        raise HTTPException(status_code=404, detail="定时任务不存在")
+    return result
 
 
 @scheduled_agents.patch("/{job_id}")

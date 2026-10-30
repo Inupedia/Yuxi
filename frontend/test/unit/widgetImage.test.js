@@ -1,18 +1,27 @@
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
-import test from 'node:test'
+import test, { before, after, beforeEach, afterEach } from 'node:test'
 import { setImmediate } from 'node:timers/promises'
-import { compileScript, parse } from 'vue/compiler-sfc'
-import { effectScope, nextTick, reactive, ref, watch } from 'vue'
+import { createRenderer, nextTick, reactive, ref, ssrContextKey } from 'vue'
 import { parseWidget } from '../../src/shared/lib/chatWidgets.js'
+import { createTestServer } from '../helpers/createTestServer.js'
 
-const { descriptor } = parse(readFileSync(new URL('../../src/shared/ui/WidgetImage.vue', import.meta.url), 'utf8'))
-const executable = compileScript(descriptor, { id: 'widget-image' }).content
-  .replace(/^import .+ from '[^']+'\n/gm, '').replace('export default', 'return')
+let server, component
+let originalCreate, originalRevoke
+beforeEach(() => { originalCreate = URL.createObjectURL; originalRevoke = URL.revokeObjectURL })
+afterEach(() => { URL.createObjectURL = originalCreate; URL.revokeObjectURL = originalRevoke })
+before(async () => {
+  server = await createTestServer({ server: { middlewareMode: true, hmr: false }, appType: 'custom' })
+  ;({ default: component } = await server.ssrLoadModule('/src/shared/ui/WidgetImage.vue'))
+})
+after(async () => { await server?.close() })
+const renderer = createRenderer({
+  createElement: () => ({ children: [] }), createText: () => ({}), createComment: () => ({}),
+  insert: (child, parent) => parent.children.push(child), remove() {}, setText() {}, setElementText() {},
+  parentNode: () => null, nextSibling: () => null, patchProp() {}
+})
 
 /** 执行真实 Image setup，以延迟响应检查图片资源生命周期。 */
 function setupImage(t, source, loader, sandbox = true, sourceLoader = null) {
-  const scope = effectScope()
   const props = reactive({ node: { [sandbox ? 'path' : 'src']: source, alt: '图片' }, previewable: true })
   const imageLoader = ref(loader)
   const sourceImageLoader = ref(sourceLoader)
@@ -23,12 +32,20 @@ function setupImage(t, source, loader, sandbox = true, sourceLoader = null) {
     createObjectURL: () => { const url = `blob:image-${urls.length}`; urls.push(url); return url },
     revokeObjectURL: url => revoked.push(url)
   }
-  const component = new Function('deps', `const { inject, ref, watch, URL } = deps; ${executable}`)({
-    inject: name => name === 'widgetImageLoader' ? imageLoader : sourceImageLoader, ref, watch, URL: objectURL
-  })
-  const view = scope.run(() => component.setup(props, { expose() {}, emit: (name, value) => previews.push([name, value]) }))
-  t.after(() => scope.stop())
-  return { props, imageLoader, view, urls, revoked, previews, stop: () => scope.stop() }
+  URL.createObjectURL = objectURL.createObjectURL
+  URL.revokeObjectURL = objectURL.revokeObjectURL
+  let view
+  const app = renderer.createApp({ setup() {
+    view = component.setup(props, { expose() {}, emit: (name, value) => previews.push([name, value]) })
+    return () => null
+  } })
+  app.provide(ssrContextKey, {})
+  app.provide('widgetImageLoader', imageLoader)
+  app.provide('widgetSourceImageLoader', sourceImageLoader)
+  app.mount({ children: [] })
+  const stop = () => app.unmount()
+  t.after(stop)
+  return { props, imageLoader, view, urls, revoked, previews, stop }
 }
 const imageResponse = () => ({ blob: async () => new Blob(['image'], { type: 'image/png' }) })
 const path = '/home/user/workspace/projects/example/图片 #1.png'

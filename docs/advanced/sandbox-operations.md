@@ -65,7 +65,7 @@ docker compose exec -T api uv run --no-sync --group test pytest test/e2e/test_cu
 # 可重放的并发 I/O 与命令 fuzz，JUnit properties 保存每组延迟与吞吐
 docker compose exec -T api uv run --no-sync --group test pytest test/integration/sandbox/test_cube_shared_mount_fuzz.py -q -o junit_family=legacy --junitxml=/tmp/cube-fuzz-results.xml
 # 仅在无其他用户活动的独立测试拓扑中运行两 worker 崩溃恢复测试
-CUBE_TEST_ISOLATED_TOPOLOGY=1 bash scripts/test_cube_worker_recovery.sh
+CUBE_TEST_ISOLATED_TOPOLOGY=1 bash scripts/ci/test_cube_worker_recovery.sh
 ```
 
 共享挂载持续阻塞时，核对执行节点的 `mount` 进程是否处于 D 状态，以及调用栈是否停在 FUSE 请求等待。节点进程存活和控制面健康只证明服务在线；恢复验收需执行文件和命令并回读产物。维护前停止接收新任务，核对活动 Run 和命令，保存用户环境引用、共享文件备份与字节校验，并在节点停止后备份其磁盘。恢复节点后，核对原实例标识和代次，验证 Home、Workspace、休眠和唤醒，保持已有用户 VM 的软件与配置。

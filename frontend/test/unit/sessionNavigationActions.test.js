@@ -1,114 +1,120 @@
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
 import test from 'node:test'
-import { ref } from 'vue'
+import { message } from 'ant-design-vue'
+import { createPinia, disposePinia, getActivePinia, setActivePinia } from 'pinia'
+import { createSSRApp, h, reactive } from 'vue'
+import { routerKey, routeLocationKey } from 'vue-router'
+import { renderToString } from 'vue/server-renderer'
+import { createTestServer } from '../helpers/createTestServer.js'
 
-const source = readFileSync(new URL('../../src/modules/session/ui/SessionNavigation.vue', import.meta.url), 'utf8')
-
-/** 执行导航的实际动作，只替换外部请求与路由。 */
-function action(start, end, dependencies) {
-  const begin = source.indexOf(`const ${start} =`)
-  const block = source.slice(begin, source.indexOf(`const ${end} =`, begin))
-  return new Function(...Object.keys(dependencies), `${block}; return ${start}`)(...Object.values(dependencies))
+/** 加载真实导航组件，在 store、路由和请求边界控制竞态。 */
+async function setup(t) {
+  const previousStorage = Object.getOwnPropertyDescriptor(globalThis, 'localStorage')
+  const previousPinia = getActivePinia()
+  let server, pinia
+  t.after(async () => {
+    if (pinia) disposePinia(pinia)
+    setActivePinia(previousPinia)
+    await server?.close()
+    if (previousStorage) Object.defineProperty(globalThis, 'localStorage', previousStorage)
+    else delete globalThis.localStorage
+  })
+  globalThis.localStorage = { getItem: () => null, setItem() {}, removeItem() {} }
+  server = await createTestServer({ server: { middlewareMode: true, hmr: false }, appType: 'custom' })
+  pinia = createPinia()
+  setActivePinia(pinia)
+  const { useUserStore } = await server.ssrLoadModule('/src/modules/identity/model/user.js')
+  const { useChatThreadsStore } = await server.ssrLoadModule('/src/modules/session/model/chatThreads.js')
+  const { useProjectsStore } = await server.ssrLoadModule('/src/modules/projects/model/projects.js')
+  const { projectApi } = await server.ssrLoadModule('/src/apis/project_api.js')
+  const userStore = useUserStore(pinia), chatThreadsStore = useChatThreadsStore(pinia), projectsStore = useProjectsStore(pinia)
+  userStore.userId = 'a'
+  const route = reactive({ params: { thread_id: 'shared' } })
+  const router = { push() {}, replace() {} }
+  const { default: component } = await server.ssrLoadModule('/src/modules/session/ui/SessionNavigation.vue')
+  let state
+  const app = createSSRApp({ setup() {
+    state = component.setup({ panel: false, active: true, visible: true }, { expose() {}, emit() {} })
+    return () => h('div')
+  } })
+  app.use(pinia)
+  app.provide(routerKey, router)
+  app.provide(routeLocationKey, route)
+  await renderToString(app)
+  return { state, userStore, chatThreadsStore, projectsStore, projectApi, router }
 }
 
-test('旧账号归档响应不能将新账号的同名线程导航到空白页', async () => {
+test('旧账号归档响应不能将新账号的同名线程导航到空白页', async (t) => {
   let finish, navigations = 0
-  const userStore = { userId: 'a' }
-  const archive = action('handleArchiveChat', 'handleRenameChat', {
-    userStore, route: { params: { thread_id: 'shared' } },
-    chatThreadsStore: { archiveThread: () => new Promise(resolve => { finish = resolve }) },
-    router: { replace: () => { navigations++ } }
-  })
-  const pending = archive('shared')
-  userStore.userId = 'b'
+  const h = await setup(t)
+  t.mock.method(h.chatThreadsStore, 'archiveThread', () => new Promise(resolve => { finish = resolve }))
+  t.mock.method(h.router, 'replace', () => { navigations++ })
+  const pending = h.state.handleArchiveChat('shared')
+  h.userStore.userId = 'b'
   finish()
   await pending
   assert.equal(navigations, 0)
 })
 
-test('旧账号重命名响应不能改写新账号项目或解除其等待状态', async () => {
+test('旧账号重命名响应不能改写新账号项目或解除其等待状态', async (t) => {
   let finish, replacements = 0
-  const userStore = { userId: 'a' }, projectPendingId = ref(null)
-  const rename = action('handleRenameProject', 'handleDeleteProject', {
-    userStore, projectPendingId,
-    projectApi: { renameProject: () => new Promise(resolve => { finish = resolve }) },
-    projectsStore: { replaceProject: () => { replacements++ } },
-    message: { success() { assert.fail('过期动作不应通知新账号成功') }, error() {} }
-  })
-  const pending = rename({ projectId: 'a-project', name: '新名称' })
-  userStore.userId = 'b'
-  projectPendingId.value = 'b-project'
+  const h = await setup(t)
+  t.mock.method(message, 'success', () => assert.fail('过期动作不应通知新账号成功'))
+  t.mock.method(h.projectApi, 'renameProject', () => new Promise(resolve => { finish = resolve }))
+  t.mock.method(h.projectsStore, 'replaceProject', () => { replacements++ })
+  const pending = h.state.handleRenameProject({ projectId: 'a-project', name: '新名称' })
+  h.userStore.userId = 'b'
+  h.state.projectPendingId.value = 'b-project'
   finish({ id: 'a-project' })
   await pending
   assert.equal(replacements, 0)
-  assert.equal(projectPendingId.value, 'b-project')
+  assert.equal(h.state.projectPendingId.value, 'b-project')
 })
 
-test('删除项目排队期间切账号不能以新身份请求或解除新操作的等待状态', async () => {
+test('删除项目排队期间切账号不能以新身份请求或解除新操作的等待状态', async (t) => {
   let queuedOperation, finishQueue, deletes = 0
-  const userStore = { userId: 'a' }, projectPendingId = ref(null)
-  // 文件末尾无下一个动作，以 script 结束标签限定实际函数。
-  const start = source.indexOf('const handleDeleteProject =')
-  const block = source.slice(start, source.indexOf('</script>', start))
-  const dependencies = {
-    userStore, projectPendingId,
-    projectApi: { async deleteProject() { deletes++ } },
-    chatThreadsStore: {
-      withThreadListUpdate(operation) {
-        queuedOperation = operation
-        return new Promise(resolve => { finishQueue = resolve })
-      },
-      removeThreadsByProject() { assert.fail('过期动作不能清理当前账号线程') }
-    },
-    projectsStore: { removeProject() { assert.fail('过期动作不能清理当前账号项目') } },
-    message: { success() { assert.fail('过期动作不应通知新账号成功') }, error() {} }
-  }
-  const remove = new Function(...Object.keys(dependencies), `${block}; return handleDeleteProject`)(...Object.values(dependencies))
-  const pending = remove('a-project')
-  userStore.userId = 'b'
-  projectPendingId.value = 'b-project'
+  const h = await setup(t)
+  t.mock.method(message, 'success', () => assert.fail('过期动作不应通知新账号成功'))
+  t.mock.method(h.projectApi, 'deleteProject', async () => { deletes++ })
+  t.mock.method(h.chatThreadsStore, 'withThreadListUpdate', operation => {
+    queuedOperation = operation
+    return new Promise(resolve => { finishQueue = resolve })
+  })
+  t.mock.method(h.chatThreadsStore, 'removeThreadsByProject', () => assert.fail('过期动作不能清理当前账号线程'))
+  t.mock.method(h.projectsStore, 'removeProject', () => assert.fail('过期动作不能清理当前账号项目'))
+  const pending = h.state.handleDeleteProject('a-project')
+  h.userStore.userId = 'b'
+  h.state.projectPendingId.value = 'b-project'
   finishQueue(await queuedOperation())
   await pending
   assert.equal(deletes, 0)
-  assert.equal(projectPendingId.value, 'b-project')
+  assert.equal(h.state.projectPendingId.value, 'b-project')
 })
 
-test('项目新建路由等待期间切账号不能清除新账号的返回目标', async () => {
+test('项目新建路由等待期间切账号不能清除新账号的返回目标', async (t) => {
   let finish, selections = 0
-  const userStore = { userId: 'a' }
-  const create = action('handleCreateProjectChat', 'searchWorkspace', {
-    userStore, projectPendingId: ref(null), threadCreationInFlight: ref(false),
-    router: { push: () => new Promise(resolve => { finish = resolve }) },
-    chatThreadsStore: { setCurrentThreadId() { selections++ } }
-  })
-  const pending = create('a-project')
-  userStore.userId = 'b'
+  const h = await setup(t)
+  t.mock.method(h.router, 'push', () => new Promise(resolve => { finish = resolve }))
+  t.mock.method(h.chatThreadsStore, 'setCurrentThreadId', () => { selections++ })
+  const pending = h.state.handleCreateProjectChat('a-project')
+  h.userStore.userId = 'b'
   finish()
   await pending
   assert.equal(selections, 0)
 })
 
-test('项目删除响应晚于账号切换时不能清除新账号线程或等待状态', async () => {
+test('项目删除响应晚于账号切换时不能清除新账号线程或等待状态', async (t) => {
   let finish
-  const userStore = { userId: 'a' }, projectPendingId = ref(null)
-  const start = source.indexOf('const handleDeleteProject =')
-  const block = source.slice(start, source.indexOf('</script>', start))
-  const dependencies = {
-    userStore, projectPendingId,
-    projectApi: { deleteProject: () => new Promise(resolve => { finish = resolve }) },
-    chatThreadsStore: {
-      withThreadListUpdate: operation => operation(),
-      removeThreadsByProject() { assert.fail('旧响应不能清理新账号线程') }
-    },
-    projectsStore: { removeProject() { assert.fail('旧响应不能清理新账号项目') } },
-    message: { success() { assert.fail('旧响应不能通知新账号成功') }, error() {} }
-  }
-  const remove = new Function(...Object.keys(dependencies), `${block}; return handleDeleteProject`)(...Object.values(dependencies))
-  const pending = remove('a-project')
-  userStore.userId = 'b'
-  projectPendingId.value = 'b-project'
+  const h = await setup(t)
+  t.mock.method(message, 'success', () => assert.fail('过期动作不应通知新账号成功'))
+  t.mock.method(h.projectApi, 'deleteProject', () => new Promise(resolve => { finish = resolve }))
+  t.mock.method(h.chatThreadsStore, 'withThreadListUpdate', operation => operation())
+  t.mock.method(h.chatThreadsStore, 'removeThreadsByProject', () => assert.fail('旧响应不能清理新账号线程'))
+  t.mock.method(h.projectsStore, 'removeProject', () => assert.fail('旧响应不能清理新账号项目'))
+  const pending = h.state.handleDeleteProject('a-project')
+  h.userStore.userId = 'b'
+  h.state.projectPendingId.value = 'b-project'
   finish()
   await pending
-  assert.equal(projectPendingId.value, 'b-project')
+  assert.equal(h.state.projectPendingId.value, 'b-project')
 })

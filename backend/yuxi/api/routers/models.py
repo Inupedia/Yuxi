@@ -148,7 +148,7 @@ async def get_model_status_by_spec(
         raise
     except Exception as e:
         logger.error(f"测试模型状态失败 {spec}: {e}")
-        return {"success": False, "data": {"spec": spec, "status": "error", "message": str(e)}}
+        return {"success": False, "data": {"spec": spec, "status": "error", "message": "模型连接检查失败，请查看服务端日志"}}
 
 
 @model_providers.get("/{provider_id}")

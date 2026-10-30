@@ -1,21 +1,44 @@
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
-import test from 'node:test'
-import { compileScript, parse } from 'vue/compiler-sfc'
-import { computed, effectScope, nextTick, reactive, ref, toRaw, watch } from 'vue'
-import * as polling from '../../src/modules/session/model/agentPanelFilesystemPolling.js'
-import { normalizePreviewResponse } from '../../src/shared/lib/file_preview.js'
-import { upsertAgentPanelSection } from '../../src/modules/session/model/agentPanelSections.js'
+import { setImmediate } from 'node:timers'
+import test, { before, after } from 'node:test'
+import { createRenderer, h, KeepAlive, nextTick, reactive, ref, ssrContextKey } from 'vue'
+import { createPinia, disposePinia, setActivePinia } from 'pinia'
+import { createTestServer } from '../helpers/createTestServer.js'
 
-const source = readFileSync(
-  new URL('../../src/modules/session/ui/workspace/AgentPanel.vue', import.meta.url),
-  'utf8'
-)
-const compiled = compileScript(parse(source).descriptor, { id: 'artifact-preview-refresh' })
-const executable = compiled.content
-  .replace(/^import[\s\S]*?from '[^']+'\n/gm, '')
-  .replace('export default', 'return')
 const artifactPath = '/home/user/workspace/projects/demo/方案.html'
+let server, component, threadApi, workspaceApi
+const oldWindow = globalThis.window, oldDocument = globalThis.document, oldStorage = globalThis.localStorage
+before(async () => {
+  globalThis.localStorage = { getItem: () => null, setItem() {}, removeItem() {} }
+  workspaceApi = {}
+  globalThis.__artifactWorkspaceApi = workspaceApi
+  server = await createTestServer({ server: { middlewareMode: true, hmr: false }, appType: 'custom',
+    plugins: [{ name: 'artifact-workspace-api', enforce: 'pre', load(id) {
+      if (id.endsWith('/src/apis/workspace_api.js')) return `
+        export const getWorkspaceTree = (...args) => globalThis.__artifactWorkspaceApi.getWorkspaceTree(...args)
+        export const getWorkspaceFileContent = (...args) => globalThis.__artifactWorkspaceApi.getWorkspaceFileContent(...args)
+        export const downloadWorkspaceFile = () => {}
+        export const searchWorkspaceFiles = () => {}`
+    } }]
+  })
+  ;({ threadApi } = await server.ssrLoadModule('/src/apis/agent_api.js'))
+  ;({ default: component } = await server.ssrLoadModule('/src/modules/session/ui/workspace/AgentPanel.vue'))
+  globalThis.window = { URL, addEventListener() {}, removeEventListener() {} }
+  globalThis.document = { body: { style: {} }, addEventListener() {}, removeEventListener() {}, visibilityState: 'visible', compatMode: 'CSS1Compat' }
+})
+after(async () => {
+  await server?.close()
+  delete globalThis.__artifactWorkspaceApi
+  if (oldWindow === undefined) delete globalThis.window; else globalThis.window = oldWindow
+  if (oldDocument === undefined) delete globalThis.document; else globalThis.document = oldDocument
+  if (oldStorage === undefined) delete globalThis.localStorage; else globalThis.localStorage = oldStorage
+})
+const renderer = createRenderer({
+  createElement: () => ({ children: [] }), createText: () => ({}), createComment: () => ({}),
+  insert(child, parent) { if (child.parent) child.parent.children.splice(child.parent.children.indexOf(child), 1); child.parent = parent; parent.children.push(child) },
+  remove(child) { if (child.parent) child.parent.children.splice(child.parent.children.indexOf(child), 1) },
+  setText() {}, setElementText() {}, parentNode: (node) => node.parent, nextSibling: () => null, patchProp() {}
+})
 
 /** 执行真实面板 setup，以文件响应和终态通知驱动缓存生命周期。 */
 async function setupPanel(t) {
@@ -35,50 +58,33 @@ async function setupPanel(t) {
     filesystemPollingActive: false,
     filesystemRefreshVersion: 0
   })
-  const deps = Object.fromEntries(
-    compiled.scriptSetupAst
-      .filter((node) => node.type === 'ImportDeclaration')
-      .flatMap((node) => node.specifiers.map((specifier) => [specifier.local.name, null]))
+  const oldPreview = threadApi.previewThreadArtifact
+  const oldUrl = threadApi.getThreadArtifactUrl
+  const oldTree = workspaceApi.getWorkspaceTree
+  const oldContent = workspaceApi.getWorkspaceFileContent
+  threadApi.getThreadArtifactUrl = () => '/artifact'
+  threadApi.previewThreadArtifact = async (threadId, path) => {
+    requests.push({ threadId, path })
+    return new Response(JSON.stringify({ content, preview_type: 'html', supported: true }), {
+      headers: { 'content-type': 'application/json' }
+    })
+  }
+  workspaceApi.getWorkspaceTree = async () => ({ entries: [] })
+  workspaceApi.getWorkspaceFileContent = async () => new Response(
+    JSON.stringify({ content: '个人文件', preview_type: 'text', supported: true }),
+    { headers: { 'content-type': 'application/json' } }
   )
-  Object.assign(deps, polling, {
-    computed,
-    ref,
-    toRaw,
-    watch,
-    nextTick,
-    normalizePreviewResponse,
-    window: { URL: { revokeObjectURL() {} } },
-    document: { body: { style: {} } },
-    onMounted: (fn) => {
-      hooks.mounted = fn
-    },
-    onActivated: (fn) => {
-      hooks.activated = fn
-    },
-    onDeactivated: (fn) => {
-      hooks.deactivated = fn
-    },
-    onUnmounted: (fn) => {
-      hooks.unmounted = fn
-    },
-    threadApi: {
-      getThreadArtifactUrl: () => '/artifact',
-      previewThreadArtifact: async (threadId, path) => {
-        requests.push({ threadId, path })
-        return new Response(JSON.stringify({ content, preview_type: 'html', supported: true }), {
-          headers: { 'content-type': 'application/json' }
-        })
-      }
-    },
-    getWorkspaceTree: async () => ({ entries: [] }),
-    getWorkspaceFileContent: async () =>
-      new Response(JSON.stringify({ content: '个人文件', preview_type: 'text', supported: true }), {
-        headers: { 'content-type': 'application/json' }
-      })
-  })
-  const component = new Function(...Object.keys(deps), executable)(...Object.values(deps))
-  const scope = effectScope()
-  const view = scope.run(() => component.setup(props, { expose() {}, emit() {} }))
+  let view
+  const active = ref(true)
+  const Panel = { setup() {
+    view = component.setup(props, { expose() {}, emit() {} })
+    return () => null
+  } }
+  const app = renderer.createApp({ setup: () => () => h(KeepAlive, null, () => active.value ? h(Panel) : null) })
+  app.provide(ssrContextKey, {})
+  app.mount({ children: [] })
+  hooks.deactivated = async () => { active.value = false; await nextTick() }
+  hooks.activated = async () => { active.value = true; await nextTick() }
   const settle = async () => {
     await nextTick()
     await Promise.all(
@@ -88,7 +94,13 @@ async function setupPanel(t) {
     )
     await nextTick()
   }
-  t.after(() => scope.stop())
+  t.after(() => {
+    app.unmount()
+    threadApi.previewThreadArtifact = oldPreview
+    threadApi.getThreadArtifactUrl = oldUrl
+    workspaceApi.getWorkspaceTree = oldTree
+    workspaceApi.getWorkspaceFileContent = oldContent
+  })
   await settle()
   return {
     props,
@@ -127,49 +139,43 @@ test('产物预览中的手动刷新读取当前产物，不只刷新个人空�
 test('再次点击同名交付卡片使未知元数据缓存失效并触发面板重读', async (t) => {
   const panel = await setupPanel(t)
   panel.update('<h1>最新卡片</h1>')
-  const workspace = readFileSync(
-    new URL('../../src/modules/session/ui/SessionWorkspace.vue', import.meta.url),
-    'utf8'
-  )
-  const dependencies = {
-    currentChatId: ref('thread-a'),
-    agentPanelPreviewCache: panel.props.previewCache,
-    window: { URL: { revokeObjectURL() {} } },
-    getPanelFileName: (file) => file.name,
-    agentPanelPreviewTabs: ref(panel.props.previewTabs),
-    agentPanelActivePreviewPath: ref(artifactPath),
-    agentPanelSections: ref(panel.props.sections),
-    agentPanelActiveSectionKey: ref(`file:${artifactPath}`),
-    FILE_TREE_SECTION: { key: 'file-tree' },
-    upsertAgentPanelSection,
-    showFilePanel() {}
-  }
-  const release = workspace.slice(
-    workspace.indexOf('const previewCacheKey ='),
-    workspace.indexOf('const invalidatePreviewCachePath =')
-  )
-  const open = workspace.slice(
-    workspace.indexOf('const openPanelPreview ='),
-    workspace.indexOf('const closePanelPreviewTab =')
-  )
-  const openPreview = new Function(
-    ...Object.keys(dependencies),
-    `${release}; ${open}; return openPanelPreview`
-  )(...Object.values(dependencies))
-  openPreview({ path: artifactPath, name: '方案.html' })
-  panel.props.previewTabs = dependencies.agentPanelPreviewTabs.value
+  t.mock.method(threadApi, 'getThreads', async () => ({ data: [], has_more: false }))
+  const { default: Workspace } = await server.ssrLoadModule('/src/modules/session/ui/SessionWorkspace.vue')
+  const { useAgentStore } = await server.ssrLoadModule('/src/modules/agents/model/agent.js')
+  const pinia = createPinia()
+  setActivePinia(pinia)
+  useAgentStore(pinia).isInitialized = true
+  let state
+  const app = renderer.createApp({ setup() {
+    state = Workspace.setup({ isNewSession: true, visible: false }, { expose() {}, emit() {} })
+    return () => null
+  } })
+  app.use(pinia)
+  app.provide(ssrContextKey, {})
+  app.mount({ children: [] })
+  t.after(() => { app.unmount(); disposePinia(pinia) })
+  await new Promise((resolve) => setImmediate(resolve))
+  state.currentThreadId.value = 'thread-a'
+  for (const [key, value] of panel.props.previewCache) state.agentPanelPreviewCache.set(key, value)
+  panel.props.previewCache = state.agentPanelPreviewCache
+  state.agentPanelPreviewTabs.value = panel.props.previewTabs
+  state.agentPanelActivePreviewPath.value = artifactPath
+  state.agentPanelSections.value = panel.props.sections
+  state.agentPanelActiveSectionKey.value = `file:${artifactPath}`
+  state.openPanelPreview({ path: artifactPath, name: '方案.html' })
+  panel.props.previewTabs = state.agentPanelPreviewTabs.value
   await panel.settle()
   assert.match(panel.view.currentFile.value.content, /最新卡片/)
 })
 
 test('KeepAlive 停用时不读取文件，返回页面时活动产物重新读取', async (t) => {
   const panel = await setupPanel(t)
-  panel.hooks.deactivated()
+  await panel.hooks.deactivated()
   panel.update('<h1>后台修订</h1>')
   panel.props.filesystemRefreshVersion++
   await panel.settle()
   assert.equal(panel.requests.length, 1)
-  panel.hooks.activated()
+  await panel.hooks.activated()
   await panel.settle()
   assert.match(panel.view.currentFile.value.content, /后台修订/)
 })

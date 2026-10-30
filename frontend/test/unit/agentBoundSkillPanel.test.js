@@ -1,33 +1,38 @@
 import assert from 'node:assert/strict'
-import fs from 'node:fs/promises'
+import { readFile } from 'node:fs/promises'
 import test from 'node:test'
-import { compileScript, parse } from 'vue/compiler-sfc'
-import { ref } from 'vue'
+import { createSSRApp, h } from 'vue'
+import { renderToString } from 'vue/server-renderer'
+import { message } from 'ant-design-vue'
+import { createTestServer } from '../helpers/createTestServer.js'
 
-test('专属 Skill 加载失败可重试，首次导入不传修订且冲突保留当前绑定', async () => {
-  const source = await fs.readFile(
-    new URL('../../src/modules/agents/ui/AgentBoundSkillPanel.vue', import.meta.url),
-    'utf8'
-  )
-  const { descriptor } = parse(source)
-  const executable = compileScript(descriptor, { id: 'bound-skill-panel' })
-    .content.replace(/^import[\s\S]*?from '[^']+'\n/gm, '')
-    .replace('export default', 'return')
+test('专属 Skill 加载失败可重试，首次导入不传修订且冲突保留当前绑定', async (t) => {
+  const originalMessage = { error: message.error, success: message.success }
+  const server = await createTestServer({
+    server: { middlewareMode: true, hmr: false }, appType: 'custom',
+    plugins: [{ name: 'bound-skill-api-boundary', enforce: 'pre', load(id) {
+      if (id.endsWith('/src/apis/agent_api.js')) return 'export const agentApi = new Proxy({}, { get: (_, key) => globalThis.__boundSkillTest.agentApi[key] })'
+      if (id.endsWith('/src/apis/skill_api.js')) return 'export const skillApi = new Proxy({}, { get: (_, key) => globalThis.__boundSkillTest.skillApi[key] })'
+    } }]
+  })
+  t.after(async () => {
+    await server.close()
+    Object.assign(message, originalMessage)
+    delete globalThis.__boundSkillTest
+  })
+  const { default: component } = await server.ssrLoadModule('/src/modules/agents/ui/AgentBoundSkillPanel.vue')
   let failLoad = true
   let uploaded
   const errors = []
   const navigations = []
   const busyStates = []
   const deps = {
-    ref,
-    MarkdownPreview: {},
     skillApi: {
       getSkillFile: async (slug, path) => {
         assert.deepEqual([slug, path], ['bound', 'SKILL.md'])
         return { data: { content: '# Read only guide' } }
       }
     },
-    onMounted() {},
     message: { error: (value) => errors.push(value), success() {} },
     agentApi: {
       getAgentBoundSkill: async () => {
@@ -40,17 +45,19 @@ test('专属 Skill 加载失败可重试，首次导入不传修订且冲突保�
       }
     }
   }
-  const component = new Function(...Object.keys(deps), executable)(...Object.values(deps))
-  const panel = component.setup({ agentSlug: 'current-agent' }, {
-    expose() {},
-    emit: (event, route) => {
-      if (event === 'busy') busyStates.push(route)
-      else {
-        assert.equal(event, 'navigate')
-        navigations.push(route)
+  globalThis.__boundSkillTest = deps
+  Object.assign(message, deps.message)
+  let panel
+  await renderToString(createSSRApp({ setup() {
+    panel = component.setup({ agentSlug: 'current-agent' }, {
+      expose() {},
+      emit: (event, route) => {
+        if (event === 'busy') busyStates.push(route)
+        else { assert.equal(event, 'navigate'); navigations.push(route) }
       }
-    }
-  })
+    })
+    return () => h('div')
+  } }))
   await panel.load()
   assert.equal(panel.loading.value, false)
   assert.equal(panel.error.value, '读取失败')
@@ -58,7 +65,7 @@ test('专属 Skill 加载失败可重试，首次导入不传修订且冲突保�
   await panel.load()
   assert.equal(panel.error.value, '')
   assert.equal(panel.content.value, '# Read only guide')
-  assert.match(descriptor.template.content, /<MarkdownPreview :content="content" compact/)
+  assert.match(await readFile(new URL('../../src/modules/agents/ui/AgentBoundSkillPanel.vue', import.meta.url), 'utf8'), /<MarkdownPreview :content="content" compact/)
   assert.equal(panel.binding.value.revision, 'before')
   const file = { name: 'skill.zip' }
   await panel.upload(file)

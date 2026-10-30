@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 
 
-WORKFLOWS = Path(__file__).resolve().parents[1] / ".github/workflows"
+WORKFLOWS = Path(__file__).resolve().parents[2] / ".github/workflows"
 
 
 class ReleaseWorkflowTests(unittest.TestCase):
@@ -16,6 +16,8 @@ class ReleaseWorkflowTests(unittest.TestCase):
         jobs = re.split(r"(?m)^  ([\w-]+):\n", workflow.split("\njobs:\n", 1)[1])
         self.assertGreater(len(jobs), 1, "Runtime workflow 缺少 job")
         for name, body in zip(jobs[1::2], jobs[2::2], strict=True):
+            if name == "result":
+                continue
             self.assertRegex(
                 body,
                 r"(?m)^    timeout-minutes: (?:[6-9][0-9]|[1-9][0-9]{2,})$",
@@ -32,6 +34,7 @@ class ReleaseWorkflowTests(unittest.TestCase):
             "system-tests",
             "service-integration",
             "dependency-audit",
+            "codeql",
             "deploy",
         ):
             events = re.split(r"\n(?=[\w-]+:)", workflows[name].split("\non:\n", 1)[1], maxsplit=1)[0]
@@ -42,13 +45,6 @@ class ReleaseWorkflowTests(unittest.TestCase):
                     push,
                     r"(?m)^(?:    branches: \[main, 'develop/\*\*'\]|      - 'develop/\*\*')$",
                     f"{name}: 缺少全部开发分支触发",
-                )
-            if name in ("ruff", "deploy"):
-                pull_request = re.search(r"(?ms)^  pull_request:\n(.*?)(?=^  [\w-]+:|\Z)", events).group(1)
-                self.assertRegex(
-                    pull_request,
-                    r"(?m)^(?:    branches: \[main, 'develop/\*\*'\]|      - 'develop/\*\*')$",
-                    f"{name}: PR 未覆盖开发目标分支",
                 )
         cli_events = workflows["publish-yuxi-cli"].split("\non:\n", 1)[1].split("\n\n", 1)[0]
         self.assertEqual(
@@ -67,7 +63,7 @@ class ReleaseWorkflowTests(unittest.TestCase):
         jobs = workflow.split("  background-job-worker-path:\n", 1)[1].split("\n  system-tests:", 1)
         for job in jobs:
             self.assertIn(command, job)
-            self.assertLess(job.index("bash scripts/ci_build_topology_images.sh"), job.index(command))
+            self.assertLess(job.index("bash scripts/ci/build_topology_images.sh"), job.index(command))
             self.assertLess(job.index(command), job.index("docker compose up -d"))
 
     def test_runtime_mounts_are_owned_before_service_startup(self) -> None:
@@ -155,14 +151,11 @@ class ReleaseWorkflowTests(unittest.TestCase):
                 ):
                     self.assert_release_events(workflows | {name: workflows[name].replace("develop/**", replacement)})
 
-    def test_pull_requests_to_development_branches_are_checked(self) -> None:
-        """恢复仅检查 main 目标的 PR 时拒绝。"""
-        workflows = {path.stem: path.read_text() for path in WORKFLOWS.glob("*.yml")}
-        for name in ("ruff", "deploy"):
-            before, pull_request = workflows[name].split("  pull_request:\n", 1)
-            pull_request = pull_request.replace(", 'develop/**'", "").replace("      - 'develop/**'\n", "")
-            with self.subTest(workflow=name), self.assertRaisesRegex(AssertionError, f"{name}: PR 未覆盖开发目标分支"):
-                self.assert_release_events(workflows | {name: before + "  pull_request:\n" + pull_request})
+    def test_pull_requests_to_all_branches_are_checked(self) -> None:
+        """汇总入口覆盖所有 PR，不能添加分支或路径过滤。"""
+        workflow = (WORKFLOWS / "ci.yml").read_text()
+        events = workflow.split("\non:\n", 1)[1].split("\npermissions:", 1)[0]
+        self.assertEqual(events.strip(), "pull_request:")
 
     def test_application_release_cannot_publish_cli(self) -> None:
         """恢复应用 Release 触发时禁止重复上传独立 CLI 包。"""
@@ -170,6 +163,42 @@ class ReleaseWorkflowTests(unittest.TestCase):
         workflows["publish-yuxi-cli"] = workflows["publish-yuxi-cli"].replace("on:\n", "on:\n  release:\n    types: [published]\n", 1)
         with self.assertRaisesRegex(AssertionError, "CLI 必须独立手动发布"):
             self.assert_release_events(workflows)
+
+
+
+class CodeQLWorkflowTests(unittest.TestCase):
+    """持续扫描必须有真实触发、覆盖语言和结果上传入口。"""
+
+    def test_codeql_runs_current_sources_with_scoped_permissions(self):
+        """PR、主分支与周期扫描都能发布三种语言的结果。"""
+        self.assert_codeql_configuration((WORKFLOWS / "codeql.yml").read_text())
+
+    def test_missing_scan_trigger_language_or_upload_is_rejected(self):
+        """移除任一必要扫描入口、语言或上传步骤时门禁拒绝。"""
+        workflow = (WORKFLOWS / "codeql.yml").read_text()
+        for required in (
+            "  pull_request:", "  schedule:", "  workflow_dispatch:",
+            "branches: [main, 'develop/**']", "security-events: write",
+            "actions, javascript-typescript, python", "github/codeql-action/analyze@v4",
+            "category: /language:${{ matrix.language }}",
+        ):
+            with self.subTest(required=required), self.assertRaises(AssertionError):
+                self.assert_codeql_configuration(workflow.replace(required, "removed", 1))
+
+    def assert_codeql_configuration(self, workflow: str):
+        """验证扫描实际执行和历史 category 衔接，禁止提权执行 PR。"""
+        for required in (
+            "\n  pull_request:", "\n  schedule:", "\n  workflow_dispatch:",
+            "branches: [main, 'develop/**']", "security-events: write",
+            "language: [actions, javascript-typescript, python]",
+            "uses: github/codeql-action/init@v4", "languages: ${{ matrix.language }}",
+            "uses: github/codeql-action/analyze@v4", "category: /language:${{ matrix.language }}",
+        ):
+            self.assertIn(required, workflow)
+        self.assertNotIn("pull_request_target", workflow)
+        self.assertNotIn("contents: write", workflow)
+        events = workflow.split("\non:\n", 1)[1].split("\npermissions:", 1)[0]
+        self.assertNotIn("paths:", events, "安全扫描不能因路径过滤而继续使用历史快照")
 
 
 if __name__ == "__main__":

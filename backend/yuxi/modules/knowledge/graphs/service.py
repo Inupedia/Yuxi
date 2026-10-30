@@ -34,10 +34,12 @@ from yuxi.modules.knowledge.graphs.graph_utils import (
 from yuxi.modules.knowledge.graphs.milvus_graph_vector_store import MilvusGraphVectorStore
 from yuxi.modules.knowledge.repositories.bases import KnowledgeBaseRepository
 from yuxi.modules.knowledge.repositories.chunks import KnowledgeChunkRepository
+from yuxi.modules.knowledge.repositories.document_resets import DocumentResetRepository
 from yuxi.modules.knowledge.repositories.graphs import KnowledgeGraphRepository
 from yuxi.modules.knowledge.repositories.projections import knowledge_projection_lock
 from yuxi.modules.knowledge.storage.offload import run_milvus_query_io, run_neo4j_query_io
 from yuxi.shared.datetime import utc_isoformat
+from yuxi.shared.errors import ResourceNotFoundError
 
 GRAPH_CONFIG_KEY = "graph_build_config"
 GRAPH_TASK_TYPE = "knowledge_graph_index"
@@ -196,20 +198,31 @@ class KnowledgeGraphService:
 
     # ─── 图谱构建：抽取 → 结构写入 → 向量索引 ─────────────────────
 
-    async def build_pending_chunks(self, kb_id: str, *, context=None) -> dict[str, Any]:
-        """图谱写入和索引共用投影锁，删除不能越过未完成写入。"""
+    async def build_pending_chunks(
+        self, kb_id: str, *, file_id: str | None = None, generation: int | None = None, context=None
+    ) -> dict[str, Any]:
+        """图谱写入期间固定投影和目标文件代次。"""
+        if file_id is not None:
+            if not file_id or not isinstance(generation, int) or isinstance(generation, bool) or generation < 1:
+                raise ValueError("文件图谱任务缺少有效的文件代次")
+            async with self.graph_repo.file_build_scope(kb_id, file_id, generation):
+                return await self._build_pending_chunks(kb_id, file_id=file_id, context=context)
+        if generation is not None:
+            raise ValueError("文件代次必须与文件 ID 一起指定")
         async with knowledge_projection_lock(kb_id, shared=True):
             return await self._build_pending_chunks(kb_id, context=context)
 
-    async def _build_pending_chunks(self, kb_id: str, *, context=None) -> dict[str, Any]:
+    async def _build_pending_chunks(self, kb_id: str, *, file_id: str | None = None, context=None) -> dict[str, Any]:
         """按现有流水线构建当前可见 Chunk 的图谱。"""
+        await DocumentResetRepository().require_processable(kb_id, file_id, job_id=getattr(context, "job_id", None))
         kb = await self._get_milvus_kb(kb_id)
         config = self._get_locked_config(kb.additional_params or {})
         extractor_options = self._runtime_extractor_options(config)
         extractor = GraphExtractorFactory.create(config["extractor_type"], extractor_options)
         worker_count = self._get_worker_count(config)
-        total_pending = await self.chunk_repo.count_graph_pending_by_kb_id(kb_id)
-        initially_indexed = await self.chunk_repo.count_graph_indexed_by_kb_id(kb_id)
+        scope = {"file_id": file_id} if file_id is not None else {}
+        total_pending = await self.chunk_repo.count_graph_pending_by_kb_id(kb_id, **scope)
+        initially_indexed = await self.chunk_repo.count_graph_indexed_by_kb_id(kb_id, **scope)
         processed = 0
         extraction_failed = 0
         write_failed = 0
@@ -310,6 +323,7 @@ class KnowledgeGraphService:
                 record_type=record_type,
                 limit=GRAPH_VECTOR_BATCH_SIZE,
                 lease_seconds=GRAPH_VECTOR_LEASE_SECONDS,
+                **scope,
             )
             if not records:
                 return 0
@@ -362,13 +376,13 @@ class KnowledgeGraphService:
                 entity_count, triple_count = counts
                 if entity_count or triple_count:
                     # 本轮处理过记录：先把已达成两阶段的 chunk 推进到 graph_indexed，再继续捞取
-                    await self.graph_repo.finalize_graph_indexed_chunks(kb_id)
+                    await self.graph_repo.finalize_graph_indexed_chunks(kb_id, **scope)
                     continue
 
                 # 无可认领记录：结构全部写完且向量不再有 pending/processing 才能收尾
-                vector_counts = await self.graph_repo.count_vector_statuses_by_kb_id(kb_id)
+                vector_counts = await self.graph_repo.count_vector_statuses_by_kb_id(kb_id, **scope)
                 if structure_done.is_set() and not vector_counts["pending"] and not vector_counts["processing"]:
-                    await self.graph_repo.finalize_graph_indexed_chunks(kb_id)
+                    await self.graph_repo.finalize_graph_indexed_chunks(kb_id, **scope)
                     return
                 # 等写入侧唤醒；1s 超时兜底，轮询重新认领租约过期的记录
                 vector_wakeup.clear()
@@ -388,7 +402,7 @@ class KnowledgeGraphService:
 
                 elapsed = max(time.monotonic() - started_at, 0.001)
                 extraction_rate = extraction_completed / elapsed
-                vector_counts = await self.graph_repo.count_vector_statuses_by_kb_id(kb_id)
+                vector_counts = await self.graph_repo.count_vector_statuses_by_kb_id(kb_id, **scope)
                 message = (
                     f"图谱构建：抽取 {extraction_completed}/{total_pending} "
                     f"(活跃 {active_extractions}/{worker_count})，写入 {write_completed}/{total_pending}，"
@@ -401,7 +415,7 @@ class KnowledgeGraphService:
                     # 进度权重：抽取 40 + 结构写入 20 + 向量完成 35，起点与终点各预留 5
                     extraction_progress = extraction_completed / max(total_pending, 1) * 40.0
                     structure_progress = write_completed / max(total_pending, 1) * 20.0
-                    indexed_chunks = await self.chunk_repo.count_graph_indexed_by_kb_id(kb_id)
+                    indexed_chunks = await self.chunk_repo.count_graph_indexed_by_kb_id(kb_id, **scope)
                     newly_indexed = max(indexed_chunks - initially_indexed, 0)
                     vector_progress = newly_indexed / max(total_pending, 1) * 35.0
                     await context.set_progress(5.0 + min(extraction_progress + structure_progress + vector_progress, 95.0), message)
@@ -424,6 +438,7 @@ class KnowledgeGraphService:
                     kb_id,
                     fetch_size,
                     after_id=after_id,
+                    **scope,
                 )
                 if not chunks:
                     break
@@ -446,6 +461,9 @@ class KnowledgeGraphService:
             await asyncio.gather(*extraction_workers)
             await put_queue_item(write_queue, None)
             await writer_task
+            # 抽取可能首次关联其他文件已有的失败共享向量，结构写完后才能完整识别目标范围。
+            if file_id is not None:
+                await self.graph_repo.retry_failed_file_vectors(kb_id, file_id)
             structure_done.set()
             vector_wakeup.set()
             await vector_task
@@ -458,9 +476,9 @@ class KnowledgeGraphService:
             reporter_stop.set()
             await asyncio.gather(reporter_task, return_exceptions=True)
 
-        remaining = await self.chunk_repo.count_graph_pending_by_kb_id(kb_id)
-        extraction_counts = await self.chunk_repo.count_graph_extraction_statuses_by_kb_id(kb_id)
-        vector_counts = await self.graph_repo.count_vector_statuses_by_kb_id(kb_id)
+        remaining = await self.chunk_repo.count_graph_pending_by_kb_id(kb_id, **scope)
+        extraction_counts = await self.chunk_repo.count_graph_extraction_statuses_by_kb_id(kb_id, **scope)
+        vector_counts = await self.graph_repo.count_vector_statuses_by_kb_id(kb_id, **scope)
         logger.info(
             f"图谱构建结束 kb_id={kb_id} success={processed} extraction_failed={extraction_failed} "
             f"write_failed={write_failed} remaining={remaining} "
@@ -476,9 +494,10 @@ class KnowledgeGraphService:
             "remaining": remaining,
             "vector_failed": vector_counts["failed"],
         }
-        if incomplete or write_failed or vector_counts["failed"]:
+        if incomplete or write_failed or vector_counts["failed"] or (file_id is not None and extraction_counts["failed"]):
             raise RuntimeError(
-                f"图谱构建执行异常：chunk_incomplete={incomplete}, write_failed={write_failed}, vector_failed={vector_counts['failed']}"
+                f"图谱构建执行异常：chunk_incomplete={incomplete}, extraction_failed={extraction_counts['failed']}, "
+                f"write_failed={write_failed}, vector_failed={vector_counts['failed']}"
             )
         return result
 
@@ -668,12 +687,44 @@ class KnowledgeGraphService:
         max_depth: int = 1,
         max_nodes: int = 50,
         exclude_chunk: bool = False,
+        file_id: str | None = None,
     ) -> dict[str, Any]:
         effective_kb_id = kb_id or self.kb_id
         if not effective_kb_id:
             return {"nodes": [], "edges": []}
 
         label = safe_neo4j_label(effective_kb_id)
+        if file_id is not None:
+            # 同一事务持有投影锁与文件行锁，直到图读取完成。
+            async with self.graph_repo.file_graph_snapshot(effective_kb_id, file_id) as snapshot:
+                if snapshot is None:
+                    raise ResourceNotFoundError("文件不存在")
+                entity_mentions, triple_mentions, chunk_ids = snapshot
+                if not entity_mentions and (exclude_chunk or not chunk_ids):
+                    return {"nodes": [], "edges": []}
+                result = await run_neo4j_query_io(
+                    self._query_file_nodes_sync,
+                    effective_kb_id,
+                    label,
+                    keyword,
+                    max_nodes,
+                    max_depth,
+                    exclude_chunk,
+                    entity_mentions,
+                    triple_mentions,
+                    chunk_ids,
+                )
+                mention_pairs = {(m["id"], m["chunk_id"]) for m in entity_mentions}
+                for node in result["nodes"]:
+                    properties = node["properties"]
+                    if properties.get("entity_id") and (properties["entity_id"], properties.get("source_chunk_id")) not in mention_pairs:
+                        node["properties"] = {
+                            key: properties[key] for key in ("entity_id", "normalized_name", "label", "kb_id") if key in properties
+                        }
+                        node["name"] = properties.get("normalized_name", node["name"])
+                        node["normalized"]["name"] = node["name"]
+                return result
+
         limit = max_nodes
         try:
             result = await run_neo4j_query_io(
@@ -689,6 +740,65 @@ class KnowledgeGraphService:
         except Exception as e:
             logger.error(f"Milvus graph query failed: {e}")
             return {"nodes": [], "edges": []}
+
+    def _query_file_nodes_sync(
+        self,
+        kb_id: str,
+        label: str,
+        keyword: str,
+        limit: int,
+        max_depth: int,
+        exclude_chunk: bool,
+        entity_mentions: list[dict[str, str]],
+        triple_mentions: list[dict[str, str]],
+        chunk_ids: list[str],
+    ) -> dict[str, Any]:
+        """先按 PG 来源约束 Neo4j 路径，再限制结果数量。"""
+        entity_ids = list({m["id"] for m in entity_mentions})
+        node_scope = "(node.entity_id IN $entity_ids OR node.chunk_id IN $chunk_ids)"
+        if exclude_chunk:
+            node_scope = "node.entity_id IN $entity_ids"
+        seed_scope = node_scope.replace("node.", "n.")
+        keyword_scope = "true"
+        if keyword and keyword != "*":
+            keyword_scope = """(
+                toLower(CASE WHEN n.entity_id IS NOT NULL AND NOT any(mention IN $entity_mentions WHERE
+                    mention.id = n.entity_id AND mention.chunk_id = n.source_chunk_id)
+                    THEN coalesce(n.normalized_name, '') ELSE coalesce(n.name, '') END) CONTAINS toLower($keyword)
+                OR toLower(coalesce(n.content_preview, '')) CONTAINS toLower($keyword)
+                OR toLower(coalesce(n.chunk_id, '')) CONTAINS toLower($keyword))"""
+        depth = min(max(max_depth, 1), 3)
+        query = f"""
+        MATCH (n:MilvusKB:`{label}`)
+        WHERE {seed_scope} AND {keyword_scope}
+        WITH n LIMIT $limit
+        WITH collect(n) AS seeds
+        UNWIND seeds AS seed
+        OPTIONAL MATCH p = (seed)-[*1..{depth}]-(m:MilvusKB:`{label}`)
+        WHERE all(node IN nodes(p) WHERE node:MilvusKB AND node:`{label}` AND {node_scope})
+          AND all(rel IN relationships(p) WHERE
+            (type(rel) = 'MENTIONS' AND any(mention IN $entity_mentions WHERE
+                mention.id = endNode(rel).entity_id AND mention.chunk_id = rel.chunk_id
+                AND startNode(rel).chunk_id = rel.chunk_id))
+            OR (type(rel) = 'RELATION' AND any(mention IN $triple_mentions WHERE
+                mention.id = rel.triple_id AND mention.chunk_id = rel.chunk_id)))
+        WITH seeds, p LIMIT $path_limit
+        WITH seeds, collect(p) AS paths
+        RETURN seeds + reduce(path_nodes = [], path IN paths | path_nodes + nodes(path)) AS nodes,
+               reduce(path_edges = [], path IN paths | path_edges + relationships(path)) AS edges
+        """
+        with self.driver.session() as session:
+            record = session.run(
+                query,
+                keyword=keyword,
+                limit=limit,
+                path_limit=max(limit, 1) * 10,
+                entity_ids=entity_ids,
+                chunk_ids=chunk_ids,
+                entity_mentions=entity_mentions,
+                triple_mentions=triple_mentions,
+            ).single()
+            return self._process_subgraph_record(record, limit, kb_id) if record else {"nodes": [], "edges": []}
 
     def _query_nodes_sync(
         self,
@@ -913,6 +1023,7 @@ class KnowledgeGraphService:
 
     async def _reset(self, kb_id: str, *, clear_extraction_result: bool, clear_config: bool) -> dict[str, Any]:
         """删除图谱后重置知识库构建状态。"""
+        await DocumentResetRepository().require_processable(kb_id)
         kb = await self._get_milvus_kb(kb_id)
         await await_io(asyncio.to_thread(self.delete_graph, kb_id))
         await self.graph_repo.delete_by_kb_id(kb_id)
@@ -936,6 +1047,7 @@ class KnowledgeGraphService:
 
     async def _reconcile_vectors(self, kb_id: str, *, all_vectors: bool) -> dict[str, Any]:
         """执行已有图谱向量重置用例。"""
+        await DocumentResetRepository().require_processable(kb_id)
         await self._get_milvus_kb(kb_id)
         reset_records = await self.graph_repo.reconcile_vector_records(kb_id, all_vectors=all_vectors)
         if all_vectors:
@@ -956,9 +1068,58 @@ class KnowledgeGraphService:
         neo4j_write(self.driver, query)
         self.graph_vector_store.drop_graph_collections(kb_id)
 
-    async def delete_file_graph(self, kb_id: str, file_id: str, *, generation: int | None = None) -> None:
+    async def clear_file_graph(self, kb_id: str, file_id: str, *, generation: int, context=None) -> dict[str, Any]:
+        """撤销文件全部图谱产物，保留文件、正文、分块和普通检索索引。"""
+        async with self.graph_repo.file_clear_scope(kb_id, file_id, generation):
+            # 排他锁可能等待超过 attempt 租约；必须在获得写权限之后重新确认 Owner。
+            if context is not None:
+                await context.raise_if_cancelled()
+            await DocumentResetRepository().require_processable(kb_id, file_id, job_id=getattr(context, "job_id", None))
+            await self._get_milvus_kb(kb_id)
+            await self.delete_file_graph(kb_id, file_id, clear_extraction_result=True)
+        return {"kb_id": kb_id, "file_id": file_id, "status": "cleared"}
+
+    async def delete_file_graph(
+        self, kb_id: str, file_id: str, *, generation: int | None = None, clear_extraction_result: bool = False
+    ) -> None:
         """外部清理成功后才提交关联移除，失败保留重试所需的 ID。"""
-        async with self.graph_repo.delete_file_references(file_id, generation=generation) as scope:
+        chunk_ids = None
+        if generation is not None:
+            chunk_ids = await self.chunk_repo.list_ids_by_file_generation(file_id, generation)
+        affected_entities, affected_triples = await await_io(asyncio.to_thread(self._file_graph_record_ids, kb_id, file_id, chunk_ids))
+        # 历史孤儿已无 PG 提及；先提交其撤销，保留 Neo4j 归属作为后续失败重试的范围证据。
+        await self.graph_repo.delete_orphan_records(entity_ids=affected_entities, triple_ids=affected_triples)
+        sources = await self.graph_repo.file_entity_sources(file_id, generation=generation, additional_entity_ids=affected_entities)
+        restored_by_id = {}
+        for source in sources:
+            entity = restored_by_id.setdefault(
+                source["entity_id"],
+                {
+                    "entity_id": source["entity_id"],
+                    "name": source["normalized_name"],
+                    "attributes": [],
+                    "source_chunk_id": None,
+                },
+            )
+            if entity["source_chunk_id"] is not None:
+                continue
+            if source["extraction_result"]:
+                payload = build_graph_payload(source["extraction_result"])
+                records = self._build_entity_records(kb_id, payload["entities"])
+                for record in records:
+                    if record["entity_id"] == source["entity_id"]:
+                        entity.update(name=record["name"], attributes=record["attributes"], source_chunk_id=source["chunk_id"])
+                        break
+        restored_entities = list(restored_by_id.values())
+        options = {
+            "generation": generation,
+            "restored_entities": restored_entities,
+            "additional_entity_ids": affected_entities,
+            "additional_triple_ids": affected_triples,
+        }
+        if clear_extraction_result:
+            options["clear_extraction_result"] = True
+        async with self.graph_repo.delete_file_references(file_id, **options) as scope:
             orphan_entity_ids, orphan_triple_ids, chunk_ids = scope
             graph_vector_store = await self.get_graph_vector_store()
             await await_io(
@@ -968,9 +1129,34 @@ class KnowledgeGraphService:
                     triple_ids=orphan_triple_ids,
                 )
             )
-            await await_io(asyncio.to_thread(self._delete_file_graph_from_neo4j, kb_id, file_id, chunk_ids))
+            # 全文件清理也覆盖历史上已经失去 PG Chunk 的 Neo4j 半成品。
+            neo4j_chunks = chunk_ids if generation is not None else None
+            await await_io(asyncio.to_thread(self._delete_file_graph_from_neo4j, kb_id, file_id, neo4j_chunks, restored_entities))
 
-    def _delete_file_graph_from_neo4j(self, kb_id: str, file_id: str, chunk_ids: list[str]) -> None:
+    def _file_graph_record_ids(self, kb_id: str, file_id: str, chunk_ids: list[str] | None) -> tuple[list[str], list[str]]:
+        """读取文件可归属的 Neo4j 实体和三元组，补足 PG 提及丢失的半成品。"""
+        label = safe_neo4j_label(kb_id)
+        with self.driver.session() as session:
+            rows = session.run(
+                f"MATCH (c:Chunk:MilvusKB:`{label}` {{kb_id: $kb_id, file_id: $file_id}})-[:MENTIONS]->(e:Entity) "
+                "WHERE $chunk_ids IS NULL OR c.chunk_id IN $chunk_ids RETURN DISTINCT 'entity' AS kind, e.entity_id AS id "
+                "UNION "
+                "MATCH ()-[r:RELATION {kb_id: $kb_id, file_id: $file_id}]->() "
+                "WHERE $chunk_ids IS NULL OR r.chunk_id IN $chunk_ids RETURN DISTINCT 'triple' AS kind, r.triple_id AS id",
+                kb_id=kb_id,
+                file_id=file_id,
+                chunk_ids=chunk_ids,
+            )
+            entity_ids, triple_ids = [], []
+            for row in rows:
+                if row["id"]:
+                    target = entity_ids if row["kind"] == "entity" else triple_ids
+                    target.append(row["id"])
+            return entity_ids, triple_ids
+
+    def _delete_file_graph_from_neo4j(
+        self, kb_id: str, file_id: str, chunk_ids: list[str] | None, restored_entities: list[dict] | None = None
+    ) -> None:
         label = safe_neo4j_label(kb_id)
 
         def query(tx):
@@ -978,7 +1164,7 @@ class KnowledgeGraphService:
                 f"""
                 MATCH (:Entity:MilvusKB:`{label}`)-[r:RELATION {{kb_id: $kb_id, file_id: $file_id}}]->
                     (:Entity:MilvusKB:`{label}`)
-                WHERE r.chunk_id IN $chunk_ids
+                WHERE $chunk_ids IS NULL OR r.chunk_id IN $chunk_ids
                 DELETE r
                 """,
                 kb_id=kb_id,
@@ -989,7 +1175,7 @@ class KnowledgeGraphService:
                 f"""
                 MATCH (:Chunk:MilvusKB:`{label}` {{kb_id: $kb_id, file_id: $file_id}})-[m:MENTIONS]->
                     (e:Entity:MilvusKB:`{label}`)
-                WHERE m.chunk_id IN $chunk_ids
+                WHERE $chunk_ids IS NULL OR m.chunk_id IN $chunk_ids
                 DELETE m
                 WITH DISTINCT e
                 WHERE NOT ()-[:MENTIONS]->(e)
@@ -1002,13 +1188,23 @@ class KnowledgeGraphService:
             tx.run(
                 f"""
                 MATCH (c:Chunk:MilvusKB:`{label}` {{kb_id: $kb_id, file_id: $file_id}})
-                WHERE c.chunk_id IN $chunk_ids
+                WHERE $chunk_ids IS NULL OR c.chunk_id IN $chunk_ids
                 DETACH DELETE c
                 """,
                 kb_id=kb_id,
                 file_id=file_id,
                 chunk_ids=chunk_ids,
             )
+
+            for entity in restored_entities or []:
+                tx.run(
+                    f"MATCH (e:Entity:MilvusKB:`{label}` {{entity_id: $entity_id}}) "
+                    "SET e.name=$name, e.attributes=$attributes, e.source_chunk_id=$source_chunk_id",
+                    entity_id=entity["entity_id"],
+                    name=entity["name"],
+                    attributes=json.dumps(entity["attributes"], ensure_ascii=False),
+                    source_chunk_id=entity["source_chunk_id"],
+                )
 
         neo4j_write(self.driver, query)
 

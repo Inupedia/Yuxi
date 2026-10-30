@@ -107,6 +107,33 @@ class ScheduledAgentRepository:
         )
         return list(result.all())
 
+    async def list_run_history(
+        self, job_id: str, uid: str, *, limit: int, offset: int
+    ) -> tuple[list[tuple[ScheduledAgentRun, AgentInput | None, AgentRun | None]], int]:
+        """在任务归属边界内分页读取全部触发记录和当前执行事实。"""
+        conditions = (
+            ScheduledAgentRun.job_id == job_id,
+            ScheduledAgentJob.uid == str(uid),
+            ScheduledAgentJob.deleted_at.is_(None),
+        )
+        total = await self.db.scalar(
+            select(func.count(ScheduledAgentRun.id))
+            .join(ScheduledAgentJob, ScheduledAgentJob.id == ScheduledAgentRun.job_id)
+            .where(*conditions)
+        )
+        result = await self.db.execute(
+            select(ScheduledAgentRun, AgentInput, AgentRun)
+            .join(ScheduledAgentJob, ScheduledAgentJob.id == ScheduledAgentRun.job_id)
+            .outerjoin(AgentInput, AgentInput.id == ScheduledAgentRun.input_id)
+            .outerjoin(AgentTurn, AgentTurn.id == AgentInput.turn_id)
+            .outerjoin(AgentRun, AgentRun.id == AgentTurn.current_run_id)
+            .where(*conditions)
+            .order_by(ScheduledAgentRun.scheduled_for.desc(), ScheduledAgentRun.id.desc())
+            .limit(limit)
+            .offset(offset)
+        )
+        return list(result.all()), int(total or 0)
+
     async def get_input_and_run(self, input_id: str) -> tuple[AgentInput | None, AgentRun | None]:
         """读取定时输入及其当前顶层执行段。"""
         row = (

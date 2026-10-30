@@ -9,6 +9,7 @@ from yuxi.infrastructure.observability.logging import logger
 from yuxi.modules.identity.models import User
 from yuxi.modules.knowledge.graphs.service import KnowledgeGraphService
 from yuxi.modules.knowledge.runtime import knowledge_base
+from yuxi.shared.errors import DomainError
 
 graph = APIRouter(prefix="/graph", tags=["graph"])
 
@@ -49,6 +50,7 @@ async def get_subgraph(
     max_depth: int = Query(2, description="最大深度", ge=1, le=5),
     max_nodes: int = Query(100, description="最大节点数", ge=1, le=1000),
     exclude_chunk: bool = Query(False, description="是否排除 Chunk 节点"),
+    file_id: str | None = Query(None, min_length=1, description="限定单个文件"),
     current_user: User = Depends(require_knowledge_base_read),
 ):
     """查询 Milvus 知识库图谱子图"""
@@ -60,9 +62,10 @@ async def get_subgraph(
             max_depth=max_depth,
             max_nodes=max_nodes,
             exclude_chunk=exclude_chunk,
+            file_id=file_id,
         )
         return {"success": True, "data": result_data}
-    except HTTPException:
+    except (HTTPException, DomainError):
         raise
     except Exception as e:
         logger.exception(f"Failed to get subgraph: {e}")

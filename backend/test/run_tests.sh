@@ -24,6 +24,17 @@ LIFECYCLE_E2E_TESTS=(
     test/e2e/test_malformed_tool_recovery_e2e.py
 )
 
+# 只在显式收集 CI 证据时追加报告参数，保留 pytest 退出状态。
+run_pytest() {
+    local suite="$1"
+    shift
+    local report_args=()
+    if [[ -n "${CI_TEST_REPORT_DIR:-}" ]]; then
+        report_args=("--junitxml=${CI_TEST_REPORT_DIR}/${suite}.xml" --durations=20 --durations-min=1.0)
+    fi
+    "${PYTEST_CMD[@]}" "$@" "${report_args[@]}"
+}
+
 check_server() {
     echo "检查测试服务是否就绪..."
     if docker compose exec -T api curl -fsS "${TEST_BASE_URL:-http://localhost:5050}/api/system/ready" > /dev/null 2>&1; then
@@ -38,27 +49,27 @@ check_server() {
 
 run_unit_tests() {
     echo "运行单元测试..."
-    "${PYTEST_CMD[@]}" test/unit -m "not slow"
+    run_pytest unit test/unit -m "not slow"
 }
 
 run_integration_tests() {
     echo "运行集成测试..."
     check_server
-    "${PYTEST_CMD[@]}" test/integration/api
-    "${PYTEST_CMD[@]}" test/integration --ignore=test/integration/api \
+    run_pytest integration-api test/integration/api
+    run_pytest integration-other test/integration --ignore=test/integration/api \
         --ignore=test/integration/services/test_background_job_worker_path.py
 }
 
 run_e2e_tests() {
     echo "运行确定性 Agent 端到端测试..."
     check_server
-    "${PYTEST_CMD[@]}" "${LIFECYCLE_E2E_TESTS[@]}" -m e2e
+    run_pytest e2e "${LIFECYCLE_E2E_TESTS[@]}" -m e2e
 }
 
 run_all_e2e_tests() {
     echo "运行全部端到端测试（包括真实模型与外部服务探针）..."
     check_server
-    "${PYTEST_CMD[@]}" test/e2e -m e2e
+    run_pytest e2e-all test/e2e -m e2e
 }
 
 run_all_tests() {

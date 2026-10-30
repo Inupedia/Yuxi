@@ -19,4 +19,5 @@ def milvus_graph_projection_lock(monkeypatch):
         yield
 
     monkeypatch.setattr(milvus_graph_service, "knowledge_projection_lock", lock)
+    monkeypatch.setattr(milvus_graph_service.DocumentResetRepository, "require_processable", AsyncMock())
     monkeypatch.setattr(KnowledgeGraphService, "_filter_visible_subgraph", AsyncMock(side_effect=lambda kb_id, result: result))

@@ -1,6 +1,7 @@
 name: Service Integration Tests
 
 on:
+  workflow_call:
   workflow_dispatch:
   push:
     branches: [main, 'develop/**']
@@ -8,20 +9,14 @@ on:
     paths:
       - '.env.template'
       - 'backend/**'
-      - 'scripts/ci_run_service_integration.sh'
-      - '.github/workflows/service-integration.yml'
-  pull_request:
-    paths:
-      - '.env.template'
-      - 'backend/**'
-      - 'scripts/ci_run_service_integration.sh'
+      - 'scripts/ci/run_service_integration.sh'
       - '.github/workflows/service-integration.yml'
 
 permissions:
   contents: read
 
 concurrency:
-  group: service-integration-${{ github.event.pull_request.number || github.ref }}
+  group: service-integration-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -67,5 +62,14 @@ jobs:
         run: uv sync --project backend --locked --group test
       - name: Run independent service integration inventory
         env:
+          CI_TEST_REPORT_DIR: test/ci-reports
           YUXI_SKILL_DATA_DIR: ${{ runner.temp }}/service-integration-skills
-        run: bash scripts/ci_run_service_integration.sh
+        run: bash scripts/ci/run_service_integration.sh
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: service-integration-junit
+          path: backend/test/ci-reports/*.xml
+          retention-days: 7
+          if-no-files-found: warn

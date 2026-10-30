@@ -111,6 +111,29 @@ class KnowledgeExecutor(ABC):
         processing_job_id: str | None = None,
         processing_owner: str | None = None,
     ) -> dict:
+        """解析全过程持有共享投影锁，撤销必须等待全部产物写入结束。"""
+        from yuxi.modules.knowledge.repositories.projections import knowledge_projection_lock
+
+        async with knowledge_projection_lock(kb_id, shared=True):
+            return await self._parse_file(
+                kb_id,
+                file_id,
+                operator_id,
+                additional_params=additional_params,
+                processing_job_id=processing_job_id,
+                processing_owner=processing_owner,
+            )
+
+    async def _parse_file(
+        self,
+        kb_id: str,
+        file_id: str,
+        operator_id: str | None = None,
+        *,
+        additional_params: dict[str, Any],
+        processing_job_id: str | None = None,
+        processing_owner: str | None = None,
+    ) -> dict:
         """解析原件生成 Markdown 并写入 MinIO（状态 PARSING → PARSED/ERROR_PARSING）。"""
         allowed_statuses = {
             FileStatus.UPLOADED,
@@ -193,7 +216,7 @@ class KnowledgeExecutor(ABC):
                 url_builder=build_kb_image_proxy_url,
             )
 
-            markdown_file_path = await self._save_markdown_to_minio(kb_id, file_id, attempt_id, markdown_content)
+            markdown_file_path = await self.save_markdown_artifact(kb_id, file_id, attempt_id, markdown_content)
 
             # 发布解析结果仍走 PARSING 条件更新；失败说明执行权被接管，按取消让位。
             file_meta["status"] = FileStatus.PARSED
@@ -227,7 +250,11 @@ class KnowledgeExecutor(ABC):
                 current_task = asyncio.current_task()
                 if current_task is not None and current_task.cancelling():
                     current_task.uncancel()
-            await self._cleanup_parse_attempt(kb_id, file_id, attempt_id)
+            try:
+                if not await self.markdown_attempt_is_referenced(kb_id, file_id, attempt_id):
+                    await self._cleanup_parse_attempt(kb_id, file_id, attempt_id)
+            except Exception as cleanup_error:
+                logger.warning("无法确认解析发布事实，保留本次产物: kb={} file={} error={}", kb_id, file_id, cleanup_error)
             error_msg = "File parsing was cancelled" if isinstance(e, asyncio.CancelledError) else str(e)
             logger.error(f"Failed to parse file {file_id}: {error_msg}")
             await mark_parse_failed(error_msg)
@@ -802,7 +829,21 @@ class KnowledgeExecutor(ABC):
 
     # ==== 内部辅助：解析产物写入与回收 ====
 
-    async def _save_markdown_to_minio(self, kb_id: str, file_id: str, attempt_id: str, content: str) -> str:
+    @staticmethod
+    async def markdown_attempt_is_referenced(kb_id: str, file_id: str, attempt_id: str) -> bool:
+        """回收前从持久正文指针确认本次产物是否已发布，查询失败交由调用方保留对象。"""
+        from yuxi.modules.knowledge.repositories.files import KnowledgeFileRepository
+
+        current = await KnowledgeFileRepository().get_by_file_id(file_id, include_deleted=True)
+        return bool(
+            current is not None
+            and current.kb_id == kb_id
+            and current.markdown_file
+            and parse_minio_url(current.markdown_file)
+            == (get_minio_client().KB_BUCKETS["parsed"], f"{kb_id}/parsed/{file_id}/{attempt_id}/document.md")
+        )
+
+    async def save_markdown_artifact(self, kb_id: str, file_id: str, attempt_id: str, content: str) -> str:
         """将 Markdown 写入 MinIO 并返回对象 URL。"""
         minio_client = get_minio_client()
         bucket_name = minio_client.KB_BUCKETS["parsed"]
@@ -831,4 +872,4 @@ class KnowledgeExecutor(ABC):
         )
         for result in results:
             if isinstance(result, Exception):
-                logger.warning("解析产物清理失败: kb=%s file=%s attempt=%s error=%s", kb_id, file_id, attempt_id, result)
+                logger.warning("解析产物清理失败: kb={} file={} attempt={} error={}", kb_id, file_id, attempt_id, result)

@@ -21,7 +21,7 @@ def graph_boundary(monkeypatch):
     monkeypatch.setattr(graph_build, "job_tracker", jobs)
     monkeypatch.setattr(graph_build, "knowledge_base", kb)
     monkeypatch.setattr(graph_build, "KnowledgeGraphService", lambda: execution)
-    monkeypatch.setattr(graph_build, "submit_job", submit)
+    monkeypatch.setattr(graph_build, "submit_knowledge_job", submit)
     return jobs, kb, execution, submit
 
 
@@ -81,3 +81,97 @@ async def test_registration_race_still_rejects_without_executing(graph_boundary,
         {"kb_id": "kb", "action": "build"} if action == "build" else {"kb_id": "kb", "action": "reconcile", "reconcile_mode": "all_vectors"}
     )
     execution.reset.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    "file, chunk_count, error",
+    [
+        (None, 1, ResourceNotFoundError),
+        (SimpleNamespace(kb_id="other", is_folder=False), 1, ResourceNotFoundError),
+        (SimpleNamespace(kb_id="kb", is_folder=True), 1, InvalidOperationError),
+        (SimpleNamespace(kb_id="kb", is_folder=False, active_generation=2), 0, InvalidOperationError),
+    ],
+)
+async def test_file_build_rejects_invalid_target(graph_boundary, monkeypatch, file, chunk_count, error):
+    """跨库、目录和没有当前分块的文件不得登记任务。"""
+    files = SimpleNamespace(get_by_file_id=AsyncMock(return_value=file))
+    chunks = SimpleNamespace(count_by_file_id=AsyncMock(return_value=chunk_count))
+    monkeypatch.setattr(graph_build, "KnowledgeFileRepository", lambda: files)
+    monkeypatch.setattr(graph_build, "KnowledgeChunkRepository", lambda: chunks)
+    with pytest.raises(error):
+        await graph_build.start_graph_build("kb", file_id="file")
+    graph_boundary[3].assert_not_awaited()
+
+
+async def test_file_build_records_generation_and_keeps_kb_mutex(graph_boundary, monkeypatch):
+    """作业持久化范围，互斥仍以整个知识库为单位。"""
+    files = SimpleNamespace(get_by_file_id=AsyncMock(return_value=SimpleNamespace(kb_id="kb", is_folder=False, active_generation=3)))
+    chunks = SimpleNamespace(count_by_file_id=AsyncMock(return_value=2))
+    monkeypatch.setattr(graph_build, "KnowledgeFileRepository", lambda: files)
+    monkeypatch.setattr(graph_build, "KnowledgeChunkRepository", lambda: chunks)
+    await graph_build.start_graph_build("kb", file_id="file")
+    kwargs = graph_boundary[3].await_args.kwargs
+    assert kwargs["payload"] == {"kb_id": "kb", "action": "build", "file_id": "file", "generation": 3}
+    assert kwargs["payload_match"] == {"kb_id": "kb"}
+
+
+async def test_clear_rejects_pending_build_and_registration_race(graph_boundary, monkeypatch):
+    """旧构建的排队意图与清理互斥，预检后的并发登记仍由持久唯一键拒绝。"""
+    jobs, kb, _, submit = graph_boundary
+    jobs.find_job_by_payload.return_value = SimpleNamespace(status="pending")
+    with pytest.raises(StateConflictError):
+        await graph_build.clear_file_graph("kb", "file")
+    submit.assert_not_awaited()
+    jobs.find_job_by_payload.return_value = None
+    kb.get_knowledge_base_info.return_value = SimpleNamespace(name="KB", kb_type="milvus")
+    file = SimpleNamespace(kb_id="kb", is_folder=False, status="indexed", filename="file", active_generation=2)
+    monkeypatch.setattr(graph_build, "KnowledgeFileRepository", lambda: SimpleNamespace(get_by_file_id=AsyncMock(return_value=file)))
+    submit.return_value = (SimpleNamespace(id="existing"), False)
+    with pytest.raises(StateConflictError):
+        await graph_build.clear_file_graph("kb", "file")
+    assert submit.await_args.kwargs["payload"] == {"kb_id": "kb", "action": "clear_file", "file_id": "file", "generation": 2}
+    assert submit.await_args.kwargs["payload_match"] == {"kb_id": "kb"}
+
+
+@pytest.mark.parametrize(
+    "scope",
+    [
+        {},
+        {"file_id": "file"},
+        {"file_id": "", "generation": 1},
+        {"file_id": "file", "generation": True},
+        {"file_id": "file", "generation": "1"},
+        {"file_id": "file", "generation": 0},
+        {"file_id": "file", "generation": -1},
+    ],
+)
+async def test_clear_worker_rejects_malformed_scope(monkeypatch, scope):
+    """不可信的持久任务范围不得进入清理执行器。"""
+    from yuxi.modules.knowledge.services import background_jobs
+
+    executor = SimpleNamespace(clear_file_graph=AsyncMock())
+    monkeypatch.setattr(background_jobs, "KnowledgeGraphService", lambda: executor)
+    context = SimpleNamespace(payload={"kb_id": "kb", "action": "clear_file", **scope})
+    with pytest.raises(ValueError, match="清除任务范围无效"):
+        await background_jobs.run_knowledge_graph(context)
+    executor.clear_file_graph.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    "kb_type, file, error",
+    [
+        ("other", None, InvalidOperationError),
+        ("milvus", None, ResourceNotFoundError),
+        ("milvus", SimpleNamespace(kb_id="other"), ResourceNotFoundError),
+        ("milvus", SimpleNamespace(kb_id="kb", is_folder=True), InvalidOperationError),
+        ("milvus", SimpleNamespace(kb_id="kb", is_folder=False, status="indexing"), StateConflictError),
+    ],
+)
+async def test_clear_rejects_unsupported_or_unstable_target(graph_boundary, monkeypatch, kb_type, file, error):
+    """不支持的知识库、跨库文件、目录与处理中状态不能登记破坏性任务。"""
+    _, kb, _, submit = graph_boundary
+    kb.get_knowledge_base_info.return_value = SimpleNamespace(name="KB", kb_type=kb_type)
+    monkeypatch.setattr(graph_build, "KnowledgeFileRepository", lambda: SimpleNamespace(get_by_file_id=AsyncMock(return_value=file)))
+    with pytest.raises(error):
+        await graph_build.clear_file_graph("kb", "file")
+    submit.assert_not_awaited()

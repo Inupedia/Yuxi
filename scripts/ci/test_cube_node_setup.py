@@ -39,7 +39,7 @@ class CubeNodeSetupTest(unittest.TestCase):
 
     def run_editor(self, content: str) -> tuple[subprocess.CompletedProcess, str]:
         """替换固定配置路径，不执行安装或节点重启。"""
-        script = Path(__file__).resolve().parents[1] / 'docker/cube/setup-node.sh'
+        script = Path(__file__).resolve().parents[2] / 'docker/cube/setup-node.sh'
         code = script.read_text().split("    python3 - <<'PY'\n", 1)[1].split('\nPY\n', 1)[0]
         with tempfile.TemporaryDirectory() as directory:
             config = Path(directory) / 'conf.yaml'

@@ -1,17 +1,38 @@
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
-import test from 'node:test'
-import { computed, reactive, ref, watch } from 'vue'
-import { compileScript, parse } from 'vue/compiler-sfc'
-import { parseMcpManifest } from '../../src/modules/extensions/model/mcpManifest.js'
+import test, { before, after } from 'node:test'
+import { createSSRApp, h } from 'vue'
+import { renderToString } from 'vue/server-renderer'
+import { message } from 'ant-design-vue'
+import { createTestServer } from '../helpers/createTestServer.js'
 
-const source = readFileSync(
-  new URL('../../src/modules/extensions/ui/McpFormModal.vue', import.meta.url), 'utf8'
-)
-const { descriptor } = parse(source)
-const executable = compileScript(descriptor, { id: 'mcp-submit-test' }).content
-  .replace(/^import .* from '[^']+'\n/gm, '')
-  .replace('export default', 'return')
+let server, component
+const originalMessage = { error: message.error, success: message.success }
+before(async () => {
+  server = await createTestServer({
+    server: { middlewareMode: true, hmr: false }, appType: 'custom',
+    plugins: [{ name: 'mcp-api-boundary', enforce: 'pre', load(id) {
+      if (id.endsWith('/src/apis/mcp_api.js')) return 'export const mcpApi = new Proxy({}, { get: (_, key) => globalThis.__mcpFormApi[key] })'
+    } }]
+  })
+  ;({ default: component } = await server.ssrLoadModule('/src/modules/extensions/ui/McpFormModal.vue'))
+})
+after(async () => {
+  await server?.close()
+  Object.assign(message, originalMessage)
+  delete globalThis.__mcpFormApi
+})
+
+/** 在真实组件中注入接口并建立 Vue 上下文。 */
+async function setupForm(deps, props, context) {
+  globalThis.__mcpFormApi = deps.mcpApi
+  Object.assign(message, deps.message)
+  let state
+  await renderToString(createSSRApp({ setup() {
+    state = component.setup(props, context)
+    return () => h('div')
+  } }))
+  return state
+}
 
 for (const editMode of [false, true]) {
   for (const headersText of ['false', '0', 'null', '[]']) {
@@ -20,16 +41,13 @@ for (const editMode of [false, true]) {
       const writes = []
       const events = []
       const deps = {
-        computed, reactive, ref, watch, parseMcpManifest,
-        CollapseTransition: {}, ChevronRight: {}, Plug: {},
         message: { error: (value) => errors.push(value) },
         mcpApi: {
           createMcpServer: (data) => writes.push(data),
           updateMcpServer: (slug, data) => writes.push({ slug, ...data })
         }
       }
-      const component = new Function(...Object.keys(deps), executable)(...Object.values(deps))
-      const form = component.setup({ open: true, editMode, editData: null }, {
+      const form = await setupForm(deps, { open: true, editMode, editData: null }, {
         expose() {}, emit: (...args) => events.push(args)
       })
       Object.assign(form.form, {
@@ -48,13 +66,10 @@ for (const editMode of [false, true]) {
 test('编辑共享认证并清空请求头时，显式提交空 headers 以允许切换 OAuth', async () => {
   const writes = []
   const deps = {
-    computed, reactive, ref, watch, parseMcpManifest,
-    CollapseTransition: {}, ChevronRight: {}, Plug: {},
     message: { error: (value) => { throw new Error(value) }, success() {} },
     mcpApi: { updateMcpServer: async (slug, data) => { writes.push({ slug, ...data }); return { success: true, data } } }
   }
-  const component = new Function(...Object.keys(deps), executable)(...Object.values(deps))
-  const form = component.setup({ open: true, editMode: true, editData: { slug: 'existing', name: 'Existing', url: 'https://mcp.example/mcp', headers: { Authorization: 'Bearer shared' } } }, { expose() {}, emit() {} })
+  const form = await setupForm(deps, { open: true, editMode: true, editData: { slug: 'existing', name: 'Existing', url: 'https://mcp.example/mcp', headers: { Authorization: 'Bearer shared' } } }, { expose() {}, emit() {} })
   Object.assign(form.form, { headersText: '', auth_mode: 'oauth', issuer_url: 'https://sso.example', client_id: 'client' })
   await form.handleFormSubmit()
   assert.deepEqual(writes[0].headers, {})
@@ -73,13 +88,10 @@ for (const [label, clearSecret, clientSecret, expectedSecret] of [
   test(`编辑 OAuth Client Secret：${label}`, async () => {
     const writes = []
     const deps = {
-      computed, reactive, ref, watch, parseMcpManifest,
-      CollapseTransition: {}, ChevronRight: {}, Plug: {},
       message: { error: (value) => { throw new Error(value) }, success() {} },
       mcpApi: { updateMcpServer: async (slug, data) => { writes.push(data); return { success: true, data } } }
     }
-    const component = new Function(...Object.keys(deps), executable)(...Object.values(deps))
-    const form = component.setup({ open: true, editMode: true, editData: {
+    const form = await setupForm(deps, { open: true, editMode: true, editData: {
       slug: 'oauth', name: 'OAuth', url: 'https://mcp.example/mcp', auth_mode: 'oauth',
       oauth_client_secret_set: true, oauth_config: { issuer_url: 'https://sso.example', client_id: 'client' }
     } }, { expose() {}, emit() {} })

@@ -13,50 +13,71 @@
       </div>
 
       <div class="header-controls">
-        <!-- 字符数/片段数显示在 segment 左边 -->
-        <span v-if="viewInfoText" class="view-info expanded-controls">{{ viewInfoText }}</span>
+        <a-button v-if="canEditMarkdown && !markdownEditor.active" size="small" @click="startMarkdownEdit">
+          <Pencil :size="14" aria-hidden="true" /> 编辑 Markdown
+        </a-button>
+        <!-- 字符数/片段数显示在视图选择器左边 -->
+        <span v-if="viewInfoText && !markdownEditor.active" class="view-info expanded-controls">{{ viewInfoText }}</span>
 
-        <!-- 视图模式切换 -->
-        <div class="view-controls expanded-controls" v-if="file && viewModeOptions.length > 1">
-          <a-segmented v-model:value="viewMode" :options="viewModeOptions" />
-        </div>
-
-        <!-- 下载按钮下拉菜单 -->
-        <a-dropdown trigger="click" v-if="file" overlay-class-name="knowledge-file-actions">
-          <a-button type="default" class="download-btn expanded-controls" title="下载" aria-label="下载">
-            <Download :size="16" />
-            <ChevronDown :size="14" />
+        <!-- 文件视图与下载操作 -->
+        <a-dropdown
+          v-if="file && !markdownEditor.active"
+          v-model:open="fileActionsOpen"
+          :trigger="['click']"
+          overlay-class-name="knowledge-file-actions"
+        >
+          <a-button
+            ref="fileActionsTrigger"
+            class="view-controls expanded-controls"
+            :aria-label="currentViewOption ? `文件操作，当前视图为${currentViewOption.title}` : '文件操作'"
+            @keydown.esc="closeFileActions($event, false)"
+          >
+            <component :is="currentViewOption?.icon || FileText" :size="16" aria-hidden="true" />
+            <span>{{ currentViewOption?.title || '文件操作' }}</span>
+            <ChevronDown :size="14" aria-hidden="true" />
           </a-button>
           <template #overlay>
-            <a-menu @click="handleDownloadMenuClick">
-              <a-menu-item key="original" :disabled="!file.file_id">
-                <template #icon><Download :size="16" /></template>
+            <a-menu :selected-keys="[viewMode]" @click="finishFileAction($event, false)" @keydown.esc="closeFileActions($event, false)">
+              <a-menu-item
+                v-for="option in viewModeOptions"
+                :key="option.value"
+                @click="viewMode = option.value"
+              >
+                <template #icon><component :is="option.icon" :size="16" aria-hidden="true" /></template>
+                {{ option.title }}
+              </a-menu-item>
+              <a-menu-divider v-if="viewModeOptions.length" />
+              <a-menu-item key="download-original" :disabled="!file.file_id" @click="handleDownloadMenuClick({ key: 'original' })">
+                <template #icon><Download :size="16" aria-hidden="true" /></template>
                 下载原文
               </a-menu-item>
-              <a-menu-item key="markdown" :disabled="contentState.loading || !mergedContent">
-                <template #icon><FileText :size="16" /></template>
+              <a-menu-item key="download-markdown" :disabled="contentState.loading || !mergedContent" @click="handleDownloadMenuClick({ key: 'markdown' })">
+                <template #icon><FileText :size="16" aria-hidden="true" /></template>
                 下载 Markdown
               </a-menu-item>
             </a-menu>
           </template>
         </a-dropdown>
 
-        <a-dropdown v-if="file" :trigger="['click']" overlay-class-name="knowledge-file-actions">
+        <a-dropdown v-if="file && !markdownEditor.active" v-model:open="compactActionsOpen" :trigger="['click']" overlay-class-name="knowledge-file-actions">
           <a-button
+            ref="compactActionsTrigger"
             type="text"
             class="compact-controls"
             title="更多文件操作"
             aria-label="更多文件操作"
+            @keydown.esc="closeFileActions($event, true)"
           >
             <MoreHorizontal :size="18" />
           </a-button>
           <template #overlay>
-            <a-menu :selected-keys="[viewMode]">
+            <a-menu :selected-keys="[viewMode]" @click="finishFileAction($event, true)" @keydown.esc="closeFileActions($event, true)">
               <a-menu-item
                 v-for="option in viewModeOptions"
                 :key="option.value"
                 @click="viewMode = option.value"
               >
+                <template #icon><component :is="option.icon" :size="16" aria-hidden="true" /></template>
                 {{ option.title }}
               </a-menu-item>
               <a-menu-divider v-if="viewModeOptions.length" />
@@ -65,6 +86,7 @@
                 :disabled="!file.file_id"
                 @click="handleDownloadMenuClick({ key: 'original' })"
               >
+                <template #icon><Download :size="16" aria-hidden="true" /></template>
                 下载原文
               </a-menu-item>
               <a-menu-item
@@ -72,6 +94,7 @@
                 :disabled="contentState.loading || !mergedContent"
                 @click="handleDownloadMenuClick({ key: 'markdown' })"
               >
+                <template #icon><FileText :size="16" aria-hidden="true" /></template>
                 下载 Markdown
               </a-menu-item>
             </a-menu>
@@ -89,7 +112,56 @@
         </button>
       </div>
     </div>
-    <div v-if="basicLoading" class="loading-container">
+    <div v-if="markdownEditor.active" class="markdown-editor-panel" :aria-busy="markdownEditor.loading || markdownEditor.saving">
+      <div class="markdown-editor-toolbar">
+        <div class="markdown-editor-view">
+          <a-radio-group v-model:value="markdownEditorView" name="knowledge-markdown-editor-view" size="small" :disabled="!markdownEditor.loaded" aria-label="Markdown 编辑视图">
+            <a-radio-button value="edit">编辑</a-radio-button>
+            <a-radio-button value="preview">预览</a-radio-button>
+          </a-radio-group>
+          <span class="markdown-editor-status" role="status">{{ markdownEditor.saving ? '正在保存…' : markdownEditor.conflict ? '结果需确认' : markdownDirty ? '未保存' : '' }}</span>
+        </div>
+        <div class="markdown-editor-actions">
+          <a-button @click="cancelMarkdownEdit">{{ markdownEditor.saving ? '关闭' : '取消编辑' }}</a-button>
+          <a-button type="primary" :loading="markdownEditor.saving" :disabled="!canSaveMarkdown" @click="requestMarkdownSave">保存</a-button>
+        </div>
+      </div>
+      <a-alert v-if="markdownEditor.error" type="error" show-icon :message="markdownEditor.error">
+        <template v-if="markdownEditor.conflict" #action>
+          <a-button size="small" :loading="latestMarkdown.loading" @click="readLatestMarkdown">查看最新版本</a-button>
+        </template>
+      </a-alert>
+      <a-alert v-if="markdownEditor.saving && jobsStore.lastError" type="warning" show-icon message="暂时无法确认保存结果。可重试查询，或下载草稿后关闭。">
+        <template #action><a-button size="small" @click="jobsStore.loadJobs()">重试查询</a-button></template>
+      </a-alert>
+      <div v-if="markdownEditor.loading" class="loading-container"><a-spin tip="正在读取 Markdown…" /></div>
+      <div v-else-if="!markdownEditor.loaded" class="empty-content">
+        <a-button @click="startMarkdownEdit">重试读取</a-button>
+      </div>
+      <template v-else>
+        <p v-if="!markdownEditor.hasParsed" class="markdown-editor-hint">暂无解析内容，可在此编写 Markdown。</p>
+        <AgentFilePreview
+          v-show="markdownEditorView === 'edit'"
+          ref="markdownPreview"
+          :file="{ content: markdownEditor.content, previewType: 'markdown', supported: true }"
+          :file-path="`${file?.filename || 'document'}.md`"
+          :draft="markdownEditor.draft"
+          editable
+          :saving="markdownEditor.saving"
+          :show-header="false"
+          :show-download="false"
+          :show-edit-actions="false"
+          full-height
+          borderless
+          @draft-change="markdownEditor.draft = $event"
+        />
+        <div v-if="markdownEditorView === 'preview'" class="markdown-draft-preview flat-md-preview">
+          <MarkdownDocumentPreview v-if="markdownEditor.draft" :content="markdownEditor.draft" />
+          <div v-else class="empty-content">Markdown 内容为空</div>
+        </div>
+      </template>
+    </div>
+    <div v-else-if="basicLoading" class="loading-container">
       <a-spin tip="正在加载文档内容..." />
     </div>
     <div v-else-if="detailError" class="empty-content">
@@ -172,12 +244,49 @@
       <p>暂无文件内容</p>
     </div>
   </component>
+  <a-modal
+    v-model:open="markdownSaveConfirmOpen"
+    title="保存 Markdown"
+    ok-text="保存"
+    cancel-text="取消"
+    @ok="submitMarkdownSave"
+  >
+    保存将撤销此文件的分块、普通检索和图谱，保留原件及解析图片。保存完成后需要重新入库并构建图谱。
+  </a-modal>
+  <a-modal
+    v-model:open="latestMarkdown.open"
+    title="核对最新 Markdown"
+    width="800px"
+    :ok-text="latestMatchesDraft ? '确认文件内容' : '保留草稿并继续'"
+    cancel-text="返回编辑"
+    :ok-button-props="{ disabled: latestMarkdown.loading || !latestMarkdown.data }"
+    @ok="acceptLatestMarkdown"
+  >
+    <p>{{ latestMatchesDraft ? '文件已包含当前草稿，无需再次保存。' : '继续保存将以当前草稿覆盖下方最新内容。请先核对，草稿不会被替换。' }}</p>
+    <div class="latest-markdown-preview flat-md-preview">
+      <MarkdownDocumentPreview v-if="latestMarkdown.data?.content" :content="latestMarkdown.data.content" source />
+      <div v-else class="empty-content">最新 Markdown 内容为空</div>
+    </div>
+  </a-modal>
+  <a-modal
+    v-model:open="markdownExitOpen"
+    :title="markdownEditor.saving ? '保存仍在进行' : markdownEditor.conflict ? '关闭编辑器？' : '放弃未保存的修改？'"
+    :ok-text="markdownEditor.saving ? '关闭编辑器' : '放弃修改'"
+    :cancel-text="markdownEditor.saving ? '继续等待' : '继续编辑'"
+    @ok="confirmMarkdownExit"
+  >
+    <p>{{ markdownEditor.saving ? '关闭不会取消保存。若任务失败，当前草稿将无法从此弹窗恢复；建议先下载草稿，并在后台任务或文件详情确认结果。' : markdownEditor.conflict ? '保存结果尚未确认。关闭后将丢弃此处的草稿，请先下载草稿，并稍后重新查看文件。' : '关闭后，当前草稿将丢失。你可以继续编辑，或先下载草稿。' }}</p>
+    <a-button @click="downloadMarkdownDraft">下载草稿</a-button>
+  </a-modal>
 </template>
 
 <script setup>
-import { computed, h, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
+import { onBeforeRouteLeave, onBeforeRouteUpdate } from 'vue-router'
 import { message, Modal } from 'ant-design-vue'
 import { documentApi } from '@/apis/knowledge_api'
+import { useBackgroundJobsStore } from '@/modules/background-jobs'
+import { useUserStore } from '@/modules/identity'
 import { getWorkspaceKnowledgeFileContent } from '@/apis/workspace_api'
 import { mergeChunks } from '@/modules/knowledge/model/chunkUtils'
 import { getPreviewTypeByPath, normalizePreviewResponse } from '@/shared/lib/file_preview'
@@ -191,9 +300,11 @@ import {
 import MarkdownDocumentPreview from '@/modules/workspace/ui/MarkdownDocumentPreview.vue'
 import FileTypeIcon from '@/shared/ui/FileTypeIcon.vue'
 import AgentFilePreview from '@/modules/session/ui/workspace/AgentFilePreview.vue'
-import { Download, ChevronDown, FileSearch, FileText, Rows3, Code2, X, MoreHorizontal } from '@lucide/vue'
+import { Download, ChevronDown, FileSearch, FileText, Rows3, Code2, X, MoreHorizontal, Pencil } from '@lucide/vue'
 
 const props = defineProps({
+  editable: { type: Boolean, default: false },
+  editRequested: { type: Boolean, default: false },
   referenceSource: { type: Object, default: null },
   embedded: { type: Boolean, default: false },
   chunkId: { type: String, default: '' },
@@ -213,11 +324,17 @@ const props = defineProps({
   }
 })
 
-const emit = defineEmits(['update:open', 'closed'])
+const emit = defineEmits(['update:open', 'closed', 'saved'])
 
 const visible = computed({
   get: () => props.open,
-  set: (value) => emit('update:open', value)
+  set: (value) => {
+    if (!value) {
+      requestMarkdownExit(true)
+      return
+    }
+    emit('update:open', value)
+  }
 })
 
 const containerProps = computed(() =>
@@ -225,15 +342,206 @@ const containerProps = computed(() =>
     ? { class: 'file-detail-embedded' }
     : {
         open: visible.value,
-        width: '800px',
+        width: 'min(1000px, calc(100vw - 48px))',
         footer: null,
         closable: false,
+        maskClosable: true,
+        keyboard: true,
         wrapClassName: 'file-detail',
         bodyStyle: { height: '80vh', padding: '0', display: 'flex', flexDirection: 'column' }
       }
 )
 
+const jobsStore = useBackgroundJobsStore()
+const userStore = useUserStore()
+const markdownPreview = ref(null)
+const markdownSaveConfirmOpen = ref(false)
+const markdownEditorView = ref('edit')
+const markdownExitOpen = ref(false)
+let markdownExitAction = null
+const latestMarkdown = ref({ open: false, loading: false, data: null })
+const latestMatchesDraft = computed(() => latestMarkdown.value.data?.has_parsed_markdown && latestMarkdown.value.data.content === markdownEditor.value.draft)
+const markdownEditor = ref({ active: false, loading: false, loaded: false, content: '', draft: '', revision: '', hasParsed: false, error: '', conflict: false, saving: false })
+let markdownRequestSeq = 0
+const markdownStableStatuses = new Set(['uploaded', 'parsed', 'done', 'indexed', 'error_parsing', 'error_indexing', 'failed'])
+const canEditMarkdown = computed(() => props.editable && file.value && !file.value.is_folder && markdownStableStatuses.has(file.value.status))
+const markdownDirty = computed(() => markdownEditor.value.loaded && markdownEditor.value.draft !== markdownEditor.value.content)
+const markdownExitRequired = computed(() => markdownEditor.value.active && (markdownDirty.value || markdownEditor.value.saving || markdownEditor.value.conflict))
+const canSaveMarkdown = computed(() => canEditMarkdown.value && markdownEditor.value.loaded && !markdownEditor.value.loading && !markdownEditor.value.saving && !markdownEditor.value.conflict && (!markdownEditor.value.hasParsed || markdownEditor.value.draft !== markdownEditor.value.content))
+
+/** 严格读取完整解析对象，任何读取失败都不能替换为空稿或分块。 */
+const startMarkdownEdit = async () => {
+  if (!canEditMarkdown.value || markdownEditor.value.saving) return
+  markdownEditorView.value = 'edit'
+  const requestId = ++markdownRequestSeq
+  const token = userStore.token
+  markdownEditor.value = { active: true, loading: true, loaded: false, content: '', draft: '', revision: '', hasParsed: false, error: '', conflict: false, saving: false }
+  try {
+    const data = await documentApi.getDocumentMarkdown(props.kbId, props.fileId)
+    if (requestId !== markdownRequestSeq || userStore.token !== token || !props.open || !props.editable) return
+    if (typeof data.content !== 'string' || typeof data.revision !== 'string' || typeof data.has_parsed_markdown !== 'boolean') throw new Error('Markdown 响应不完整，请重试读取')
+    Object.assign(markdownEditor.value, { loading: false, loaded: true, content: data.content, draft: data.content, revision: data.revision, hasParsed: data.has_parsed_markdown })
+    await nextTick()
+    markdownPreview.value?.startEditing()
+  } catch (error) {
+    if (requestId === markdownRequestSeq && userStore.token === token) markdownEditor.value.error = error.message || '读取 Markdown 失败'
+  } finally {
+    if (requestId === markdownRequestSeq) markdownEditor.value.loading = false
+  }
+}
+
+/** 退出统一经过草稿确认；保存中的任务由后台继续执行。 */
+const requestMarkdownExit = (closePreview) => {
+  if (markdownExitRequired.value) {
+    markdownExitAction = () => finishMarkdownExit(closePreview)
+    markdownExitOpen.value = true
+    return
+  }
+  finishMarkdownExit(closePreview)
+}
+
+/** 仅在明确确认后丢弃本地编辑态。 */
+const finishMarkdownExit = (closePreview) => {
+  markdownRequestSeq += 1
+  markdownEditor.value.active = false
+  markdownEditor.value.error = ''
+  markdownSaveConfirmOpen.value = false
+  latestMarkdown.value.open = false
+  if (closePreview) emit('update:open', false)
+}
+
+/** 取消编辑与关闭预览共用同一份脏稿保护。 */
+const cancelMarkdownEdit = () => requestMarkdownExit(markdownEditor.value.saving)
+
+/** 执行此次确认对应的退出动作。 */
+const confirmMarkdownExit = () => {
+  markdownExitOpen.value = false
+  markdownExitAction?.()
+  markdownExitAction = null
+}
+
+/** 导出当前草稿，允许在保存结果未知时自行恢复。 */
+const downloadMarkdownDraft = () => {
+  const blob = new Blob([markdownEditor.value.draft], { type: 'text/markdown;charset=utf-8' })
+  const url = window.URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = `${(file.value?.filename || 'document').replace(/\.[^.]+$/, '')}-草稿.md`
+  link.click()
+  window.URL.revokeObjectURL(url)
+}
+
+/** 冲突后读取最新版本供核对，读取过程不改变草稿或原修订。 */
+const readLatestMarkdown = async () => {
+  if (latestMarkdown.value.loading || markdownEditor.value.saving) return
+  const requestId = markdownRequestSeq
+  latestMarkdown.value = { open: false, loading: true, data: null }
+  try {
+    const data = await documentApi.getDocumentMarkdown(props.kbId, props.fileId)
+    if (requestId !== markdownRequestSeq) return
+    if (typeof data.content !== 'string' || typeof data.revision !== 'string' || typeof data.has_parsed_markdown !== 'boolean') throw new Error('Markdown 响应不完整，请重试读取')
+    latestMarkdown.value = { open: true, loading: false, data }
+  } catch (error) {
+    if (requestId === markdownRequestSeq) {
+      latestMarkdown.value.loading = false
+      markdownEditor.value.error = error.message || '读取最新版本失败，请重试'
+    }
+  }
+}
+
+/** 用户核对后显式采纳最新修订，后续保存仍执行并发检查。 */
+const acceptLatestMarkdown = async () => {
+  const data = latestMarkdown.value.data
+  if (!data || latestMarkdown.value.loading) return
+  Object.assign(markdownEditor.value, { content: data.content, revision: data.revision, hasParsed: data.has_parsed_markdown, conflict: false, error: '' })
+  latestMarkdown.value.open = false
+  if (data.has_parsed_markdown && data.content === markdownEditor.value.draft) {
+    message.success('文件已包含当前草稿')
+    markdownEditor.value.active = false
+    emit('saved')
+    emit('update:open', false)
+    return
+  }
+  await nextTick()
+  markdownPreview.value?.startEditing()
+}
+
+/** 已入库文件在提交前明确说明需要重新入库和构图。 */
+const requestMarkdownSave = () => {
+  if (!canSaveMarkdown.value) return
+  if (Number(file.value.chunk_count) > 0 || ['indexed', 'done', 'error_indexing'].includes(file.value.status)) {
+    markdownSaveConfirmOpen.value = true
+  } else {
+    void submitMarkdownSave()
+  }
+}
+
+/** 保存回执只代表入队，持久作业成功后才通知页面刷新。 */
+const submitMarkdownSave = async () => {
+  if (!canSaveMarkdown.value) return
+  markdownSaveConfirmOpen.value = false
+  markdownEditor.value.saving = true
+  markdownEditor.value.error = ''
+  const requestId = markdownRequestSeq
+  const token = userStore.token
+  const kbId = props.kbId
+  const fileId = props.fileId
+  const isCurrent = () => requestId === markdownRequestSeq && props.open && props.editable && userStore.token === token && props.kbId === kbId && props.fileId === fileId
+  let jobId
+  const registerJob = jobsStore.createJobRegistration(() => {
+    if (!isCurrent()) return
+    const job = jobsStore.jobs.find((item) => item.id === jobId)
+    markdownEditor.value.saving = false
+    if (job?.status === 'success') {
+      message.success('Markdown 已保存，请按需重新入库并构建图谱')
+      markdownEditor.value.active = false
+      markdownExitOpen.value = false
+      emit('saved')
+      emit('update:open', false)
+    } else {
+      markdownEditor.value.conflict = true
+      const detail = (typeof job?.error === 'string' ? job.error : job?.error?.message) || job?.message || '保存未完成'
+      markdownEditor.value.error = `保存结果需确认：${detail}。草稿已保留，请核对最新版本。`
+    }
+  })
+  try {
+    const result = await documentApi.saveDocumentMarkdown(kbId, fileId, markdownEditor.value.revision, markdownEditor.value.draft)
+    if (!isCurrent()) return
+    if (!result?.job_id) throw new Error('保存任务缺少作业回执，请重试')
+    jobId = result.job_id
+    await registerJob(result)
+  } catch (error) {
+    if (!isCurrent()) return
+    markdownEditor.value.saving = false
+    markdownEditor.value.conflict = true
+    markdownEditor.value.error = error.status === 409
+      ? '文档已更新或正在处理，草稿已保留。请核对最新版本后再保存。'
+      : `保存结果需确认：${error.message || '请求未完成'}。草稿已保留，请核对最新版本。`
+  }
+}
+
 const file = ref(null)
+const fileActionsOpen = ref(false)
+const compactActionsOpen = ref(false)
+const fileActionsTrigger = ref(null)
+const compactActionsTrigger = ref(null)
+/** 关闭文件菜单并将键盘焦点还给入口。 */
+const closeFileActions = (event, compact) => {
+  if (!(compact ? compactActionsOpen.value : fileActionsOpen.value)) return
+  event.preventDefault()
+  event.stopPropagation()
+  if (compact) compactActionsOpen.value = false
+  else fileActionsOpen.value = false
+  nextTick(() => (compact ? compactActionsTrigger.value : fileActionsTrigger.value)?.$el?.focus())
+}
+/** 完成菜单操作后仅为键盘操作恢复入口焦点。 */
+const finishFileAction = ({ domEvent }, compact) => {
+  if (compact) compactActionsOpen.value = false
+  else fileActionsOpen.value = false
+  if (domEvent?.type === 'keydown') {
+    nextTick(() => (compact ? compactActionsTrigger.value : fileActionsTrigger.value)?.$el?.focus())
+  }
+}
 const basicLoading = ref(false)
 const detailError = ref('')
 const downloadingOriginal = ref(false)
@@ -293,6 +601,13 @@ const resetSourcePreview = () => {
 const resetLocalState = () => {
   basicRequestSeq += 1
   contentRequestSeq += 1
+  markdownRequestSeq += 1
+  markdownEditor.value.active = false
+  markdownEditor.value.saving = false
+  markdownSaveConfirmOpen.value = false
+  markdownExitOpen.value = false
+  markdownExitAction = null
+  latestMarkdown.value = { open: false, loading: false, data: null }
   file.value = null
   basicLoading.value = false
   detailError.value = ''
@@ -406,42 +721,24 @@ const availableViewModes = computed(() => {
 })
 const hasAvailableView = computed(() => availableViewModes.value.length > 0)
 
-const makeViewModeOption = (label, value, icon) => ({
-  label: h(
-    'span',
-    {
-      class: 'view-option-icon',
-      title: label,
-      'aria-label': label
-    },
-    [h(icon, { size: 15 })]
-  ),
-  value,
-  title: label
-})
-
 const viewModeOptions = computed(() => {
   const optionMap = {
-    source: makeViewModeOption('源文件', 'source', FileSearch),
-    markdown: makeViewModeOption('Markdown 预览', 'markdown', FileText),
-    'markdown-source': makeViewModeOption('Markdown 源码', 'markdown-source', Code2),
-    chunks: makeViewModeOption('Chunks', 'chunks', Rows3)
+    source: { title: '源文件', value: 'source', icon: FileSearch },
+    markdown: { title: 'Markdown 预览', value: 'markdown', icon: FileText },
+    'markdown-source': { title: 'Markdown 源码', value: 'markdown-source', icon: Code2 },
+    chunks: { title: 'Chunks', value: 'chunks', icon: Rows3 }
   }
   return availableViewModes.value.map((mode) => optionMap[mode])
 })
+const currentViewOption = computed(() => viewModeOptions.value.find((option) => option.value === viewMode.value))
 
 const loadBasicInfo = async () => {
   const kbId = String(props.kbId || '')
   const fileId = String(props.fileId || '')
   if (!kbId || !fileId) return
 
+  resetLocalState()
   const requestId = ++basicRequestSeq
-  contentRequestSeq += 1
-  file.value = null
-  detailError.value = ''
-  resetContentState()
-  resetSourcePreview()
-  viewMode.value = 'markdown'
   basicLoading.value = true
 
   try {
@@ -460,6 +757,7 @@ const loadBasicInfo = async () => {
       (props.startLine || props.chunkId || props.embedded) && canPreviewParsed(nextFile)
         ? 'markdown'
         : getDefaultDetailView(nextFile)
+    if (props.editRequested) await startMarkdownEdit()
   } catch (error) {
     if (requestId !== basicRequestSeq) return
     console.error('加载文件基本信息失败:', error)
@@ -512,8 +810,10 @@ const loadParsedContent = async () => {
 }
 
 watch(
-  () => [props.open, props.kbId, props.fileId],
+  () => [props.open, props.kbId, props.fileId, userStore.token, props.editable],
   ([open]) => {
+    fileActionsOpen.value = false
+    compactActionsOpen.value = false
     if (!open) {
       resetLocalState()
       return
@@ -534,9 +834,9 @@ watch(
 )
 
 watch(
-  [visible, file, viewMode],
+  [visible, file, viewMode, () => markdownEditor.value.active],
   async ([open, currentFile, currentViewMode]) => {
-    if (!open || !currentFile) return
+    if (!open || !currentFile || markdownEditor.value.active) return
     if (
       (['markdown', 'markdown-source'].includes(currentViewMode) &&
         canPreviewParsed(currentFile)) ||
@@ -549,9 +849,9 @@ watch(
 )
 
 watch(
-  [visible, file, viewMode],
+  [visible, file, viewMode, () => markdownEditor.value.active],
   async ([open, currentFile, currentViewMode]) => {
-    if (!open || !currentFile || !hasSourcePreview.value || currentViewMode !== 'source') {
+    if (!open || !currentFile || markdownEditor.value.active || !hasSourcePreview.value || currentViewMode !== 'source') {
       if (!open || !hasSourcePreview.value) {
         resetSourcePreview()
       }
@@ -603,7 +903,7 @@ function formatTextLength(length) {
 }
 
 const afterOpenChange = (open) => {
-  if (!open) {
+  if (!open && !props.open) {
     resetLocalState()
     emit('closed')
   }
@@ -737,10 +1037,72 @@ watch([() => props.startLine, () => props.endLine, () => props.chunkId], () => {
   }
 })
 
-onBeforeUnmount(resetLocalState)
+/** 刷新或离开页面前提醒尚未确认保存的草稿。 */
+const protectMarkdownUnload = (event) => {
+  if (!markdownExitRequired.value) return
+  event.preventDefault()
+  event.returnValue = ''
+}
+window.addEventListener('beforeunload', protectMarkdownUnload)
+/** 离页与同一路由切库共用退出保护，明确放弃后才允许导航。 */
+const confirmMarkdownNavigation = () => {
+  if (!markdownExitRequired.value) return true
+  return new Promise(resolve => {
+    markdownExitAction = () => resolve(true)
+    markdownExitOpen.value = true
+    const stop = watch(markdownExitOpen, (open) => {
+      if (!open) { stop(); resolve(false) }
+    }, { flush: 'post' })
+  })
+}
+/** 同库的视图区切换保留编辑器，只有更换知识库才需要放弃确认。 */
+const confirmMarkdownRouteUpdate = (to, from) =>
+  to.params.kbId === from.params.kbId ? true : confirmMarkdownNavigation()
+onBeforeRouteLeave(confirmMarkdownNavigation)
+onBeforeRouteUpdate(confirmMarkdownRouteUpdate)
+onBeforeUnmount(() => {
+  window.removeEventListener('beforeunload', protectMarkdownUnload)
+  resetLocalState()
+})
 </script>
 
 <style scoped>
+.markdown-editor-panel {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  gap: 12px;
+  padding: 16px 24px;
+}
+.markdown-editor-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.markdown-editor-view,
+.markdown-editor-actions { display: flex; align-items: center; gap: 12px; }
+.markdown-editor-view { min-width: 0; }
+.markdown-editor-view :deep(.ant-radio-button-wrapper-checked) {
+  background: var(--gray-100);
+  color: var(--color-text);
+  border-color: var(--gray-200);
+  font-weight: 600;
+}
+.markdown-editor-status { color: var(--color-text-secondary); font-size: 12px; white-space: nowrap; }
+.markdown-editor-hint { margin: 0; color: var(--color-text-secondary); font-size: 13px; }
+.markdown-editor-panel :deep(.agent-file-preview) { flex: 1; min-height: 0; }
+.markdown-editor-panel :deep(.file-content) { min-height: 0; }
+.markdown-draft-preview { flex: 1; min-height: 0; overflow: auto; border: 1px solid var(--gray-150); border-radius: 8px; }
+.latest-markdown-preview { height: 48vh; overflow: auto; border: 1px solid var(--gray-150); border-radius: 8px; }
+.markdown-editor-panel :deep(.ant-alert) { flex-shrink: 0; }
+@media (max-width: 800px) {
+  .markdown-editor-panel { padding: 12px; }
+  .markdown-editor-toolbar { flex-wrap: wrap; gap: 8px; }
+  .markdown-editor-actions { margin-left: auto; }
+}
+
 .location-notice {
   margin: 12px 16px;
   color: var(--color-text-secondary);
@@ -763,7 +1125,7 @@ onBeforeUnmount(resetLocalState)
 }
 .modal-title-wrapper {
   flex-shrink: 0;
-  padding: 12px 16px;
+  padding: 6px 16px;
   border-bottom: 1px solid var(--gray-150);
 }
 
@@ -869,6 +1231,7 @@ onBeforeUnmount(resetLocalState)
   -webkit-line-clamp: 4;
   -webkit-box-orient: vertical;
 }
+
 </style>
 
 <style lang="less">
@@ -960,25 +1323,6 @@ onBeforeUnmount(resetLocalState)
   }
 }
 
-/* 下载按钮样式 */
-.download-btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: auto;
-  min-width: 48px;
-  padding: 0 10px;
-  height: 28px;
-  line-height: 1;
-  border-radius: 6px;
-  gap: 4px;
-
-  svg {
-    flex: 0 0 auto;
-    vertical-align: middle;
-  }
-}
-
 /* 自定义关闭按钮 */
 .custom-close-btn {
   display: flex;
@@ -1002,35 +1346,9 @@ onBeforeUnmount(resetLocalState)
 
 /* 视图切换控件 */
 .view-controls {
-  display: flex;
-  align-items: center;
   flex: 0 0 auto;
-
-  .ant-segmented {
-    padding: 2px;
-  }
-
-  .ant-segmented-item {
-    min-width: 30px;
-  }
-
-  .ant-segmented-item-label {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    height: 24px;
-    min-height: 24px;
-    padding: 0 7px;
-    line-height: 24px;
-  }
-}
-
-.view-option-icon {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 16px;
-  height: 16px;
+  height: 28px;
+  padding: 0 10px;
 }
 
 .view-info {
@@ -1050,6 +1368,10 @@ onBeforeUnmount(resetLocalState)
     color: var(--gray-800);
   }
 
+  .ant-dropdown-menu-item-divider {
+    background: var(--gray-200);
+  }
+
   .ant-dropdown-menu-item:hover,
   .ant-dropdown-menu-item-active {
     background: var(--gray-50);
@@ -1066,6 +1388,48 @@ onBeforeUnmount(resetLocalState)
   .ant-dropdown-menu-item-disabled:hover {
     background: transparent;
     color: var(--gray-400);
+  }
+}
+
+.dark {
+  .file-detail-embedded {
+    background: var(--gray-25);
+    border-color: var(--gray-150);
+  }
+
+  .file-detail .modal-title-wrapper,
+  .file-detail-embedded .modal-title-wrapper {
+    border-bottom-color: var(--gray-150);
+  }
+
+  .file-detail .chunk-card,
+  .file-detail-embedded .chunk-card {
+    background: var(--gray-40);
+    border-color: transparent;
+
+    &:hover {
+      background: var(--gray-50);
+      box-shadow: none;
+    }
+  }
+
+  .file-detail .view-controls,
+  .file-detail-embedded .view-controls {
+    background: var(--gray-50);
+    border-color: transparent;
+
+    &:hover {
+      background: var(--gray-100);
+    }
+  }
+
+  .ant-dropdown.knowledge-file-actions .ant-dropdown-menu {
+    background: var(--gray-30);
+    border-color: var(--gray-200);
+
+    .ant-dropdown-menu-item-divider {
+      background: var(--gray-300);
+    }
   }
 }
 

@@ -33,14 +33,18 @@ EXTRA_BLOCKED_ADDRESSES = frozenset(
 ResolvedAddresses = list[ipaddress.IPv4Address | ipaddress.IPv6Address]
 
 
+class _URLFetchValidationError(ValueError):
+    """标识抓取边界自身定义、允许向调用方公开的校验拒绝。"""
+
+
 async def fetch_url_content(url: str, max_size: int = MAX_DOWNLOAD_SIZE) -> tuple[bytes, str]:
     """抓取 URL 内容，校验白名单、Content-Type 和大小上限，返回 (内容, 最终 URL)。"""
     if not is_url_parsing_enabled():
-        raise ValueError("URL parsing feature is disabled")
+        raise _URLFetchValidationError("URL parsing feature is disabled")
 
     is_valid, error_msg = validate_url(url)
     if not is_valid:
-        raise ValueError(f"Invalid URL: {error_msg}")
+        raise _URLFetchValidationError(f"Invalid URL: {error_msg}")
 
     headers = {
         "User-Agent": (
@@ -62,39 +66,41 @@ async def fetch_url_content(url: str, max_size: int = MAX_DOWNLOAD_SIZE) -> tupl
                 async with client.stream("GET", current_url, headers=headers) as response:
                     if response.status_code in (301, 302, 303, 307, 308):
                         if redirect_count >= max_redirects:
-                            raise ValueError("Too many redirects")
+                            raise _URLFetchValidationError("Too many redirects")
 
                         redirect_count += 1
                         location = response.headers.get("Location")
                         if not location:
-                            raise ValueError("Redirect response missing Location header")
+                            raise _URLFetchValidationError("Redirect response missing Location header")
 
                         current_url = urljoin(current_url, location)
                         is_valid, error_msg = validate_url(current_url)
                         if not is_valid:
-                            raise ValueError(f"Redirected to invalid URL: {error_msg}")
+                            raise _URLFetchValidationError(f"Redirected to invalid URL: {error_msg}")
                         continue
 
                     response.raise_for_status()
 
                     content_type = response.headers.get("Content-Type", "").lower()
                     if not any(allowed in content_type for allowed in ALLOWED_CONTENT_TYPES):
-                        raise ValueError(f"Unsupported Content-Type: {content_type}. Only HTML is supported.")
+                        raise _URLFetchValidationError("Unsupported Content-Type. Only HTML is supported.")
 
                     content = bytearray()
                     async for chunk in response.aiter_bytes():
                         content.extend(chunk)
                         if len(content) > max_size:
-                            raise ValueError(f"Content size exceeds limit of {max_size} bytes")
+                            raise _URLFetchValidationError(f"Content size exceeds limit of {max_size} bytes")
 
                     return bytes(content), current_url
 
+    except _URLFetchValidationError:
+        raise
     except httpx.HTTPError as e:
         logger.error(f"HTTP error fetching {url}: {e}")
-        raise ValueError(f"Failed to fetch URL: {e}")
+        raise ValueError("Failed to fetch URL") from e
     except Exception as e:
         logger.error(f"Error fetching {url}: {e}")
-        raise ValueError(f"Error fetching URL: {str(e)}")
+        raise ValueError("Error fetching URL") from e
 
 
 # ==== 地址解析与私网拦截 ====
@@ -105,7 +111,8 @@ async def resolve_hostname_addresses(hostname: str) -> ResolvedAddresses:
     try:
         infos = await asyncio.to_thread(socket.getaddrinfo, hostname, None)
     except Exception as e:
-        raise ValueError(f"DNS resolution failed for {hostname}: {e}") from e
+        logger.exception("URL DNS 解析失败")
+        raise ValueError(f"DNS resolution failed for {hostname}") from e
 
     addresses: ResolvedAddresses = []
     for info in infos:

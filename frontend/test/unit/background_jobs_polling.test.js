@@ -2,8 +2,8 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { createPinia, setActivePinia } from 'pinia'
 import { createTestServer } from '../helpers/createTestServer.js'
-import { readFileSync } from 'node:fs'
-import { compileScript, parse } from 'vue/compiler-sfc'
+import { createRenderer, createSSRApp, h, reactive, ssrContextKey } from 'vue'
+import { renderToString } from 'vue/server-renderer'
 
 const deferred = () => {
   let resolve
@@ -13,11 +13,51 @@ const deferred = () => {
   return { promise, resolve }
 }
 
+test('后台任务抽屉为文档产物撤销展示中文类型', async () => {
+  globalThis.localStorage = { getItem: () => null, setItem() {}, removeItem() {} }
+  const server = await createTestServer({ server: { middlewareMode: true, hmr: false }, ssr: { noExternal: ['ant-design-vue'] }, plugins: [{
+    name: 'drawer-boundary', enforce: 'pre',
+    resolveId(id) { if (id === 'ant-design-vue') return '\0drawer-ant' },
+    load(id) { if (id === '\0drawer-ant') return 'export const Modal = {}' }
+  }] })
+  try {
+    const { default: component } = await server.ssrLoadModule('/src/modules/background-jobs/ui/BackgroundJobsDrawer.vue')
+    const app = createSSRApp({ setup() {
+      const state = component.setup({}, { expose() {}, emit() {} })
+      assert.equal(state.jobTypeLabel('knowledge_document_reset'), '文档产物撤销')
+      assert.equal(state.jobTypeLabel('knowledge_graph_index'), '图谱构建')
+      return () => h('div')
+    } })
+    app.use(createPinia())
+    await renderToString(app)
+  } finally { await server.close(); delete globalThis.localStorage }
+})
+
+const node = () => ({ children: [], parent: null })
+const renderer = createRenderer({
+  createElement: node, createText: node, createComment: node,
+  insert(child, parent) { child.parent = parent; parent.children.push(child) },
+  remove(child) { const i = child.parent?.children.indexOf(child) ?? -1; if (i >= 0) child.parent.children.splice(i, 1) },
+  setText() {}, setElementText() {}, parentNode: (n) => n.parent, nextSibling: () => null, patchProp() {}
+})
+
 test('任务请求时序与轮询生命周期', async (t) => {
   globalThis.localStorage = { getItem: () => null, setItem() {}, removeItem() {} }
   const server = await createTestServer({
     server: { middlewareMode: true, hmr: false },
-    appType: 'custom'
+    appType: 'custom', ssr: { noExternal: ['ant-design-vue'] }, plugins: [{
+      name: 'graph-job-boundaries', enforce: 'pre',
+      resolveId(id) { if (id === 'ant-design-vue') return '\0jobs-ant' },
+      load(id) {
+        if (id === '\0jobs-ant') return 'export const message = { success() {}, error: (...args) => globalThis.__graphJob.error(...args) }; export const Modal = {}'
+        if (id.endsWith('/src/modules/knowledge/model/knowledgeBase.js')) return 'export const useKnowledgeBaseStore = () => ({ kbId: "test-kb", knowledgeBase: { kb_type: "milvus" } })'
+        if (id.endsWith('/src/modules/background-jobs/index.js')) return 'export const useBackgroundJobsStore = () => globalThis.__graphJob.store'
+        if (id.endsWith('/src/modules/settings/index.js')) return 'export const useConfigStore = () => ({})'
+        if (id.endsWith('/src/apis/graph_api.js')) return 'export const unifiedApi = {}'
+        if (id.endsWith('/src/apis/knowledge_api.js')) return 'export const documentApi = {}; export const graphBuildApi = new Proxy({}, { get: (_, k) => globalThis.__graphJob.api[k] })'
+        if (['GraphCanvas.vue', 'FileSearchModal.vue', 'GraphDetailPanel.vue', 'ResourceEmptyState.vue', 'ModelSelectorComponent.vue'].some((name) => id.endsWith('/' + name))) return '<script>export default {}</script>'
+      }
+    }]
   })
   const { useUserStore } = await server.ssrLoadModule('/src/modules/identity/model/user.js')
   const { useBackgroundJobsStore } = await server.ssrLoadModule(
@@ -60,42 +100,22 @@ test('任务请求时序与轮询生命周期', async (t) => {
       store.reset()
     })
     await t.test('图谱构建和重试的旧提交回执不能进入新会话', async () => {
-      const source = readFileSync(
-        new URL('../../src/modules/knowledge/ui/KnowledgeGraphSection.vue', import.meta.url),
-        'utf8'
-      )
-      const { descriptor } = parse(source)
-      const { scriptSetupAst } = compileScript(descriptor, { id: 'graph-job-test' })
+      const { default: component } = await server.ssrLoadModule('/src/modules/knowledge/ui/KnowledgeGraphSection.vue')
       for (const [name, apiMethod] of [
         ['startGraphBuild', 'startIndex'],
         ['retryGraphVectors', 'reconcile']
       ]) {
-        const node = scriptSetupAst.find(
-          (node) =>
-            node.type === 'VariableDeclaration' &&
-            node.declarations.some((item) => item.id.name === name)
-        )
-        assert.ok(node, name)
         const { store, user } = makeStore()
         const response = deferred()
-        const action = new Function(
-          'jobsStore',
-          'graphBuildApi',
-          'kbId',
-          'message',
-          'GRAPH_BUILD_TASK_TYPE',
-          'loadGraphBuildStatus',
-          'getErrorDetail',
-          descriptor.scriptSetup.content.slice(node.start, node.end) + `; return ${name}`
-        )(
-          store,
-          { [apiMethod]: () => response.promise },
-          { value: 'test-kb' },
-          { success() {}, error: assert.fail },
-          'graph-build',
-          async () => {},
-          (error) => error.message
-        )
+        globalThis.__graphJob = { store, api: { [apiMethod]: () => response.promise, getStatus: async () => ({ locked: false }) }, error: assert.fail }
+        let state
+        const app = renderer.createApp({ setup() {
+          state = component.setup(reactive({ active: false, readonly: false, fileId: null }), { expose() {}, emit() {} })
+          return () => h('div')
+        } })
+        app.provide(ssrContextKey, { modules: new Set() })
+        app.mount(node())
+        const action = state[name]
         const pending = action()
         user.logout()
         user.token = 'next-session'
@@ -105,6 +125,8 @@ test('任务请求时序与轮询生命周期', async (t) => {
         assert.deepEqual(store.jobs, [])
         await action()
         assert.equal(store.jobs[0].id, 'old-graph-job')
+        app.unmount()
+        delete globalThis.__graphJob
         store.reset()
       }
     })

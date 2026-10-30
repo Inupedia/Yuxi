@@ -265,16 +265,22 @@ async def test_delete_file_graph_initializes_vector_store_outside_event_loop(mon
         return store
 
     @asynccontextmanager
-    async def references(_file_id, *, generation):
+    async def references(_file_id, *, generation, restored_entities, additional_entity_ids, additional_triple_ids):
         """提供本次删除的文件图谱引用。"""
         assert generation == 2
         yield ["entity-1"], ["triple-1"], ["chunk-1"]
 
     monkeypatch.setattr(module, "MilvusGraphVectorStore", create_store)
-    service = KnowledgeGraphService(graph_repo=SimpleNamespace(delete_file_references=references))
+    service = KnowledgeGraphService(
+        graph_repo=SimpleNamespace(
+            delete_file_references=references, file_entity_sources=AsyncMock(return_value=[]), delete_orphan_records=AsyncMock()
+        ),
+        chunk_repo=SimpleNamespace(list_ids_by_file_generation=AsyncMock(return_value=["chunk-1"])),
+    )
+    service._file_graph_record_ids = lambda *args: ([], [])
     deleted = []
     service._delete_file_graph_from_neo4j = lambda *args: deleted.append(args)
     await service.delete_file_graph("kb-1", "file-1", generation=2)
     assert initialized_threads and initialized_threads[0] != loop_thread
     store.delete_graph_records.assert_awaited_once_with("kb-1", entity_ids=["entity-1"], triple_ids=["triple-1"])
-    assert deleted == [("kb-1", "file-1", ["chunk-1"])]
+    assert deleted == [("kb-1", "file-1", ["chunk-1"], [])]

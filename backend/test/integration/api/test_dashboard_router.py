@@ -309,8 +309,8 @@ async def test_dashboard_http_reads_run_token_totals(test_client, admin_headers)
             agent_session = (await db.execute(select(Session).where(Session.thread_id == thread_id))).scalar_one()
             for index, usage in enumerate(
                 [
-                    {"total": {"total_tokens": 120}, "complete": True, "usage_reported_call_count": 1},
-                    {"total": {"total_tokens": 80}, "complete": True, "usage_reported_call_count": 1},
+                    {"total": {"input_tokens": 100, "output_tokens": 20, "total_tokens": 120}, "complete": True, "usage_reported_call_count": 1},
+                    {"total": {"input_tokens": 50, "output_tokens": 30, "total_tokens": 80}, "complete": True, "usage_reported_call_count": 1},
                 ]
             ):
                 run_id = f"{marker}-{index}"

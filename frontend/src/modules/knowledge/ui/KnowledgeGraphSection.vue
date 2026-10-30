@@ -47,6 +47,48 @@
                   <Settings :size="16" />
                 </a-button>
               </div>
+              <div class="file-filter">
+                <a-button class="file-filter-button" @click="showFileSearch = true" :title="selectedFileLabel" :aria-label="fileId ? `选择文件，当前：${selectedFileLabel}` : '按文件查看'">
+                  <FileText :size="16" />
+                  <span v-if="fileId">{{ selectedFileLabel }}</span>
+                </a-button>
+                <a-button
+                  v-if="fileId"
+                  class="file-filter-clear"
+                  title="清除文件筛选"
+                  aria-label="清除文件筛选"
+                  @click="clearFileFilter"
+                >
+                  <X :size="16" />
+                </a-button>
+              </div>
+              <a-button
+                v-if="fileId && isMilvus && !readonly && filePendingChunks > 0"
+                class="lucide-icon-btn file-build-action"
+                :disabled="!graphBuildStatus || graphBuildStatusError || isBuildActive || awaitingBuildStatus"
+                :loading="graphBuildSubmitting"
+                @click="graphBuildStatus?.locked ? startGraphBuild(fileId) : openGraphConfig()"
+              >
+                <Database :size="16" />
+                {{ isBuildActive ? '知识库图谱构建中' : awaitingBuildStatus ? '正在确认构建状态' : graphBuildStatus && !graphBuildStatus.locked ? '配置抽取器' : '构建此文件图谱' }}
+              </a-button>
+              <a-button
+                v-if="isMilvus && !readonly && graphBuildStatusError"
+                class="lucide-icon-btn build-status-retry"
+                :loading="graphBuildLoading"
+                @click="loadGraphBuildStatus"
+              >
+                <RefreshCw :size="16" />
+                图谱构建状态加载失败，重试
+              </a-button>
+              <a-button
+                v-if="fileId && !readonly && fileStatusError"
+                class="lucide-icon-btn file-status-retry"
+                @click="loadFileBuildStatus"
+              >
+                <RefreshCw :size="16" />
+                文件构建状态加载失败，重试
+              </a-button>
               <div v-if="isMilvus && !readonly" class="actions-right">
                 <a-button
                   v-if="isMilvus && !readonly"
@@ -71,13 +113,28 @@
           </template>
         </GraphCanvas>
         <ResourceEmptyState
-          v-if="showGraphConfigEmpty"
+          v-if="graphError && !graph.fetching"
+          class="graph-empty-state"
+          title="加载图谱失败"
+          description="请检查网络或稍后重试。"
+          :icon="Network"
+          full-height
+        >
+          <template #actions>
+            <a-button class="lucide-icon-btn" @click="loadGraph">
+              <RefreshCw :size="16" />
+              重试
+            </a-button>
+          </template>
+        </ResourceEmptyState>
+        <ResourceEmptyState
+          v-else-if="showGraphConfigEmpty"
           class="graph-empty-state"
           title="暂无知识图谱"
           :description="
             readonly
               ? '图谱尚未构建，请等待知识库管理员配置抽取器并索引后查看。'
-              : '请先配置抽取器，再点击“开始索引”处理待索引内容，生成实体与关系。'
+              : '请先配置抽取器，再构建全库图谱以生成实体与关系。'
           "
           :icon="Network"
           full-height
@@ -103,13 +160,14 @@
               清空搜索
             </a-button>
             <a-button
-              v-else-if="!readonly && hasPendingGraphChunks && !isBuildActive"
+              v-else-if="!fileId && !readonly && hasPendingGraphChunks && !isBuildActive"
               type="primary"
               class="lucide-icon-btn"
-              @click="startGraphBuild"
+              :loading="graphBuildSubmitting"
+              @click="startGraphBuild()"
             >
               <Database :size="16" />
-              开始索引
+              构建全库图谱
             </a-button>
             <a-button v-else class="lucide-icon-btn" @click="loadGraph">
               <RefreshCw :size="16" :class="{ spin: graph.fetching }" />
@@ -172,9 +230,9 @@
         <transition name="slide-fade">
           <div v-if="isMilvus && !readonly && showBuildPanel" class="floating-panel build-panel">
             <div class="panel-header">
-              <span class="panel-title">索引管理</span>
+              <span class="panel-title">全库索引管理</span>
               <a-button
-                v-if="graphBuildStatus?.locked && !isBuildActive"
+                v-if="graphBuildStatus?.locked && !graphBuildStatusError && !isBuildActive"
                 size="small"
                 type="text"
                 title="修改配置"
@@ -185,7 +243,11 @@
                 <Settings :size="14" />
               </a-button>
             </div>
-            <div class="panel-body">
+            <div v-if="graphBuildStatusError" class="panel-body">
+              <p>图谱构建状态加载失败。</p>
+              <a-button :loading="graphBuildLoading" @click="loadGraphBuildStatus">重试</a-button>
+            </div>
+            <div v-else-if="graphBuildStatus" class="panel-body">
               <a-progress
                 v-if="isBuildActive"
                 :percent="graphBuildStatus?.build_job_progress ?? 0"
@@ -258,23 +320,26 @@
                   :disabled="!graphBuildStatus?.pending_chunks"
                   @click="vectorFailedCount ? retryGraphVectors() : startGraphBuild()"
                 >
-                  {{ vectorFailedCount ? '重试失败向量' : '重试索引' }}
+                  {{ vectorFailedCount ? '重试全库失败向量' : '重试全库索引' }}
                 </a-button>
                 <a-button
                   v-else
                   type="primary"
                   block
                   :disabled="!graphBuildStatus?.pending_chunks"
-                  @click="startGraphBuild"
+                  @click="startGraphBuild()"
                 >
-                  开始索引
+                  构建全库图谱
                 </a-button>
               </div>
             </div>
+            <div v-else class="panel-body">正在加载图谱构建状态…</div>
           </div>
         </transition>
       </div>
     </div>
+
+    <FileSearchModal v-model:open="showFileSearch" :kb-id="kbId" @select="selectFile" />
 
     <a-modal
       v-model:open="showGraphConfig"
@@ -385,14 +450,17 @@ import {
   Search,
   Loader2,
   Database,
-  Network
+  Network,
+  FileText,
+  X
 } from '@lucide/vue'
 import GraphCanvas from '@/modules/knowledge/ui/GraphCanvas.vue'
+import FileSearchModal from '@/modules/knowledge/ui/FileSearchModal.vue'
 import GraphDetailPanel from '@/modules/knowledge/ui/GraphDetailPanel.vue'
 import ResourceEmptyState from '@/shared/ui/ResourceEmptyState.vue'
 import { getKbTypeLabel } from '@/modules/knowledge/model/kb_utils'
 import { unifiedApi } from '@/apis/graph_api'
-import { graphBuildApi } from '@/apis/knowledge_api'
+import { documentApi, graphBuildApi } from '@/apis/knowledge_api'
 import { Modal, message } from 'ant-design-vue'
 import ModelSelectorComponent from '@/modules/agents/ui/ModelSelectorComponent.vue'
 import { useGraph } from '@/modules/knowledge/model/useGraph'
@@ -408,8 +476,14 @@ const props = defineProps({
   readonly: {
     type: Boolean,
     default: false
+  },
+  fileId: {
+    type: String,
+    default: null
   }
 })
+
+const emit = defineEmits(['file-change'])
 
 const store = useKnowledgeBaseStore()
 const jobsStore = useBackgroundJobsStore()
@@ -429,14 +503,30 @@ const subgraphParams = reactive({
   excludeChunk: true
 })
 const searchInput = ref('')
+const showFileSearch = ref(false)
+const selectedFile = ref(null)
+const selectedFileLabel = computed(() =>
+  props.fileId
+    ? selectedFile.value?.filename || selectedFile.value?.original_filename || '已选择文件'
+    : '按文件查看'
+)
+const graphError = ref(false)
 const graphBuildStatus = ref(null)
 const graphBuildLoading = ref(false)
+const graphBuildStatusError = ref(false)
+const graphBuildSubmitting = ref(false)
+const awaitingBuildStatus = ref(false)
+const filePendingChunks = ref(null)
+const fileStatusError = ref(false)
 const showGraphConfig = ref(false)
 const showFailedChunkSamples = ref(false)
 const failedChunkSamplesLoading = ref(false)
 const failedChunkSamples = ref([])
 const activeFailedChunkKey = ref('')
 let buildStatusPollTimer = null
+let buildStatusPollGeneration = 0
+let graphStatusInFlight = null
+let graphSectionDisposed = false
 
 const isBuildActive = computed(() => {
   const s = graphBuildStatus.value?.build_job_status
@@ -477,10 +567,10 @@ const graphIndexDotStatus = computed(() => {
 })
 
 const graphIndexButtonTitle = computed(() => {
-  if (hasPendingGraphChunks.value) return `索引管理，${pendingGraphChunks.value} 待索引`
-  if (isGraphIndexComplete.value) return '索引管理，已全部索引'
-  if (isBuildActive.value) return '索引管理，索引中'
-  return '索引管理'
+  if (hasPendingGraphChunks.value) return `全库索引管理，${pendingGraphChunks.value} 待索引`
+  if (isGraphIndexComplete.value) return '全库索引管理，已全部索引'
+  if (isBuildActive.value) return '全库索引管理，索引中'
+  return '全库索引管理'
 })
 
 const toggleBuildPanel = () => {
@@ -514,29 +604,44 @@ const graphConfigTitle = computed(() =>
 )
 
 const stopBuildStatusPoll = () => {
+  buildStatusPollGeneration++
   if (buildStatusPollTimer) {
-    clearInterval(buildStatusPollTimer)
+    clearTimeout(buildStatusPollTimer)
     buildStatusPollTimer = null
   }
 }
 
 const startBuildStatusPoll = () => {
   stopBuildStatusPoll()
-  buildStatusPollTimer = setInterval(() => {
-    loadGraphBuildStatus()
-  }, 5000)
+  const generation = buildStatusPollGeneration
+  const schedule = () => {
+    buildStatusPollTimer = setTimeout(async () => {
+      buildStatusPollTimer = null
+      if (graphStatusInFlight) {
+        await graphStatusInFlight.catch(() => {})
+      } else {
+        await loadGraphBuildStatus()
+      }
+      if (generation === buildStatusPollGeneration) schedule()
+    }, 5000)
+  }
+  schedule()
 }
 
 watch(
-  isBuildActive,
-  (active) => {
-    if (active) {
+  () => props.active && (isBuildActive.value || awaitingBuildStatus.value),
+  (polling, wasPolling) => {
+    if (polling) {
       startBuildStatusPoll()
     } else {
       stopBuildStatusPoll()
+      if (wasPolling && props.active && !graphSectionDisposed) {
+        loadGraph()
+        loadFileBuildStatus()
+      }
     }
   },
-  { immediate: true }
+  { immediate: true, flush: 'sync' }
 )
 const DEFAULT_EXTRACTION_TIMEOUT_SECONDS = 60
 const graphConfigForm = reactive({
@@ -554,21 +659,26 @@ const graphLoaded = ref(false)
 const isGraphSupported = computed(() => GRAPH_SUPPORTED_KB_TYPES.has(kbType.value?.toLowerCase()))
 const hasGraphNodes = computed(() => graph.graphData.nodes.length > 0)
 const showGraphConfigEmpty = computed(
-  () => isMilvus.value && !graphBuildStatus.value?.locked && !graphBuildLoading.value
+  () => !props.fileId && !props.readonly && isMilvus.value && Boolean(graphBuildStatus.value) && !graphBuildStatus.value.locked && !graphBuildLoading.value && !graphBuildStatusError.value && !graphError.value
 )
 const showGraphDataEmpty = computed(
   () =>
     isMilvus.value &&
-    Boolean(graphBuildStatus.value?.locked) &&
+    (props.readonly || Boolean(graphBuildStatus.value?.locked) || Boolean(props.fileId)) &&
+    !graphError.value &&
     graphLoaded.value &&
     !graph.fetching &&
     !hasGraphNodes.value
 )
 const graphDataEmptyTitle = computed(() =>
-  searchInput.value.trim() ? '未找到匹配实体' : '暂无知识图谱'
+  searchInput.value.trim() ? '未找到匹配实体' : props.fileId ? '该文件暂无知识图谱' : '暂无知识图谱'
 )
 const graphDataEmptyDescription = computed(() => {
   if (searchInput.value.trim()) return '换个关键词或调整图谱设置后再搜索。'
+  if (props.fileId) {
+    if (!props.readonly && graphBuildStatus.value && !graphBuildStatus.value.locked) return '请先配置抽取器，再构建此文件的图谱。'
+    return '该文件没有可展示的实体与关系。'
+  }
   if (isBuildActive.value) return '图谱索引正在运行，完成后会展示实体与关系。'
   if (hasPendingGraphChunks.value) return '当前还有待索引 Chunk，完成索引后会展示实体与关系。'
   return '当前知识库还没有可展示的实体与关系。'
@@ -577,25 +687,57 @@ const graphDataEmptyDescription = computed(() => {
 let pendingLoadTimer = null
 let graphStatusRequestSeq = 0
 let graphLoadRequestSeq = 0
+let fileInfoRequestSeq = 0
+let fileStatusRequestSeq = 0
+
+/** 读取当前文件待构建分块，丢弃切换文件后的旧结果。 */
+const loadFileBuildStatus = async () => {
+  const requestSeq = ++fileStatusRequestSeq
+  const fileId = props.fileId
+  const currentKnowledgeBaseId = kbId.value
+  filePendingChunks.value = null
+  fileStatusError.value = false
+  if (!fileId || !currentKnowledgeBaseId || props.readonly || !isMilvus.value) return
+  try {
+    const status = await graphBuildApi.getFileStatus(currentKnowledgeBaseId, fileId)
+    if (requestSeq === fileStatusRequestSeq && currentKnowledgeBaseId === kbId.value && fileId === props.fileId && !graphSectionDisposed) {
+      filePendingChunks.value = status.pending_chunks
+    }
+  } catch (error) {
+    if (requestSeq === fileStatusRequestSeq && currentKnowledgeBaseId === kbId.value && fileId === props.fileId && !graphSectionDisposed) {
+      console.error('Failed to load file graph build status:', error)
+      fileStatusError.value = true
+    }
+  }
+}
 
 const getErrorDetail = (e, fallback) => {
   return e?.response?.data?.detail || e?.response?.data?.message || e?.message || fallback
 }
 
 const loadGraphBuildStatus = async () => {
-  if (!kbId.value || !isMilvus.value) return
+  if (!kbId.value || !isMilvus.value || props.readonly) return
   const requestSeq = ++graphStatusRequestSeq
   const currentKnowledgeBaseId = kbId.value
   graphBuildLoading.value = true
+  let request
   try {
-    const status = await graphBuildApi.getStatus(currentKnowledgeBaseId)
+    request = graphBuildApi.getStatus(currentKnowledgeBaseId)
+    graphStatusInFlight = request
+    const status = await request
     if (requestSeq === graphStatusRequestSeq && currentKnowledgeBaseId === kbId.value) {
       graphBuildStatus.value = status
+      graphBuildStatusError.value = false
+      awaitingBuildStatus.value = false
     }
   } catch (e) {
-    console.error('Failed to load graph build status:', e)
-    message.error('加载图谱构建状态失败')
+    if (requestSeq === graphStatusRequestSeq && currentKnowledgeBaseId === kbId.value && !graphSectionDisposed) {
+      console.error('Failed to load graph build status:', e)
+      graphBuildStatusError.value = true
+      message.error('加载图谱构建状态失败')
+    }
   } finally {
+    if (graphStatusInFlight === request) graphStatusInFlight = null
     if (requestSeq === graphStatusRequestSeq) {
       graphBuildLoading.value = false
     }
@@ -661,18 +803,26 @@ const configureGraphBuild = async () => {
   }
 }
 
-const startGraphBuild = async () => {
+const startGraphBuild = async (fileId = null) => {
+  if (graphBuildSubmitting.value) return
+  graphBuildSubmitting.value = true
   const registerJob = jobsStore.createJobRegistration()
+  const currentKnowledgeBaseId = kbId.value
   try {
-    const data = await graphBuildApi.startIndex(kbId.value)
+    const data = await graphBuildApi.startIndex(currentKnowledgeBaseId, fileId)
     message.success(data.message || '图谱构建任务已提交')
     if (data.job_id) {
       registerJob({ job_id: data.job_id })
     }
-    await loadGraphBuildStatus()
+    if (!graphSectionDisposed && props.active && currentKnowledgeBaseId === kbId.value) {
+      awaitingBuildStatus.value = true
+      await loadGraphBuildStatus()
+    }
   } catch (e) {
     console.error('Failed to start graph build:', e)
     message.error(getErrorDetail(e, '提交图谱构建任务失败'))
+  } finally {
+    graphBuildSubmitting.value = false
   }
 }
 
@@ -741,6 +891,8 @@ const loadGraph = async () => {
 
   const requestSeq = ++graphLoadRequestSeq
   const currentKnowledgeBaseId = kbId.value
+  const currentFileId = props.fileId
+  graphError.value = false
   graph.fetching = true
   if (!hasGraphNodes.value) {
     graphLoaded.value = false
@@ -748,6 +900,7 @@ const loadGraph = async () => {
   try {
     const res = await unifiedApi.getSubgraph({
       kb_id: currentKnowledgeBaseId,
+      file_id: currentFileId,
       node_label: searchInput.value || '*',
       max_nodes: subgraphParams.maxNodes,
       max_depth: subgraphParams.maxDepth,
@@ -757,21 +910,31 @@ const loadGraph = async () => {
     if (
       requestSeq === graphLoadRequestSeq &&
       currentKnowledgeBaseId === kbId.value &&
-      res.success &&
-      res.data
+      currentFileId === props.fileId
     ) {
+      if (!res.success || !res.data) throw new Error('加载图谱失败')
       graph.updateGraphData(res.data.nodes, res.data.edges)
     }
   } catch (e) {
-    console.error('Failed to load graph:', e)
-    message.error('加载图谱失败')
+    if (requestSeq === graphLoadRequestSeq && currentKnowledgeBaseId === kbId.value && currentFileId === props.fileId) {
+      console.error('Failed to load graph:', e)
+      graph.clearGraph()
+      graphError.value = true
+    }
   } finally {
-    if (requestSeq === graphLoadRequestSeq) {
+    if (requestSeq === graphLoadRequestSeq && currentKnowledgeBaseId === kbId.value && currentFileId === props.fileId) {
       graph.fetching = false
       graphLoaded.value = true
     }
   }
 }
+
+const selectFile = (file) => {
+  selectedFile.value = file
+  emit('file-change', file.file_id)
+}
+
+const clearFileFilter = () => emit('file-change', null)
 
 const applySettings = () => {
   showSettings.value = false
@@ -805,24 +968,62 @@ const scheduleGraphLoad = (delay = 200) => {
 }
 
 watch(
+  [() => props.fileId, kbId],
+  async ([fileId, currentKnowledgeBaseId], previous) => {
+    graphLoadRequestSeq++
+    graph.fetching = false
+    graphLoaded.value = false
+    graphError.value = false
+    graph.clearGraph()
+    const requestSeq = ++fileInfoRequestSeq
+    scheduleGraphLoad(0)
+    loadFileBuildStatus()
+    if (previous && previous[1] !== currentKnowledgeBaseId) selectedFile.value = null
+    if (!fileId) {
+      selectedFile.value = null
+    } else if (selectedFile.value?.file_id !== fileId) {
+      selectedFile.value = null
+      try {
+        const response = await documentApi.getDocumentBasicInfo(currentKnowledgeBaseId, fileId)
+        if (requestSeq === fileInfoRequestSeq) selectedFile.value = response?.meta || response
+      } catch {
+        // 文件名不可用时仍保留文件范围，图谱请求负责报告错误。
+      }
+    }
+  },
+  { immediate: true }
+)
+
+watch(
   () => props.active,
   (active) => {
     if (active) {
       if (isMilvus.value) {
         loadGraphBuildStatus()
+        loadFileBuildStatus()
       }
       scheduleGraphLoad()
+    } else {
+      awaitingBuildStatus.value = false
+      graphStatusRequestSeq++
+      fileStatusRequestSeq++
+      graphStatusInFlight = null
+      graphBuildLoading.value = false
     }
   },
   { immediate: true }
 )
 
 watch(kbId, () => {
+  awaitingBuildStatus.value = false
   graphStatusRequestSeq += 1
+  graphStatusInFlight = null
+  graphBuildLoading.value = false
   graphLoadRequestSeq += 1
   graphLoaded.value = false
   graph.clearGraph()
   graphBuildStatus.value = null
+  graphBuildStatusError.value = false
   showFailedChunkSamples.value = false
   failedChunkSamples.value = []
   if (isMilvus.value) {
@@ -835,22 +1036,36 @@ watch(kbId, () => {
 
 watch(isGraphSupported, (supported) => {
   if (!supported) {
+    awaitingBuildStatus.value = false
+    graphStatusRequestSeq++
+    graphStatusInFlight = null
+    graphBuildLoading.value = false
+    graphLoadRequestSeq++
+    graph.fetching = false
     graphLoaded.value = false
     graph.clearGraph()
     graphBuildStatus.value = null
+    graphBuildStatusError.value = false
     return
   }
   if (isMilvus.value) {
     loadGraphBuildStatus()
+    loadFileBuildStatus()
   }
   scheduleGraphLoad(200)
 })
 
 onUnmounted(() => {
+  graphSectionDisposed = true
+  graphStatusRequestSeq++
+  awaitingBuildStatus.value = false
   if (pendingLoadTimer) {
     clearTimeout(pendingLoadTimer)
     pendingLoadTimer = null
   }
+  graphLoadRequestSeq++
+  fileInfoRequestSeq++
+  fileStatusRequestSeq++
   stopBuildStatusPoll()
 })
 </script>
@@ -899,10 +1114,19 @@ onUnmounted(() => {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
   pointer-events: none; /* Let clicks pass through empty areas */
 
+  .file-build-action {
+    pointer-events: auto;
+  }
+
   .actions-left,
-  .actions-right {
+  .actions-right,
+  .file-filter,
+  .file-status-retry,
+  .build-status-retry {
     pointer-events: auto; /* Re-enable clicks for buttons/inputs */
     display: flex;
     align-items: center;
@@ -966,6 +1190,37 @@ onUnmounted(() => {
       background: var(--dark-5);
       color: var(--main-color);
     }
+  }
+
+  .file-filter {
+    margin-right: auto;
+    min-width: 0;
+  }
+
+  .file-filter-button {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    max-width: 200px;
+    border: 0;
+    box-shadow: none;
+    background: transparent;
+    color: var(--gray-700);
+
+    span {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+  }
+
+  .file-filter-clear {
+    width: 30px;
+    padding: 0;
+    border: 0;
+    box-shadow: none;
+    background: transparent;
+    color: var(--gray-600);
   }
 
   .index-action-btn {

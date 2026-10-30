@@ -1,17 +1,14 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
-import { computed, ref, nextTick } from 'vue'
+import { nextTick } from 'vue'
+import { mountSessionWorkspace } from '../helpers/sessionWorkspace.js'
 
-const source = readFileSync(
-  new URL('../../src/modules/session/ui/SessionWorkspace.vue', import.meta.url),
-  'utf8'
-)
-
-/** 使用真实视图逻辑和可观察的消息位置验证追加行为。 */
-function setup(fetch) {
+/** 用真实页面状态与可观察消息位置验证历史追加。 */
+async function setup(t, fetch) {
   let anchorPosition = 120
   const container = {
+    addEventListener() {}, removeEventListener() {},
     scrollTop: 800,
     scrollHeight: 4000,
     getBoundingClientRect: () => ({ top: 0 }),
@@ -25,30 +22,17 @@ function setup(fetch) {
       bottom: anchorPosition - container.scrollTop + 1000
     })
   }
-  const dependencies = {
-    ref,
-    computed,
-    nextTick,
-    currentChatId: ref('thread'),
-    chatMainRef: ref(container),
-    historyPages: ref({ thread: { hasMore: true, loading: false } }),
-    workspaceActive: ref(true),
-    pageVisible: ref(true),
-    isLoadingMessages: ref(false),
-    fetchThreadMessages: fetch,
-    scrollController: { disableAutoScroll() {}, cancelPendingScrolls() {}, handleScroll() {} }
+  const { state } = await mountSessionWorkspace(t, fetch)
+  state.currentThreadId.value = 'thread'
+  state.chatMainRef.value = container
+  state.historyPages.value.thread = { hasMore: true, loading: false }
+  for (const method of ['disableAutoScroll', 'cancelPendingScrolls', 'handleScroll']) {
+    t.mock.method(state.scrollController, method, () => {})
   }
-  const logic = source.slice(
-    source.indexOf('let retainedScrollTop ='),
-    source.indexOf('const messageInputDockRef =')
-  )
-  const handlers = new Function(
-    ...Object.keys(dependencies),
-    `${logic}; return { loadEarlierMessages, handleWorkspaceScroll, earlierMessagesLoading, earlierMessagesError, earlierMessagesLabel }`
-  )(...Object.values(dependencies))
   return {
-    ...handlers,
-    ...dependencies,
+    ...state,
+    workspaceActive: state.workspaceActivated,
+    currentChatId: state.currentThreadId,
     container,
     prepend(height) {
       anchorPosition += height
@@ -57,9 +41,9 @@ function setup(fetch) {
   }
 }
 
-test('向上接近顶部自动加载，向下或远离顶部不加载', async () => {
+test('向上接近顶部自动加载，向下或远离顶部不加载', async (t) => {
   let reads = 0
-  const h = setup(async () => {
+  const h = await setup(t, async () => {
     reads++
   })
   h.handleWorkspaceScroll()
@@ -72,13 +56,13 @@ test('向上接近顶部自动加载，向下或远离顶部不加载', async ()
   h.handleWorkspaceScroll()
   await nextTick()
   assert.equal(reads, 1)
-  assert.match(source, /@click="loadEarlierMessages"/)
+  assert.match(readFileSync(new URL('../../src/modules/session/ui/SessionWorkspace.vue', import.meta.url), 'utf8'), /@click="loadEarlierMessages"/)
 })
 
-test('追加保持可见消息位置，保留请求期间的用户滚动且锁定重复加载', async () => {
+test('追加保持可见消息位置，保留请求期间的用户滚动且锁定重复加载', async (t) => {
   let finish,
     reads = 0
-  const h = setup(() => {
+  const h = await setup(t, () => {
     reads++
     return new Promise((resolve) => {
       finish = resolve
@@ -103,9 +87,9 @@ for (const blocked of [
   'hasMore',
   'loading'
 ]) {
-  test(`${blocked} 不满足读取条件时不请求历史`, async () => {
+  test(`${blocked} 不满足读取条件时不请求历史`, async (t) => {
     let reads = 0
-    const h = setup(async () => {
+    const h = await setup(t, async () => {
       reads++
     })
     if (blocked === 'hasMore') h.historyPages.value.thread.hasMore = false
@@ -119,9 +103,9 @@ for (const blocked of [
   })
 }
 
-test('失败停止自动重试，手动重试恢复且保持滚动位置', async () => {
+test('失败停止自动重试，手动重试恢复且保持滚动位置', async (t) => {
   let reads = 0
-  const h = setup(async () => {
+  const h = await setup(t, async () => {
     if (++reads === 1) throw new Error('offline')
     h.prepend(500)
   })
@@ -138,9 +122,9 @@ test('失败停止自动重试，手动重试恢复且保持滚动位置', async
 })
 
 for (const changed of ['thread', 'container', 'visibility']) {
-  test(`请求期间改变 ${changed} 不移动新视图`, async () => {
+  test(`请求期间改变 ${changed} 不移动新视图`, async (t) => {
     let finish
-    const h = setup(
+    const h = await setup(t,
       () =>
         new Promise((resolve) => {
           finish = resolve
@@ -149,7 +133,7 @@ for (const changed of ['thread', 'container', 'visibility']) {
     const loading = h.loadEarlierMessages()
     h.prepend(1600)
     if (changed === 'thread') h.currentChatId.value = 'other'
-    if (changed === 'container') h.chatMainRef.value = {}
+    if (changed === 'container') h.chatMainRef.value = { addEventListener() {}, removeEventListener() {} }
     if (changed === 'visibility') h.workspaceActive.value = false
     finish()
     await loading
@@ -157,9 +141,9 @@ for (const changed of ['thread', 'container', 'visibility']) {
   })
 }
 
-test('同一 Run 内追加旧消息或 continuation 重挂载时，以同 key 的可见消息锚定', async () => {
+test('同一 Run 内追加旧消息或 continuation 重挂载时，以同 key 的可见消息锚定', async (t) => {
   let finish
-  const h = setup(() => new Promise(resolve => { finish = resolve }))
+  const h = await setup(t, () => new Promise(resolve => { finish = resolve }))
   const loading = h.loadEarlierMessages()
   h.prepend(1000)
   const oldAnchor = h.container.querySelectorAll()[0]

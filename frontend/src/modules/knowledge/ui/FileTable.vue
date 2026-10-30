@@ -1,18 +1,50 @@
 <template>
   <div class="file-table-container">
+    <a-modal
+      :open="Boolean(fileGraphClearTarget)"
+      title="清除文件图谱"
+      ok-text="清除图谱"
+      cancel-text="取消"
+      :ok-button-props="{ danger: true }"
+      :confirm-loading="Boolean(clearingGraphFileId)"
+      :cancel-button-props="{ disabled: Boolean(clearingGraphFileId) }"
+      :closable="!clearingGraphFileId"
+      :mask-closable="false"
+      @ok="submitClearFileGraph"
+      @cancel="fileGraphClearTarget = null"
+    >
+      确定清除“{{ fileGraphClearTarget?.row.filename }}”的图谱吗？将移除此文件的图谱抽取结果、图谱关联和图谱检索索引，保留原件、Markdown、分块和普通检索。之后可重新构建图谱。
+    </a-modal>
     <!-- 解析/批量解析/重试解析参数配置模态框 -->
     <a-modal
       v-model:open="parseConfigModalVisible"
       :title="parseConfigModalTitle"
       :confirm-loading="parseConfigModalLoading"
+      :closable="!documentReparseSubmitting"
+      :keyboard="!documentReparseSubmitting"
+      :mask-closable="!documentReparseSubmitting"
       width="560px"
       @cancel="handleParseConfigCancel"
     >
       <template #footer>
-        <a-button key="back" @click="handleParseConfigCancel">取消</a-button>
-        <a-button key="submit" type="primary" @click="handleParseConfigConfirm">开始解析</a-button>
+        <a-button key="back" :disabled="parseConfigModalLoading" @click="handleParseConfigCancel">取消</a-button>
+        <a-button
+          key="submit"
+          type="primary"
+          :loading="parseConfigModalLoading"
+          @click="handleParseConfigConfirm"
+        >
+          {{ documentReparseTarget ? '重新解析' : '开始解析' }}
+        </a-button>
       </template>
       <div class="parse-params">
+        <a-alert
+          v-if="documentReparseTarget"
+          type="warning"
+          show-icon
+          message="将从原件重新解析，撤销现有 Markdown、解析图片及分块、普通检索和图谱。完成后为待入库，需要重新入库并构建图谱。"
+          class="parse-pending-alert"
+        />
         <a-alert
           v-if="isPendingParseOperation"
           class="parse-pending-alert"
@@ -448,6 +480,22 @@
                   </a-button>
                 </template>
                 <template v-else>
+                  <a-button type="text" block @click="viewFileGraph(row)">
+                    <template #icon><component :is="h(Network)" size="14" /></template>
+                    查看图谱
+                  </a-button>
+                  <a-button
+                    v-if="!readonly && store.knowledgeBase.kb_type?.toLowerCase() === 'milvus'"
+                    type="text"
+                    block
+                    danger
+                    :disabled="!canClearFileGraph(row)"
+                    :loading="clearingGraphFileId === row.file_id"
+                    @click="handleClearFileGraph(row)"
+                  >
+                    <template #icon><component :is="h(Eraser)" size="14" aria-hidden="true" /></template>
+                    清除图谱
+                  </a-button>
                   <a-button
                     type="text"
                     block
@@ -456,6 +504,17 @@
                   >
                     <template #icon><component :is="h(Download)" size="14" /></template>
                     下载文件
+                  </a-button>
+
+                  <a-button
+                    v-if="!readonly && store.knowledgeBase.kb_type?.toLowerCase() === 'milvus'"
+                    type="text"
+                    block
+                    :disabled="!canEditFileMarkdown(row)"
+                    @click="editFileMarkdown(row)"
+                  >
+                    <template #icon><component :is="h(Pencil)" size="14" aria-hidden="true" /></template>
+                    编辑 Markdown
                   </a-button>
 
                   <!-- Parse Action -->
@@ -495,6 +554,17 @@
                   </a-button>
 
                   <a-button
+                    v-if="!readonly && store.knowledgeBase.kb_type?.toLowerCase() === 'milvus'"
+                    type="text"
+                    block
+                    :disabled="!canReparseDocument(row)"
+                    @click="handleReparseDocument(row)"
+                  >
+                    <template #icon><component :is="h(RotateCw)" size="14" aria-hidden="true" /></template>
+                    重新解析
+                  </a-button>
+
+                  <a-button
                     v-if="!readonly"
                     type="text"
                     block
@@ -519,10 +589,12 @@
 <script setup>
 import { ref, computed, h, watch } from 'vue'
 import { useKnowledgeBaseStore } from '@/modules/knowledge/model/knowledgeBase'
+import { useBackgroundJobsStore } from '@/modules/background-jobs'
+import { useUserStore } from '@/modules/identity'
 import { useConfigStore } from '@/modules/settings'
 import OCRSelector from '@/modules/settings/ui/OCRSelector.vue'
 import { message, Modal } from 'ant-design-vue'
-import { documentApi } from '@/apis/knowledge_api'
+import { documentApi, graphBuildApi } from '@/apis/knowledge_api'
 import { fileFailureReason } from '../model/fileSummary'
 import {
   FILE_ACTIONS,
@@ -555,6 +627,8 @@ import {
   Database,
   Filter,
   MoreHorizontal,
+  Network,
+  Eraser,
   Pencil,
   Search,
   CircleCheck as CheckCircleFilled,
@@ -565,8 +639,10 @@ import {
 } from '@lucide/vue'
 
 const store = useKnowledgeBaseStore()
+const jobsStore = useBackgroundJobsStore()
+const userStore = useUserStore()
 
-const emit = defineEmits(['search'])
+const emit = defineEmits(['search', 'view-graph', 'edit-markdown'])
 
 const props = defineProps({
   readonly: { type: Boolean, default: false }
@@ -709,6 +785,123 @@ const popoverVisibleMap = ref({})
 const closePopover = (fileId) => {
   if (fileId) {
     popoverVisibleMap.value[fileId] = false
+  }
+}
+
+/** 从单个文件进入其图谱。 */
+const viewFileGraph = (row) => {
+  closePopover(row.file_id)
+  emit('view-graph', row)
+}
+
+const clearingGraphFileId = ref(null)
+const fileGraphClearTarget = ref(null)
+const documentReparseTarget = ref(null)
+const documentReparseSubmitting = ref(false)
+const documentReparseStableStatuses = new Set([
+  'uploaded', 'parsed', 'done', 'indexed', 'error_parsing', 'error_indexing', 'failed'
+])
+
+/** 稳定文件可人工编辑解析结果，不要求现有原件或解析产物。 */
+const canEditFileMarkdown = (row) =>
+  Boolean(row && !row.is_folder && !readonly.value && !lock.value &&
+    !documentReparseSubmitting.value && !clearingGraphFileId.value &&
+    store.knowledgeBase.kb_type?.toLowerCase() === 'milvus' &&
+    documentReparseStableStatuses.has(row.status))
+
+/** 单独打开编辑入口，不复用解析物料的阅读准入条件。 */
+const editFileMarkdown = (row) => {
+  if (!canEditFileMarkdown(row)) return
+  closePopover(row.file_id)
+  emit('edit-markdown', row)
+}
+
+/** 有原件的稳定文件可重新解析，失败后仍保留恢复入口。 */
+const canReparseDocument = (row) =>
+  Boolean(
+    row && !row.is_folder &&
+    !readonly.value && !lock.value &&
+    !documentReparseSubmitting.value && !clearingGraphFileId.value &&
+    store.knowledgeBase.kb_type?.toLowerCase() === 'milvus' &&
+    documentReparseStableStatuses.has(row.status) && row.has_original_file === true
+  )
+
+/** 重新解析沿用现有 OCR 参数对话框，并明确撤销下游的后果。 */
+const handleReparseDocument = async (row) => {
+  if (!canReparseDocument(row)) return
+  closePopover(row.file_id)
+  const target = { row, kbId: store.kbId, token: userStore.token }
+  documentReparseTarget.value = target
+  try {
+    const params = await loadRecordProcessingParams(row)
+    if (
+      store.kbId !== target.kbId ||
+      userStore.token !== target.token ||
+      documentReparseTarget.value?.row.file_id !== row.file_id
+    ) return
+    resetParseParams(params)
+    parseConfigModalTitle.value = `重新解析：${row.filename}`
+    parseConfigModalVisible.value = true
+  } catch (error) {
+    documentReparseTarget.value = null
+    message.error(error.message || '加载解析参数失败')
+  }
+}
+
+/** 后台任务终态回读列表和统计，提交成功不代替持久状态。 */
+const submitReparseDocument = async (params = {}) => {
+  const target = documentReparseTarget.value
+  if (!target || store.kbId !== target.kbId || userStore.token !== target.token || !canReparseDocument(target.row)) return
+  documentReparseSubmitting.value = true
+  const registerJob = jobsStore.createJobRegistration(() => {
+    if (store.kbId === target.kbId && userStore.token === target.token) void refreshAfterMutation()
+  })
+  try {
+    const data = await documentApi.reparseDocument(target.kbId, target.row.file_id, params)
+    if (data.job_id) registerJob({ job_id: data.job_id })
+    message.success(data.message || '重新解析任务已提交，完成后需重新入库和构建图谱')
+    documentReparseTarget.value = null
+    parseConfigModalVisible.value = false
+    if (store.kbId === target.kbId && userStore.token === target.token) await refreshAfterMutation()
+  } catch (error) {
+    message.error(error.message || '提交文件处理任务失败')
+  } finally {
+    documentReparseSubmitting.value = false
+  }
+}
+
+/** 仅允许清除已有分块的稳定文件，后端最终执行权限与并发检查。 */
+const canClearFileGraph = (row) =>
+  !readonly.value &&
+  !lock.value &&
+  !clearingGraphFileId.value &&
+  !documentReparseSubmitting.value &&
+  store.knowledgeBase.kb_type?.toLowerCase() === 'milvus' &&
+  canIndexFile(row) &&
+  Number(row.chunk_count) > 0
+
+/** 展示清除范围，并绑定确认时所属的知识库。 */
+const handleClearFileGraph = (row) => {
+  if (!canClearFileGraph(row)) return
+  closePopover(row.file_id)
+  fileGraphClearTarget.value = { row, kbId: store.kbId }
+}
+
+/** 提交后台清除任务，失败保留确认内容以便重试。 */
+const submitClearFileGraph = async () => {
+  const target = fileGraphClearTarget.value
+  if (!target || store.kbId !== target.kbId || !canClearFileGraph(target.row)) return
+  clearingGraphFileId.value = target.row.file_id
+  const registerJob = jobsStore.createJobRegistration()
+  try {
+    const data = await graphBuildApi.clearFile(target.kbId, target.row.file_id)
+    if (data.job_id) registerJob({ job_id: data.job_id })
+    message.success(data.message || '图谱清除任务已提交，可在后台任务中查看进度')
+    fileGraphClearTarget.value = null
+  } catch (error) {
+    message.error(error.message || '提交图谱清除任务失败')
+  } finally {
+    clearingGraphFileId.value = null
   }
 }
 
@@ -904,7 +1097,7 @@ const DEFAULT_OCR_ENGINE = 'rapid_ocr'
 const configStore = useConfigStore()
 
 const parseConfigModalVisible = ref(false)
-const parseConfigModalLoading = computed(() => store.state.chunkLoading)
+const parseConfigModalLoading = computed(() => store.state.chunkLoading || documentReparseSubmitting.value)
 const parseConfigModalTitle = ref('解析参数配置')
 const currentParseFileIds = ref([])
 const isBatchParseOperation = ref(false)
@@ -1280,6 +1473,10 @@ const handleParseFile = async (record) => {
 const handleParseConfigConfirm = async () => {
   try {
     const params = { ocr_engine: parseParams.value.ocr_engine }
+    if (documentReparseTarget.value) {
+      await submitReparseDocument(params)
+      return
+    }
     const result = isPendingParseOperation.value
       ? await store.parsePendingFiles(params)
       : await store.parseFiles(currentParseFileIds.value, params)
@@ -1302,6 +1499,8 @@ const handleParseConfigConfirm = async () => {
 }
 
 const handleParseConfigCancel = () => {
+  if (documentReparseSubmitting.value) return
+  documentReparseTarget.value = null
   parseConfigModalVisible.value = false
   currentParseFileIds.value = []
   isBatchParseOperation.value = false
@@ -1343,7 +1542,7 @@ const loadRecordProcessingParams = async (record) => {
   }
 
   const detail = await documentApi.getDocumentInfo(store.kbId, record.file_id)
-  return detail?.processing_params || null
+  return detail?.meta?.processing_params || null
 }
 
 const handleIndexFile = async (record) => {
@@ -1910,6 +2109,7 @@ import FallbackAvatar from '@/shared/ui/FallbackAvatar.vue'
     font-size: 14px;
     display: flex;
     align-items: center;
+    justify-content: flex-start;
     border-radius: 6px;
     padding: 0 8px;
     border: none;
@@ -1923,11 +2123,6 @@ import FallbackAvatar from '@/shared/ui/FallbackAvatar.vue'
     &.ant-btn-dangerous:hover {
       background-color: var(--color-error-50);
       color: var(--color-error-500);
-    }
-
-    .anticon,
-    .lucide {
-      margin-right: 10px;
     }
 
     span {

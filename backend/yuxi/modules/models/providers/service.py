@@ -9,6 +9,7 @@ from typing import Any
 import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from yuxi.infrastructure.observability.logging import logger
 from yuxi.modules.models.providers.builtin import BUILTIN_PROVIDERS
 from yuxi.modules.models.providers.cache import USER_UID_SIGNATURE_SECRET_ENV
 from yuxi.modules.models.providers.credentials import resolve_api_key
@@ -498,22 +499,22 @@ async def test_model_status_by_spec(spec: str) -> dict:
             from yuxi.modules.models.embed import select_embedding_model
 
             model = select_embedding_model(spec)
-            success, message = await model.test_connection()
+            success, _message = await model.test_connection()
             return {
                 "spec": spec,
                 "status": "available" if success else "unavailable",
-                "message": "连接正常" if success else message,
+                "message": "连接正常" if success else "模型服务不可用，请检查供应商配置",
                 "model_type": "embedding",
             }
         if info.model_type == "rerank":
             from yuxi.modules.models.rerank import get_reranker
 
             model = get_reranker(spec)
-            success, message = await model.test_connection()
+            success, _message = await model.test_connection()
             return {
                 "spec": spec,
                 "status": "available" if success else "unavailable",
-                "message": "连接正常" if success else message,
+                "message": "连接正常" if success else "模型服务不可用，请检查供应商配置",
                 "model_type": "rerank",
             }
 
@@ -525,5 +526,6 @@ async def test_model_status_by_spec(spec: str) -> dict:
         if response and response.content:
             return {"spec": spec, "status": "available", "message": "连接正常", "model_type": "chat"}
         return {"spec": spec, "status": "unavailable", "message": "响应无效", "model_type": "chat"}
-    except Exception as e:
-        return {"spec": spec, "status": "error", "message": str(e), "model_type": info.model_type}
+    except Exception:
+        logger.exception("模型 {} 连接检查失败", spec)
+        return {"spec": spec, "status": "error", "message": "模型连接检查失败，请查看服务端日志", "model_type": info.model_type}

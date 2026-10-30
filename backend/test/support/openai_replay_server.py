@@ -113,7 +113,7 @@ def validate_request(authorization: str | None, request: dict) -> str | None:
         content = json.dumps(message.get("content"), ensure_ascii=False)
         anchor = re.search(r"DETERMINISTIC_ATTACHMENT_ANCHOR:([a-z0-9.-]+)", content)
         if anchor:
-            contexts = re.findall(r"<attachment_context>(.*?)</attachment_context>", content, re.DOTALL)
+            contexts = attachment_contexts(content)
             expected = anchor.group(1)
             if expected == "none" and contexts:
                 return "attachment_on_non_anchor_message"
@@ -123,7 +123,7 @@ def validate_request(authorization: str | None, request: dict) -> str | None:
                 return "attachment_cross_input_anchor"
     current_content = json.dumps(user_messages[-1].get("content"), ensure_ascii=False)
     forbidden = re.findall(r"DETERMINISTIC_ATTACHMENT_ABSENT:([a-z0-9.-]+)", current_content)
-    contexts = re.findall(r"<attachment_context>(.*?)</attachment_context>", current_content, re.DOTALL)
+    contexts = attachment_contexts(current_content)
     if forbidden and (not contexts or any(name in contexts[-1] for name in forbidden)):
         return "future_attachment_in_current_input"
     if "DETERMINISTIC_PNG_INPUT" in serialized_messages:
@@ -184,6 +184,23 @@ def validate_request(authorization: str | None, request: dict) -> str | None:
     ):
         return "tool_execution_result_missing"
     return None
+
+
+def attachment_contexts(content: str) -> list[str]:
+    """线性提取闭合的附件标签，保留非贪婪匹配的嵌套与未闭合语义。"""
+    opening, closing = "<attachment_context>", "</attachment_context>"
+    contexts = []
+    cursor = 0
+    while True:
+        start = content.find(opening, cursor)
+        if start < 0:
+            return contexts
+        start += len(opening)
+        end = content.find(closing, start)
+        if end < 0:
+            return contexts
+        contexts.append(content[start:end])
+        cursor = end + len(closing)
 
 
 def _stream_payloads(model: str, messages: list[dict]) -> list[dict]:

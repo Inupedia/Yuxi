@@ -1,21 +1,7 @@
 name: Dependency Supply Chain Audit
 
 on:
-  pull_request:
-    paths:
-      - ".github/workflows/dependency-audit.yml"
-      - "Makefile"
-      - "backend/pyproject.toml"
-      - "backend/uv.lock"
-      - "packages/yuxi-cli/package.json"
-      - "packages/yuxi-cli/package-lock.json"
-      - "frontend/package.json"
-      - "frontend/pnpm-lock.yaml"
-      - "frontend/pnpm-workspace.yaml"
-      - "docs/package.json"
-      - "docs/pnpm-lock.yaml"
-      - "docs/pnpm-workspace.yaml"
-      - "scripts/dependency-audit-fixtures/**"
+  workflow_call:
   push:
     tags: ['v[0-9]*']
     branches: [main, 'develop/**']
@@ -32,7 +18,7 @@ on:
       - "docs/package.json"
       - "docs/pnpm-lock.yaml"
       - "docs/pnpm-workspace.yaml"
-      - "scripts/dependency-audit-fixtures/**"
+      - "scripts/ci/dependency-audit-fixtures/**"
   workflow_dispatch:
 
 concurrency:
@@ -60,7 +46,7 @@ jobs:
         run: uv audit --locked --no-dev
       - name: Exercise Python audit negative control
         run: |
-          if uv audit --script scripts/dependency-audit-fixtures/vulnerable.py >python-audit-negative.log 2>&1; then
+          if uv audit --script scripts/ci/dependency-audit-fixtures/vulnerable.py >python-audit-negative.log 2>&1; then
             echo "Expected the vulnerable Python fixture to fail." >&2
             exit 1
           fi
@@ -68,6 +54,8 @@ jobs:
           grep -q "GHSA-cq5v-8q36-5273" python-audit-negative.log
       - name: Audit Python transitive licenses
         working-directory: backend
+        env:
+          UV_HTTP_TIMEOUT: 120
         run: uv run --isolated --no-dev --with pip-licenses pip-licenses --from mixed --format markdown
 
   node:
@@ -103,4 +91,15 @@ jobs:
           fi
       - name: Exercise Node.js audit negative control
         if: matrix.project == 'frontend'
-        run: bash scripts/dependency-audit-fixtures/run-node-negative-control.sh
+        run: bash scripts/ci/dependency-audit-fixtures/run-node-negative-control.sh
+
+  result:
+    if: always()
+    needs: [python, node]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Check all job results
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+        run: python3 scripts/ci/gate.py check-jobs

@@ -339,7 +339,7 @@
           <div class="modal-actions">
             <a-button @click="closeSelectionModal">取消</a-button>
 
-            <a-button v-if="!isReadOnlyConfig" type="primary" @click="confirmSelection">
+            <a-button v-if="!isReadOnlyConfig" @click="confirmSelection">
               确认
             </a-button>
           </div>
@@ -1078,11 +1078,11 @@ defineExpose({ closeSelectionModal })
         }
 
         &:focus-within {
-          border-color: var(--main-color);
-          box-shadow: 0 0 0 2px var(--main-100);
+          border-color: var(--gray-600);
+          box-shadow: 0 0 0 2px var(--gray-200);
 
           .search-icon {
-            color: var(--main-color);
+            color: var(--gray-900);
           }
         }
 
@@ -1107,6 +1107,7 @@ defineExpose({ closeSelectionModal })
       }
 
       .selection-item {
+        min-width: 0;
         padding: 12px 16px;
         cursor: pointer;
         transition: all 0.2s ease;
@@ -1130,6 +1131,8 @@ defineExpose({ closeSelectionModal })
               color: var(--gray-900);
               line-height: 1.3;
               flex: 1;
+              min-width: 0;
+              overflow-wrap: anywhere;
             }
 
             .selection-item-indicator {
@@ -1157,15 +1160,15 @@ defineExpose({ closeSelectionModal })
         }
 
         &.selected {
-          background: var(--main-10);
-          border-color: var(--main-color);
+          background: var(--gray-50);
+          border-color: var(--gray-600);
 
           .selection-item-content {
             .selection-item-name {
-              color: var(--main-800);
+              color: var(--gray-900);
             }
             .selection-item-indicator {
-              color: var(--main-800);
+              color: var(--gray-900);
             }
           }
           .selection-item-description {
@@ -1200,6 +1203,11 @@ defineExpose({ closeSelectionModal })
           height: 36px;
           font-size: 14px;
           padding: 0 16px;
+
+          &:hover, &:focus-visible {
+            color: var(--gray-900);
+            border-color: var(--gray-600);
+          }
         }
       }
     }

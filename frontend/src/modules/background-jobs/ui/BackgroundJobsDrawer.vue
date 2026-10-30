@@ -193,6 +193,7 @@ const TASK_TYPE_LABELS = {
   knowledge_parse: '文档解析',
   knowledge_index: '文档入库',
   knowledge_graph_index: '图谱构建',
+  knowledge_document_reset: '文档产物撤销',
   dataset_generation: '评估集生成',
   rag_evaluation: 'RAG 评估'
 }

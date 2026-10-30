@@ -1,5 +1,6 @@
 from io import BytesIO
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 from fastapi import HTTPException, UploadFile
@@ -15,7 +16,7 @@ pytestmark = pytest.mark.asyncio
 
 def _patch_submit_job(monkeypatch, fake):
     """路由与服务共享作业提交入口，测试同时替换，避免按调用路径分叉。"""
-    monkeypatch.setattr(document_actions, "submit_job", fake)
+    monkeypatch.setattr(document_actions, "submit_knowledge_job", fake)
 
 
 def _database_detail(**stats) -> KnowledgeBaseDetail:
@@ -331,7 +332,7 @@ async def test_reconcile_graph_build_mutates_state_only_after_unique_job_is_crea
     monkeypatch.setattr(graph_build, "_has_active_job", fake_has_running_graph_build_job)
     monkeypatch.setattr(graph_build.knowledge_base, "get_knowledge_base_info", fake_get_knowledge_base_info)
     monkeypatch.setattr(knowledge_job_service, "KnowledgeGraphService", FakeGraphService)
-    monkeypatch.setattr(graph_build, "submit_job", fake_enqueue_unique_by_payload)
+    monkeypatch.setattr(graph_build, "submit_knowledge_job", fake_enqueue_unique_by_payload)
 
     result = await knowledge_router.reconcile_graph_build(
         "kb_1",
@@ -558,3 +559,15 @@ async def test_parse_pending_documents_uses_params(monkeypatch):
     assert captured["payload"]["params"] == params
     assert captured["updated"] == [{"kb_id": "kb_1", "file_id": "file_pending_1", "params": params, "operator_id": "uid-user"}]
     assert captured["parsed"] == [{"kb_id": "kb_1", "file_id": "file_pending_1", "operator_id": "uid-user"}]
+
+
+@pytest.mark.parametrize(
+    "scope", [{"file_id": "file"}, {"generation": 2}, {"file_id": "", "generation": 2}, {"file_id": "file", "generation": True}]
+)
+async def test_graph_worker_rejects_incomplete_file_scope(monkeypatch, scope):
+    """不完整的持久任务不能退回全库构建。"""
+    service = SimpleNamespace(build_pending_chunks=AsyncMock())
+    monkeypatch.setattr(knowledge_job_service, "KnowledgeGraphService", lambda: service)
+    with pytest.raises(ValueError, match="范围无效"):
+        await knowledge_job_service.run_knowledge_graph(FakeBackgroundJobContext({"kb_id": "kb", **scope}))
+    service.build_pending_chunks.assert_not_awaited()

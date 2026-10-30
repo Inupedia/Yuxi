@@ -1,12 +1,11 @@
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
 import test from 'node:test'
-import { computed, ref, watch } from 'vue'
-import { createPinia, defineStore, disposePinia } from 'pinia'
-import { inupediaAntTheme } from '../../src/custom/inupedia/antTheme.js'
+import { ref } from 'vue'
+import { createPinia, disposePinia } from 'pinia'
+import { createTestServer } from '../helpers/createTestServer.js'
 
 /** 使用真实响应式 Store，隔离浏览器偏好与持久化边界。 */
-function fixture(saved = null, preferredDark = false) {
+async function fixture(saved = null, preferredDark = false) {
   const systemDark = ref(preferredDark)
   const storage = new Map(saved === null ? [] : [['theme', saved]])
   const classes = new Set()
@@ -14,25 +13,33 @@ function fixture(saved = null, preferredDark = false) {
     add: (name) => classes.add(name),
     remove: (name) => classes.delete(name)
   } } }
-  const source = readFileSync(new URL('../../src/shared/model/theme.js', import.meta.url), 'utf8')
-    .replace(/^import .*\n/gm, '')
-    .replace('export const useThemeStore =', 'return')
-  const useThemeStore = new Function(
-    'ref', 'computed', 'watch', 'defineStore', 'theme', 'usePreferredDark',
-    'localStorage', 'document', 'getComputedStyle', 'inupediaAntTheme', source
-  )(
-    ref, computed, watch, defineStore, { darkAlgorithm: 'dark', defaultAlgorithm: 'light' },
-    () => systemDark,
-    { getItem: (key) => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value) },
-    document, () => ({ getPropertyValue: () => classes.has('dark') ? '#222222' : '#eeeeee' }), inupediaAntTheme
-  )
+  globalThis.localStorage = { getItem: (key) => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value) }
+  globalThis.document = document
+  globalThis.getComputedStyle = () => ({ getPropertyValue: () => classes.has('dark') ? '#222222' : '#eeeeee' })
+  globalThis.__themeTest = { systemDark }
+  const server = await createTestServer({
+    configFile: false,
+    ssr: { noExternal: ['@vueuse/core', 'ant-design-vue'] },
+    server: { middlewareMode: true, hmr: false },
+    plugins: [{
+      name: 'theme-boundaries', enforce: 'pre',
+      resolveId(id) {
+        if (id === '@vueuse/core' || id === 'ant-design-vue') return `\0theme-test:${id}`
+      },
+      load(id) {
+        if (id === '\0theme-test:@vueuse/core') return 'export const usePreferredDark = () => globalThis.__themeTest.systemDark'
+        if (id === '\0theme-test:ant-design-vue') return "export const theme = { darkAlgorithm: 'dark', defaultAlgorithm: 'light' }"
+      }
+    }]
+  })
+  const { useThemeStore } = await server.ssrLoadModule('/src/shared/model/theme.js')
   const pinia = createPinia()
   const store = useThemeStore(pinia)
-  return { store, systemDark, storage, classes, dispose: () => disposePinia(pinia) }
+  return { store, systemDark, storage, classes, dispose: async () => { disposePinia(pinia); await server.close(); delete globalThis.__themeTest; delete globalThis.localStorage; delete globalThis.document; delete globalThis.getComputedStyle } }
 }
 
-test('主题按 light、dark、auto 轮换并保存选择，自动模式实时更新根节点和控件', () => {
-  const f = fixture()
+test('主题按 light、dark、auto 轮换并保存选择，自动模式实时更新根节点和控件', async () => {
+  const f = await fixture()
   try {
     assert.equal(f.store.themeMode, 'light')
     for (const mode of ['dark', 'auto', 'light']) {
@@ -59,14 +66,14 @@ test('主题按 light、dark、auto 轮换并保存选择，自动模式实时�
     assert.equal(f.store.isDark, true)
     assert.equal(f.storage.get('theme'), 'dark')
   } finally {
-    f.dispose()
+    await f.dispose()
   }
 })
 
-test('重载保留三种选择，默认浅色，auto 初始化解析浏览器偏好', () => {
+test('重载保留三种选择，默认浅色，auto 初始化解析浏览器偏好', async () => {
   for (const saved of [null, 'invalid', 'light', 'dark', 'auto']) {
     for (const preferred of [true, false]) {
-      const f = fixture(saved, preferred)
+      const f = await fixture(saved, preferred)
       try {
         const dark = saved === 'dark' || (saved === 'auto' && preferred)
         assert.equal(f.store.themeMode, ['light', 'dark', 'auto'].includes(saved) ? saved : 'light')
@@ -74,7 +81,7 @@ test('重载保留三种选择，默认浅色，auto 初始化解析浏览器偏
         assert.equal(f.classes.has('dark'), dark)
         assert.equal(f.store.currentTheme.algorithm, dark ? 'dark' : 'light')
       } finally {
-        f.dispose()
+        await f.dispose()
       }
     }
   }

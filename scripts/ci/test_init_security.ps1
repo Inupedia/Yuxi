@@ -5,7 +5,7 @@ if (Test-Path Variable:PSNativeCommandUseErrorActionPreference) {
     $PSNativeCommandUseErrorActionPreference = $false
 }
 $PowerShellPath = (Get-Process -Id $PID).Path
-$InitScript = (Resolve-Path (Join-Path $PSScriptRoot "init.ps1")).Path
+$InitScript = (Resolve-Path (Join-Path $PSScriptRoot "../init.ps1")).Path
 
 function Invoke-SecurityValidation([string]$EnvContent) {
     $caseDirectory = Join-Path ([IO.Path]::GetTempPath()) ("yuxi-init-security-" + [guid]::NewGuid().ToString("N"))

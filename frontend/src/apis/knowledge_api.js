@@ -106,7 +106,7 @@ export const documentApi = {
 
   searchDocuments: async (kbId, params = {}) => {
     const query = buildQuery(params)
-    return apiAdminGet(
+    return apiGet(
       `/api/knowledge/knowledge-bases/${kbId}/documents/search${query ? `?${query}` : ''}`
     )
   },
@@ -179,7 +179,7 @@ export const documentApi = {
    * @returns {Promise} - 文档基本信息
    */
   getDocumentBasicInfo: async (kbId, docId) => {
-    return apiAdminGet(`/api/knowledge/knowledge-bases/${kbId}/documents/${docId}/basic`)
+    return apiGet(`/api/knowledge/knowledge-bases/${kbId}/documents/${docId}/basic`)
   },
 
   /**
@@ -247,6 +247,24 @@ export const documentApi = {
     })
   },
 
+  /** 严格读取可编辑的完整 Markdown 和修订凭据。 */
+  getDocumentMarkdown: async (kbId, fileId) => {
+    return apiAdminGet(`/api/knowledge/knowledge-bases/${kbId}/documents/${encodeURIComponent(fileId)}/markdown`)
+  },
+
+  /** 以修订凭据提交 Markdown 保存任务。 */
+  saveDocumentMarkdown: async (kbId, fileId, expectedRevision, content) => {
+    return apiAdminPost(`/api/knowledge/knowledge-bases/${kbId}/documents/${encodeURIComponent(fileId)}/markdown`, {
+      expected_revision: expectedRevision,
+      content
+    })
+  },
+
+  /** 从原件重新解析文件，并清除已有下游数据。 */
+  reparseDocument: async (kbId, fileId, params = {}) => {
+    return apiAdminPost(`/api/knowledge/knowledge-bases/${kbId}/documents/${encodeURIComponent(fileId)}/reparse`, { params })
+  },
+
   /**
    * 手动触发全部待解析文档解析
    * @param {string} kbId - 知识库ID
@@ -299,6 +317,10 @@ export const graphBuildApi = {
     return apiAdminGet(graphBuildUrl(kbId, 'status'))
   },
 
+  getFileStatus: async (kbId, fileId) => {
+    return apiGet(`${graphBuildUrl(kbId, 'files')}/${encodeURIComponent(fileId)}/status`)
+  },
+
   getFailedChunks: async (kbId, limit = 10) => {
     return apiAdminGet(`${graphBuildUrl(kbId, 'failed-chunks')}?limit=${limit}`)
   },
@@ -307,8 +329,13 @@ export const graphBuildApi = {
     return apiAdminPost(graphBuildUrl(kbId, 'config'), data)
   },
 
-  startIndex: async (kbId) => {
-    return apiAdminPost(graphBuildUrl(kbId, 'index'), {})
+  startIndex: async (kbId, fileId = null) => {
+    return apiAdminPost(graphBuildUrl(kbId, 'index'), fileId ? { file_id: fileId } : {})
+  },
+
+  /** 提交单个文件的图谱清除任务。 */
+  clearFile: async (kbId, fileId) => {
+    return apiAdminPost(`${graphBuildUrl(kbId, 'files')}/${encodeURIComponent(fileId)}/clear`)
   },
 
   reset: async (kbId, data) => {

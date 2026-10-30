@@ -103,6 +103,14 @@ class KnowledgeChunkRepository:
             )
             return list(result.scalars().all())
 
+    async def list_ids_by_file_generation(self, file_id: str, generation: int) -> list[str]:
+        """列出待清理代次的原始 ID，不套用当前可见性过滤。"""
+        async with pg_manager.get_async_session_context() as session:
+            result = await session.scalars(
+                select(KnowledgeChunk.chunk_id).where(KnowledgeChunk.file_id == file_id, KnowledgeChunk.generation == generation)
+            )
+            return list(result)
+
     async def list_by_kb_id(self, kb_id: str) -> list[KnowledgeChunk]:
         """列出知识库当前可见代次的全部 chunk，按主键升序保证顺序稳定。"""
         async with pg_manager.get_async_session_context() as session:
@@ -124,21 +132,29 @@ class KnowledgeChunkRepository:
         """统计知识库当前可见代次的 chunk 总量。"""
         return await self._count_by_kb_id(kb_id)
 
+    async def count_by_file_id(self, file_id: str) -> int:
+        """统计文件当前可见代次的分块数量。"""
+        async with pg_manager.get_async_session_context() as session:
+            result = await session.scalar(
+                select(func.count()).select_from(KnowledgeChunk).where(KnowledgeChunk.file_id == file_id, self.visible_scope())
+            )
+            return int(result or 0)
+
     # ─── 图谱构建查询 ────────────────────────────────────────────────
 
-    async def count_graph_indexed_by_kb_id(self, kb_id: str) -> int:
+    async def count_graph_indexed_by_kb_id(self, kb_id: str, *, file_id: str | None = None) -> int:
         """统计向量阶段完成的可见 chunk。"""
-        return await self._count_by_kb_id(kb_id, KnowledgeChunk.graph_indexed.is_(True))
+        return await self._count_by_kb_id(kb_id, KnowledgeChunk.graph_indexed.is_(True), *self._file_filter(file_id))
 
     async def count_graph_structure_indexed_by_kb_id(self, kb_id: str) -> int:
         """统计结构阶段完成的可见 chunk。"""
         return await self._count_by_kb_id(kb_id, KnowledgeChunk.graph_structure_indexed.is_(True))
 
-    async def count_graph_pending_by_kb_id(self, kb_id: str) -> int:
+    async def count_graph_pending_by_kb_id(self, kb_id: str, *, file_id: str | None = None) -> int:
         """统计向量阶段未完成的可见 chunk，即图谱构建剩余量。"""
-        return await self._count_by_kb_id(kb_id, KnowledgeChunk.graph_indexed.is_not(True))
+        return await self._count_by_kb_id(kb_id, KnowledgeChunk.graph_indexed.is_not(True), *self._file_filter(file_id))
 
-    async def count_graph_extraction_statuses_by_kb_id(self, kb_id: str) -> dict[str, int]:
+    async def count_graph_extraction_statuses_by_kb_id(self, kb_id: str, *, file_id: str | None = None) -> dict[str, int]:
         """按抽取状态统计可见 chunk 数量，键覆盖 pending/succeeded/failed。"""
         counts = {"pending": 0, "succeeded": 0, "failed": 0}
         # 缺失 status 的旧行按 pending 统计，保证三个键始终完整。
@@ -146,7 +162,9 @@ class KnowledgeChunkRepository:
         async with pg_manager.get_async_session_context() as session:
             rows = (
                 await session.execute(
-                    select(status, func.count()).where(KnowledgeChunk.kb_id == kb_id, self.visible_scope()).group_by(status)
+                    select(status, func.count())
+                    .where(KnowledgeChunk.kb_id == kb_id, self.visible_scope(), *self._file_filter(file_id))
+                    .group_by(status)
                 )
             ).all()
         for value, count in rows:
@@ -159,6 +177,7 @@ class KnowledgeChunkRepository:
         limit: int,
         *,
         after_id: int = 0,
+        file_id: str | None = None,
     ) -> list[KnowledgeChunk]:
         """按主键游标分页拉取向量阶段未完成的可见 chunk。
 
@@ -172,6 +191,7 @@ class KnowledgeChunkRepository:
                     KnowledgeChunk.graph_indexed.is_not(True),
                     self.visible_scope(),
                     KnowledgeChunk.id > after_id,
+                    *self._file_filter(file_id),
                 )
                 .order_by(KnowledgeChunk.id.asc())
                 .limit(max(limit, 1))
@@ -322,6 +342,11 @@ class KnowledgeChunkRepository:
             )
             .where(KnowledgeFile.deleted_at.is_(None), KnowledgeChunk.generation == KnowledgeFile.active_generation)
         )
+
+    @staticmethod
+    def _file_filter(file_id: str | None) -> list:
+        """可选文件范围用于构建查询。"""
+        return [KnowledgeChunk.file_id == file_id] if file_id is not None else []
 
     async def _count_by_kb_id(self, kb_id: str, *conditions: Any) -> int:
         """按 kb_id 叠加附加条件统计可见 chunk，供各计数入口复用。"""

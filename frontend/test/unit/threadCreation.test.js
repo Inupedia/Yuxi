@@ -1,41 +1,29 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { readFileSync } from 'node:fs'
-import { computed, reactive, ref } from 'vue'
+import { message } from 'ant-design-vue'
 
+import { mountSessionWorkspace } from '../helpers/sessionWorkspace.js'
 import { createThreadForContext } from '../../src/modules/session/model/threadCreation.js'
 
-const source = readFileSync(new URL('../../src/modules/session/ui/SessionWorkspace.vue', import.meta.url), 'utf8')
-
-/** 执行同一视图的实际逻辑片段，测试只注入被观察的状态与外部动作。 */
-function workspaceLogic(start, end, dependencies, exported) {
-  const begin = source.indexOf(start)
-  const block = source.slice(begin, source.indexOf(end, begin))
-  return new Function(...Object.keys(dependencies), `${block}; return ${exported}`)(...Object.values(dependencies))
-}
-
-test('首次发送在创建 Thread 前冻结附件、图片和配置，后来草稿不能并入旧提交', async () => {
-  const files = { value: [{ id: 'original-file' }] }
-  const model = { value: 'original:model' }, approval = { value: 'default' }
-  const images = [{ imageUrl: 'original-image' }]
+test('首次发送在创建 Thread 前冻结附件、图片和配置，后来草稿不能并入旧提交', async (t) => {
   let resolveCreation, submitted
-  const dependencies = {
-    pendingSends: { value: {} }, currentChatId: { value: null }, userInput: { value: '原始输入' },
-    currentAgent: { value: {} }, agentExecutionAvailable: ref(true), sendCooldownActive: { value: false }, props: { sendDisabled: false },
-    isLoadingMessages: { value: false }, isWaitingForUserAction: { value: false },
-    currentPendingThreadAttachments: files, currentModelSpec: model, currentToolApprovalMode: approval,
-    startSendCooldown() {}, selectedModelByThread: {}, promoteDraftSelection() {},
-    ensureActiveThread: () => new Promise((resolve) => { resolveCreation = resolve }),
-    sessionInput: { async send(threadId, draft) { submitted = { threadId, draft } } }
-  }
-  const send = workspaceLogic('const handleSendMessage =', 'const handleDirectSteer =', dependencies, 'handleSendMessage')
-  const sending = send({ images })
-  assert.equal(dependencies.userInput.value, '', '移到底部前清空冻结文本，避免多行编辑器二次收缩')
-  files.value.push({ id: 'next-draft-file' })
+  const h = await mountSessionWorkspace(t, undefined, { send: async (threadId, draft) => { submitted = { threadId, draft } } })
+  h.agentStore.agents = [{ agent_id: 'agent', can_run: true }]
+  h.agentStore.selectedAgentId = 'agent'
+  t.mock.method(h.agentStore, 'fetchAgentDetail', async () => ({ can_run: true }))
+  t.mock.method(h.state.chatThreadsStore, 'createThread', () => new Promise(resolve => { resolveCreation = resolve }))
+  h.state.userInput.value = '原始输入'
+  h.state.draftFilesByThread.value.__draft__ = [{ id: 'original-file' }]
+  h.state.selectedModelByThread.__draft__ = 'original:model'
+  const images = [{ imageUrl: 'original-image' }]
+  const sending = h.state.handleSendMessage({ images })
+  assert.equal(h.state.userInput.value, '', '移到底部前清空冻结文本，避免多行编辑器二次收缩')
+  await Promise.resolve()
+  h.state.draftFilesByThread.value.__draft__.push({ id: 'next-draft-file' })
   images.push({ imageUrl: 'next-draft-image' })
-  model.value = 'next:model'
-  approval.value = 'always_trust'
-  resolveCreation('created-thread')
+  h.state.selectedModelByThread.__draft__ = 'next:model'
+  h.state.savedToolApprovalMode.value = 'always_trust'
+  resolveCreation({ id: 'created-thread', agent: { id: 'agent' }, yuxi: {} })
   await sending
   assert.equal(submitted.threadId, 'created-thread')
   assert.deepEqual(submitted.draft.attachments, [{ id: 'original-file' }])
@@ -68,212 +56,172 @@ test('延迟创建响应遇到上下文切换时不被接受', async () => {
   assert.deepEqual(await pending, { thread: { id: 'thread-a' }, accepted: false })
 })
 
-test('首条发送创建失败或未获得线程时恢复冻结文本和图片，不覆盖新编辑', async () => {
+test('首条发送创建失败或未获得线程时恢复冻结文本和图片，不覆盖新编辑', async (t) => {
   for (const rejects of [true, false]) {
-    let restoredImages, errors = 0
-    const userInput = ref('原始消息\n第二行')
-    const dependencies = {
-      pendingSends: ref({}), currentChatId: ref(null), userInput,
-      agentExecutionAvailable: ref(true), sendCooldownActive: ref(false), props: {},
-      isLoadingMessages: ref(false), isWaitingForUserAction: ref(false),
-      currentPendingThreadAttachments: ref([]), currentModelSpec: ref(null), currentToolApprovalMode: ref('default'),
-      startSendCooldown() {},
-      ensureActiveThread: async () => {
-        assert.equal(userInput.value, '')
-        userInput.value = '后来编辑'
+    await t.test(rejects ? '创建抛错' : '创建未返回线程', async (subtest) => {
+      let restoredImages, errors = 0
+      const h = await mountSessionWorkspace(subtest)
+      h.agentStore.agents = [{ agent_id: 'agent', can_run: true }]
+      h.agentStore.selectedAgentId = 'agent'
+      h.state.userInput.value = '原始消息\n第二行'
+      h.state.agentInputAreaRef.value = { restoreImages: images => { restoredImages = images } }
+      subtest.mock.method(message, 'error', () => { errors++ })
+      subtest.mock.method(h.state.chatThreadsStore, 'createThread', async () => {
+        assert.equal(h.state.userInput.value, '')
+        h.state.userInput.value = '后来编辑'
         if (rejects) throw new Error('creation failed')
         return null
-      },
-      agentInputAreaRef: ref({ restoreImages: (images) => { restoredImages = images } }),
-      message: { error: () => { errors++ } }
-    }
-    const send = workspaceLogic('const handleSendMessage =', 'const handleDirectSteer =', dependencies, 'handleSendMessage')
-    await send({ images: [{ imageUrl: 'original-image' }] })
-    assert.equal(userInput.value, '原始消息\n第二行\n后来编辑')
-    assert.deepEqual(restoredImages, [{ imageUrl: 'original-image' }])
-    assert.equal(errors, 1)
+      })
+      await h.state.handleSendMessage({ images: [{ imageUrl: 'original-image' }] })
+      assert.equal(h.state.userInput.value, '原始消息\n第二行\n后来编辑')
+      assert.deepEqual(restoredImages, [{ imageUrl: 'original-image' }])
+      assert.equal(errors, 1)
+    })
   }
 })
 
-
 for (const uploadTarget of ['__draft__', 'thread-a']) {
-  test(`创建响应丢失后重放审批模式，附件目标 ${uploadTarget} 按归属迁移`, async () => {
+  test(`创建响应丢失后重放审批模式，附件目标 ${uploadTarget} 按归属迁移`, async (t) => {
     const calls = []
-    const currentChatId = { value: null }
-    const approval = { value: 'default' }
-    const request = { value: null }
-    const dependencies = {
-      currentChatId, currentAgentId: { value: 'agent' }, selectedProjectId: { value: 'auto' },
-      threadCreationRequest: request, currentToolApprovalMode: approval, AUTO_PROJECT_ID: 'auto',
-      createInputRequestId: () => 'stable-key', createThreadForContext,
-      chatThreadsStore: { setThreadCreationInFlight() {}, async createThread(...args) {
-        calls.push(structuredClone(args))
-        if (calls.length === 1) throw new Error('response lost')
-        return { id: 'same-session' }
-      } },
-      threadMessages: { value: {} },
-      getThreadState: () => ({}), threadAttachmentsMap: { value: {} }, draftFilesByThread: { value: {} },
-      attachmentUploadThreadKey: ref(uploadTarget), DRAFT_MODEL_KEY: '__draft__',
-      promoteDraftSelection() {}, setCurrentThreadId: (id) => { currentChatId.value = id },
-      async refreshSessionAgent(threadId, agentId) { calls.push({ refreshed: [threadId, agentId] }) }
-    }
-    const create = workspaceLogic('const createActiveThread =', 'const ensureActiveThread =', dependencies, 'createActiveThread')
-    await assert.rejects(create(), /response lost/)
-    approval.value = 'always_trust'
-    assert.equal(await create(), 'same-session')
+    const h = await mountSessionWorkspace(t)
+    h.agentStore.agents = [{ agent_id: 'agent', can_run: true }]
+    h.agentStore.selectedAgentId = 'agent'
+    h.state.attachmentUploadThreadKey.value = uploadTarget
+    const detail = t.mock.method(h.agentStore, 'fetchAgentDetail', async () => ({ can_run: true }))
+    t.mock.method(h.state.chatThreadsStore, 'createThread', async (...args) => {
+      calls.push(JSON.parse(JSON.stringify(args)))
+      if (calls.length === 1) throw new Error('response lost')
+      return { id: 'same-session', agent: { id: 'agent' }, yuxi: {} }
+    })
+    await assert.rejects(h.state.createActiveThread(), /response lost/)
+    h.state.savedToolApprovalMode.value = 'always_trust'
+    assert.equal(await h.state.createActiveThread(), 'same-session')
     assert.deepEqual(calls[1], calls[0])
     assert.equal(calls[1][1], null)
     assert.equal(calls[1][2].tool_approval_mode, 'default')
-    assert.deepEqual(calls[2], { refreshed: ['same-session', 'agent'] })
-    assert.equal(request.value, null)
-    assert.equal(dependencies.attachmentUploadThreadKey.value, uploadTarget === '__draft__' ? 'same-session' : uploadTarget)
+    assert.equal(detail.mock.calls.at(-1).arguments[0], 'agent')
+    assert.equal(h.state.sessionAgentStatus.value, 'ready')
+    assert.equal(h.state.threadCreationRequest.value, null)
+    assert.equal(h.state.attachmentUploadThreadKey.value, uploadTarget === '__draft__' ? 'same-session' : uploadTarget)
   })
 }
 
-
-test('新建会话按稳定 agent_id 找到当前智能体，详情到达后替换列表摘要', () => {
-  const dependencies = {
-    computed, currentAgentId: ref('slug'), agents: ref([{ agent_id: 'slug', name: '摘要' }]), agentDetails: ref({})
-  }
-  const agent = workspaceLogic('const currentAgent = computed', 'const currentChatId = computed', dependencies, 'currentAgent')
-  assert.equal(agent.value.name, '摘要')
-  dependencies.agentDetails.value.slug = { agent_id: 'slug', name: '完整详情' }
-  assert.equal(agent.value.name, '完整详情')
-  dependencies.currentAgentId.value = 'missing'
-  assert.equal(agent.value, null)
+test('新建会话按稳定 agent_id 找到当前智能体，详情到达后替换列表摘要', async (t) => {
+  const h = await mountSessionWorkspace(t)
+  h.agentStore.selectedAgentId = 'slug'
+  h.agentStore.agents = [{ agent_id: 'slug', name: '摘要' }]
+  assert.equal(h.state.currentAgent.value.name, '摘要')
+  h.agentStore.agentDetails.slug = { agent_id: 'slug', name: '完整详情' }
+  assert.equal(h.state.currentAgent.value.name, '完整详情')
+  h.agentStore.selectedAgentId = 'missing'
+  assert.equal(h.state.currentAgent.value, null)
 })
 
-test('模型选择按当前选择、Session、智能体默认值响应式回退，新建草稿独立', () => {
-  const dependencies = {
-    computed, selectedModelByThread: reactive({ thread: 'selected:model', __draft__: 'draft:model' }),
-    currentChatId: ref('thread'), currentThread: ref({ agent: { model: 'session:model' } }),
-    agentDefaultModel: ref('agent:model'), DRAFT_MODEL_KEY: '__draft__'
-  }
-  const model = workspaceLogic('const currentModelSpec = computed', 'const handleModelSelect =', dependencies, 'currentModelSpec')
-  assert.equal(model.value, 'selected:model')
-  delete dependencies.selectedModelByThread.thread
-  assert.equal(model.value, 'session:model')
-  dependencies.currentThread.value = null
-  assert.equal(model.value, 'agent:model')
-  dependencies.currentChatId.value = null
-  assert.equal(model.value, 'draft:model')
+test('模型选择按当前选择、Session、智能体默认值响应式回退，新建草稿独立', async (t) => {
+  const h = await mountSessionWorkspace(t, undefined, { threadId: 'thread' })
+  h.state.selectedModelByThread.thread = 'selected:model'
+  h.state.selectedModelByThread.__draft__ = 'draft:model'
+  h.state.currentThread.value = { id: 'thread', agent: { model: 'session:model' } }
+  h.state.configStore.config.default_model = 'agent:model'
+  assert.equal(h.state.currentModelSpec.value, 'selected:model')
+  delete h.state.selectedModelByThread.thread
+  assert.equal(h.state.currentModelSpec.value, 'session:model')
+  h.state.currentThread.value = null
+  assert.equal(h.state.currentModelSpec.value, 'agent:model')
+  h.state.currentThreadId.value = null
+  assert.equal(h.state.currentModelSpec.value, 'draft:model')
 })
 
-test('预写 Thread 身份也须加载历史，已有历史的视图只恢复订阅', async () => {
+test('预写 Thread 身份也须加载历史，已有历史的视图只恢复订阅', async (t) => {
   for (const historyLoaded of [false, true]) {
-    const actions = []
-    const dependencies = {
-      threadCreationInFlight: ref(false), agentStore: { isInitialized: true }, threads: ref([{ id: 'thread' }]),
-      currentThreadId: ref('thread'), getThreadState: () => ({ historyLoaded }),
-      props: { embedded: false }, workspaceActive: ref(true), chatThreadsStore: { setCurrentThreadId() {}, upsertThread() {} },
-      agentApi: { async getPublicThread() { return { id: 'thread' } } },
-      resumeCurrentRunForVisiblePage: async () => actions.push('resume'), selectChat: async id => { actions.push(id); return true }
-    }
-    const select = workspaceLogic('const selectThreadFromRoute =', 'const sessionInput =', dependencies, 'selectThreadFromRoute')
-    assert.equal(await select('thread'), true)
-    assert.deepEqual(actions, [historyLoaded ? 'resume' : 'thread'])
+    await t.test(historyLoaded ? '历史已加载' : '历史未加载', async (subtest) => {
+      const actions = []
+      const h = await mountSessionWorkspace(subtest, async ({ threadId }) => { actions.push(threadId) }, {
+        threadId: 'thread', runtime: {
+          resumeActiveRunForThread: async () => actions.push('resume'),
+          resumeQueuedInputs: async () => {}
+        }
+      })
+      h.state.chatThreadsStore.threads = [{ id: 'thread', agent: { id: 'agent' }, yuxi: {} }]
+      h.runtime.getThreadState('thread').historyLoaded = historyLoaded
+      subtest.mock.method(h.agentStore, 'fetchAgentDetail', async () => ({ can_run: historyLoaded }))
+      subtest.mock.method(h.state.chatThreadsStore, 'markThreadViewed', () => {})
+      subtest.mock.method(h.state.scrollController, 'scrollToBottomStaticForce', async () => {})
+      assert.equal(await h.state.selectThreadFromRoute('thread'), true)
+      assert.deepEqual(actions, [historyLoaded ? 'resume' : 'thread'])
+    })
   }
 })
 
-
-test('附件上传固定打开时的目标，切换会话和再次打开分别保留各自归属', async () => {
-  const currentChatId = ref('thread-a')
-  const attachmentUploadModalOpen = ref(false)
-  const draftFilesByThread = ref({})
-  const actions = workspaceLogic('const handleAttachmentUpload =', 'const handleAttachmentRemove =', {
-    currentChatId, attachmentUploadModalOpen, draftFilesByThread,
-    attachmentUploadThreadKey: ref(null), DRAFT_MODEL_KEY: '__draft__',
-    currentAgentId: ref('agent'), AgentValidator: { validateAgentIdWithError: () => true },
-    handleValidationError() {}, attachmentInitialFiles: ref([]), attachmentInitialFilesKey: ref(0),
-    File: class File {}
-  }, '{ open: handleAttachmentUpload, confirm: handleTmpAttachmentsAdded }')
-  await actions.open()
-  currentChatId.value = 'thread-b'
-  await actions.open()
-  actions.confirm([{ id: 'file-a' }])
-  assert.deepEqual(draftFilesByThread.value, { 'thread-a': [{ id: 'file-a' }] })
-  attachmentUploadModalOpen.value = false
-  await actions.open()
-  actions.confirm([{ id: 'file-b' }])
-  assert.deepEqual(draftFilesByThread.value['thread-b'], [{ id: 'file-b' }])
-  assert.deepEqual(draftFilesByThread.value['thread-a'], [{ id: 'file-a' }])
+test('附件上传固定打开时的目标，切换会话和再次打开分别保留各自归属', async (t) => {
+  const h = await mountSessionWorkspace(t, undefined, { threadId: 'thread-a' })
+  h.agentStore.selectedAgentId = 'agent'
+  await h.state.handleAttachmentUpload()
+  h.state.currentThreadId.value = 'thread-b'
+  await h.state.handleAttachmentUpload()
+  h.state.handleTmpAttachmentsAdded([{ id: 'file-a' }])
+  assert.deepEqual(h.state.draftFilesByThread.value, { 'thread-a': [{ id: 'file-a' }] })
+  h.state.attachmentUploadModalOpen.value = false
+  await h.state.handleAttachmentUpload()
+  h.state.handleTmpAttachmentsAdded([{ id: 'file-b' }])
+  assert.deepEqual(h.state.draftFilesByThread.value['thread-b'], [{ id: 'file-b' }])
+  assert.deepEqual(h.state.draftFilesByThread.value['thread-a'], [{ id: 'file-a' }])
 })
 
 for (const status of [403, 404, 503]) {
-  test(`打开历史对话时详情 ${status} 不阻断消息读取，也不恢复执行`, async () => {
-    const { useSessionAgentAvailability } = await import('../../src/modules/session/model/sessionAgentAvailability.js')
-    const currentThreadId = ref('previous')
-    const currentChatId = computed(() => currentThreadId.value)
-    const availability = useSessionAgentAvailability(currentThreadId, async () => { throw { status } })
-    const history = []
-    const execution = []
-    const dependencies = {
-      currentThreadId, currentChatId, currentAgentId: ref('agent'),
-      threadCreationInFlight: ref(false), threads: ref([{ id: 'history', agent: { id: 'agent' } }]),
-      handleValidationError() {}, AgentValidator: { validateAgentIdWithError: () => true }, resetAgentPanelState() {},
-      setCurrentThreadId: value => { currentThreadId.value = value },
-      refreshSessionAgent: availability.refresh,
-      agentExecutionAvailable: computed(() => availability.status.value === 'ready'),
-      isLoadingMessages: ref(false), workspaceActive: ref(true), pageVisible: ref(true),
-      fetchThreadMessages: async ({ threadId }) => history.push(threadId),
-      chatThreadsStore: { markThreadViewed() {} }, nextTick: async () => {},
-      scrollController: { scrollToBottomStaticForce: async () => {} },
-      handleAgentStateRefresh: async () => execution.push('state'),
-      resumeActiveRunForThread: async () => execution.push('resume'),
-      resumeQueuedInputs: async () => execution.push('queue'),
-      restorePendingInterruptForThread: () => execution.push('approval'),
-      handleChatError: () => { throw Error('Expected detail failure must not emit duplicate toast') }
-    }
-    const select = workspaceLogic('const selectChat =', 'const selectThreadFromRoute =', dependencies, 'selectChat')
-    assert.equal(await select('history'), true)
+  test(`打开历史对话时详情 ${status} 不阻断消息读取，也不恢复执行`, async (t) => {
+    const history = [], execution = []
+    const h = await mountSessionWorkspace(t, async ({ threadId }) => { history.push(threadId) }, {
+      threadId: 'previous', runtime: {
+        fetchAgentState: () => execution.push('state'),
+        resumeActiveRunForThread: () => execution.push('resume'),
+        resumeQueuedInputs: () => execution.push('queue')
+      }
+    })
+    h.state.chatThreadsStore.threads = [{ id: 'history', agent: { id: 'agent' }, yuxi: {} }]
+    const toast = t.mock.method(message, 'error', () => {})
+    t.mock.method(h.agentStore, 'fetchAgentDetail', async () => { throw { status } })
+    t.mock.method(h.state.chatThreadsStore, 'markThreadViewed', () => {})
+    t.mock.method(h.state.scrollController, 'scrollToBottomStaticForce', async () => {})
+    assert.equal(await h.state.selectChat('history'), true)
     assert.deepEqual(history, ['history'])
-    assert.equal(currentThreadId.value, 'history')
+    assert.equal(h.state.currentThreadId.value, 'history')
     assert.deepEqual(execution, [])
-    assert.equal(availability.status.value, status === 503 ? 'error' : 'unavailable')
+    assert.equal(toast.mock.callCount(), 0, '详情不可用不能重复提示错误')
+    assert.equal(h.state.sessionAgentStatus.value, status === 503 ? 'error' : 'unavailable')
   })
 }
 
 for (const status of [403, 404, 410, 503, undefined]) {
-  test(`恢复未缓存线程遇到 ${status ?? '网络错误'}，只有确定失效才拒绝路由`, async () => {
+  test(`恢复未缓存线程遇到 ${status ?? '网络错误'}，只有确定失效才拒绝路由`, async (t) => {
     let errors = 0
-    const dependencies = {
-      threadCreationInFlight: ref(false), agentStore: { isInitialized: true }, threads: ref([]), currentThreadId: ref(null),
-      agentApi: { async getPublicThread() { throw { status } } },
-      chatThreadsStore: { upsertThread() { assert.fail('失败详情不能写入列表') } },
-      handleChatError() { errors++ }
-    }
-    const select = workspaceLogic('const selectThreadFromRoute =', 'const sessionInput =', dependencies, 'selectThreadFromRoute')
-    assert.equal(await select('remembered-thread'), [403, 404, 410].includes(status) ? false : null)
+    const h = await mountSessionWorkspace(t)
+    t.mock.method(message, 'error', () => { errors++ })
+    t.mock.method(h.agentApi, 'getPublicThread', async () => { throw { status } })
+    t.mock.method(h.state.chatThreadsStore, 'upsertThread', () => assert.fail('失败详情不能写入列表'))
+    assert.equal(await h.state.selectThreadFromRoute('remembered-thread'), [403, 404, 410].includes(status) ? false : null)
     assert.equal(errors, 1)
   })
 }
 
 for (const historyLoaded of [false, true]) {
   for (const status of [403, 404, 410, 503, undefined]) {
-    test(`缓存线程（历史${historyLoaded ? '已加载' : '未加载'}）遇到 ${status ?? '网络错误'}，失效结果传回路由协调器`, async () => {
-      const currentThreadId = ref(historyLoaded ? 'cached' : 'previous')
+    test(`缓存线程（历史${historyLoaded ? '已加载' : '未加载'}）遇到 ${status ?? '网络错误'}，失效结果传回路由协调器`, async (t) => {
       const errors = []
-      const dependencies = {
-        threadCreationInFlight: ref(false), agentStore: { isInitialized: true },
-        threads: ref([{ id: 'cached', agent: { id: 'agent' } }]), currentThreadId,
-        currentChatId: computed(() => currentThreadId.value), currentAgentId: ref('agent'),
-        getThreadState: () => ({ historyLoaded }), props: { embedded: false },
-        workspaceActive: ref(true), pageVisible: ref(true), isLoadingMessages: ref(false),
-        handleValidationError() { assert.fail('有效缓存的智能体不能作为失效原因') },
-        AgentValidator: { validateAgentIdWithError: () => true }, resetAgentPanelState() {},
-        setCurrentThreadId: value => { currentThreadId.value = value },
-        refreshSessionAgent: async () => {}, agentExecutionAvailable: ref(false),
-        agentApi: { async getPublicThread() { throw { status } } },
-        fetchThreadMessages: async () => { throw { status } },
-        handleChatError: error => errors.push(error.status),
-        chatThreadsStore: { upsertThread() { assert.fail('错误响应不能写入导航列表') } },
-        nextTick: async () => {}, scrollController: { async scrollToBottomStaticForce() {} },
-        resumeCurrentRunForVisiblePage() { assert.fail('失效或读取失败时不能恢复执行') }
-      }
-      const select = workspaceLogic('const selectChat =', 'const sessionInput =', dependencies, 'selectThreadFromRoute')
-      assert.equal(await select('cached'), [403, 404, 410].includes(status) ? false : null)
+      const h = await mountSessionWorkspace(t, async () => { throw { status } }, {
+        threadId: historyLoaded ? 'cached' : 'previous',
+        runtime: { resumeActiveRunForThread: () => assert.fail('失效或读取失败时不能恢复执行') }
+      })
+      h.state.chatThreadsStore.threads = [{ id: 'cached', agent: { id: 'agent' }, yuxi: {} }]
+      h.runtime.getThreadState('cached').historyLoaded = historyLoaded
+      t.mock.method(h.agentStore, 'fetchAgentDetail', async () => ({ can_run: false }))
+      t.mock.method(h.agentApi, 'getPublicThread', async () => { throw { status } })
+      t.mock.method(h.state.chatThreadsStore, 'upsertThread', () => assert.fail('错误响应不能写入导航列表'))
+      t.mock.method(message, 'error', () => {})
+      t.mock.method(console, 'error', (...args) => errors.push(args.at(-1)?.status))
+      assert.equal(await h.state.selectThreadFromRoute('cached'), [403, 404, 410].includes(status) ? false : null)
       assert.deepEqual(errors, [status])
-      assert.equal(dependencies.isLoadingMessages.value, false)
+      assert.equal(h.state.isLoadingMessages.value, false)
     })
   }
 }

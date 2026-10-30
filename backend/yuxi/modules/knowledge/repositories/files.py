@@ -433,6 +433,10 @@ class KnowledgeFileRepository:
             record = result.scalar_one_or_none()
             if record is None:
                 return None
+            if "processing_params" in sanitized_data:
+                from yuxi.modules.knowledge.repositories.document_resets import DocumentResetRepository
+
+                await DocumentResetRepository.require_processing(session, record.kb_id, file_id)
             for key, value in sanitized_data.items():
                 setattr(record, key, value)
             return record
@@ -456,6 +460,7 @@ class KnowledgeFileRepository:
         filters = [
             KnowledgeFile.kb_id == kb_id,
             KnowledgeFile.file_id == file_id,
+            KnowledgeFile.deleted_at.is_(None),
             KnowledgeFile.status.in_(sorted(allowed_statuses)),
         ]
         if processing_job_id is not None:
@@ -463,6 +468,12 @@ class KnowledgeFileRepository:
         if processing_owner is not None:
             filters.append(KnowledgeFile.processing_owner == processing_owner)
         async with pg_manager.get_async_session_context() as session:
+            if data.get("status") in {FileStatus.PARSING, FileStatus.INDEXING}:
+                from yuxi.modules.knowledge.repositories.document_resets import DocumentResetRepository
+
+                await DocumentResetRepository.require_processing(
+                    session, kb_id, file_id, job_id=lease_job_id if lease_owner is not None else None
+                )
             if lease_job_id is not None and lease_owner is not None:
                 # 带租约的更新先锁作业行并确认租约仍存活，过期 worker 的晚写在此被拒绝。
                 job_record = await session.scalar(

@@ -12,7 +12,7 @@ class DockerBuildContextTests(unittest.TestCase):
     def test_private_inputs_are_excluded_and_missing_guard_admits_them(self):
         """实际 COPY 必须拒绝私有文件，移除排除规则后负控成功。"""
         ignore_rules = (
-            Path(__file__).resolve().parents[1] / ".dockerignore"
+            Path(__file__).resolve().parents[2] / ".dockerignore"
         ).read_bytes()
         with tempfile.TemporaryDirectory(prefix="yuxi-build-context-") as directory:
             context = Path(directory)

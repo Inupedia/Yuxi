@@ -136,7 +136,19 @@ async def run_knowledge_graph(context: BackgroundJobContext) -> dict:
     payload = context.payload
     kb_id = payload["kb_id"]
     service = KnowledgeGraphService()
+    if payload.get("action") == "clear_file":
+        file_id, generation = payload.get("file_id"), payload.get("generation")
+        if not isinstance(file_id, str) or not file_id or type(generation) is not int or generation < 1:
+            raise ValueError("文件图谱清除任务范围无效")
+        await context.raise_if_cancelled()
+        await context.set_progress(5.0, "准备清除文件图谱")
+        result = await service.clear_file_graph(kb_id, file_id, generation=generation, context=context)
+        await context.set_result(result)
+        await context.set_progress(100.0, "文件图谱已清除")
+        return result
     if payload.get("action") == "reconcile":
+        if "file_id" in payload or "generation" in payload:
+            raise ValueError("向量修复不接受文件范围")
         mode = payload.get("reconcile_mode") or "failed"
         await context.set_progress(5.0, "准备修复图谱向量索引")
         reconcile_result = await service.reconcile_vectors(kb_id, all_vectors=mode == "all_vectors")
@@ -148,7 +160,14 @@ async def run_knowledge_graph(context: BackgroundJobContext) -> dict:
         return result
 
     await context.set_progress(5.0, "准备构建图谱")
-    result = await service.build_pending_chunks(kb_id, context=context)
+    scope = {}
+    if "file_id" in payload or "generation" in payload:
+        file_id = payload.get("file_id")
+        generation = payload.get("generation")
+        if not isinstance(file_id, str) or not file_id or not isinstance(generation, int) or isinstance(generation, bool):
+            raise ValueError("文件图谱任务范围无效")
+        scope = {"file_id": file_id, "generation": generation}
+    result = await service.build_pending_chunks(kb_id, context=context, **scope)
     await context.raise_if_cancelled()
     await context.set_result(result)
     await context.set_progress(

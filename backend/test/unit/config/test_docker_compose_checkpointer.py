@@ -1,5 +1,6 @@
 from pathlib import Path
 import stat
+import runpy
 import subprocess
 
 import pytest
@@ -87,12 +88,12 @@ def test_backend_unit_workflow_runs_for_initialization_contract_changes():
     root = project_root()
     workflow = yaml.load((root / ".github/workflows/test.yml").read_text(), Loader=yaml.BaseLoader)
 
-    for event in ("pull_request", "push"):
-        paths = workflow["on"][event]["paths"]
-        assert ".env.template" in paths
-        assert "scripts/init.sh" in paths
-        assert "scripts/init.ps1" in paths
-        assert "scripts/test_init_security.ps1" in paths
+    select_checks = runpy.run_path(str(root / "scripts/ci/gate.py"))["select_checks"]
+
+    paths = (".env.template", "scripts/init.sh", "scripts/init.ps1", "scripts/ci/test_init_security.ps1")
+    for path in paths:
+        assert path in workflow["on"]["push"]["paths"]
+        assert select_checks([path])["backend"]
 
 
 @pytest.mark.parametrize("filename", ["docker-compose.yml", "docker-compose.prod.yml"])
@@ -129,5 +130,9 @@ def test_arq_dependency_changes_trigger_real_dispatch_regression():
     """单独升级依赖也必须触发拥有 ARQ 适配语义的真实 Redis gate。"""
     root = project_root()
     workflow = yaml.load((root / ".github/workflows/system-tests.yml").read_text(), Loader=yaml.BaseLoader)
-    for event in ("pull_request", "push"):
-        assert {"backend/uv.lock", "backend/pyproject.toml"}.issubset(workflow["on"][event]["paths"])
+    select_checks = runpy.run_path(str(root / "scripts/ci/gate.py"))["select_checks"]
+
+    for path in ("backend/uv.lock", "backend/pyproject.toml"):
+        assert path in workflow["on"]["push"]["paths"]
+        selected = select_checks([path])
+        assert selected["system"] and selected["service"]
